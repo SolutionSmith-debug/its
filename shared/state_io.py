@@ -116,6 +116,17 @@ def atomic_write_text(path: Path, text: str) -> None:
             tmp.unlink(missing_ok=True)
 
 
+def lock_path_for(path: Path) -> Path:
+    """The sidecar lock file `with_path_lock(path)` uses.
+
+    Exported so a caller that legitimately deletes its state file can also remove the
+    sidecar without re-deriving the naming convention — two copies of `name + ".lock"`
+    is a drift waiting to happen, and an un-removed sidecar is a permanent orphan in
+    `~/its/state`.
+    """
+    return path.with_name(path.name + ".lock")
+
+
 @contextlib.contextmanager
 def with_path_lock(path: Path) -> Iterator[None]:
     """Hold an exclusive sidecar flock around a read-modify-write block.
@@ -133,7 +144,7 @@ def with_path_lock(path: Path) -> Iterator[None]:
 
     The sidecar file is created on first use and is NOT deleted on exit.
     """
-    lock_path = path.with_name(path.name + ".lock")
+    lock_path = lock_path_for(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+")
     acquired = False

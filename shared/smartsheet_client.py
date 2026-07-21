@@ -36,9 +36,10 @@ from __future__ import annotations
 import io
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from functools import wraps
 from typing import Any
 
 import requests  # type: ignore[import-untyped]
@@ -83,6 +84,36 @@ class SmartsheetValidationError(SmartsheetError):
     client-side error, not a Smartsheet-health signal, so it still counts toward
     the circuit breaker exactly as the base error did (behavior unchanged); only
     the portal drain branches on the new type."""
+
+
+class SmartsheetTransientError(SmartsheetError):
+    """A Smartsheet failure expected to self-heal on a re-issue of the SAME call —
+    an HTTP 5xx, or a `requests`-level timeout / connection drop.
+
+    §42 — WHY this type exists (the SDK gap it covers). This module's docstring says we
+    "delegate HTTP retry / rate-limit backoff to the SDK". That is only PARTLY true, and
+    the two holes are exactly the failures observed live on 2026-07-21:
+
+      * ``smartsheet-python-sdk`` 3.9.0 retries a response ONLY when its JSON body
+        carries errorCode 4001/4002/4003/4004 (its ``should_retry`` lookup). An HTTP
+        500 whose body carries errorCode **4000** is not in that lookup → ZERO SDK
+        retries.
+      * A ``requests.RequestException`` (ReadTimeout at our 30 s adapter default,
+        ConnectionError) raises ``UnexpectedRequestError`` out of the SDK's ``_request``
+        **before** the retry loop ever evaluates ``should_retry`` → ZERO SDK retries.
+
+    Both classes therefore reached ITS as a raw exception, escaped the daemon's pass,
+    and were stamped ``uncaught_exception`` CRITICAL by ``@its_error_log`` — a page for
+    a blip that had already healed by the next cycle. This type is what lets
+    ``_transient_retry`` (bounded, reads-only) and ``sustained_failure.TransientFence``
+    (pass-boundary severity) recognise that precise class WITHOUT softening genuinely
+    deterministic failures.
+
+    A subclass of ``SmartsheetError`` so every existing ``except SmartsheetError``
+    consumer — and the breaker's ``count=SmartsheetError`` — is unchanged. Deliberately
+    NOT raised for 429: ``SmartsheetRateLimitError`` keeps its own type because the SDK
+    HAS already spent its full retry window on 4003, so re-hammering is the wrong move.
+    """
 
 
 class SmartsheetCircuitOpenError(SmartsheetError):
@@ -161,8 +192,43 @@ def get_client() -> smartsheet.Smartsheet:
     return _client
 
 
-def _translate(exc: sdk_exc.SmartsheetException) -> SmartsheetError:
-    """Map an SDK exception onto our typed hierarchy."""
+#: Appended to a 5xx/timeout raised out of a NON-IDEMPOTENT call. The wording is the whole
+#: point: the operator — and any future retry consumer — must be told the outcome is
+#: genuinely UNKNOWN, not merely that the call "failed".
+_NON_IDEMPOTENT_SUFFIX = (
+    " — NON-IDEMPOTENT operation: the request left this process, so it is UNKNOWN whether "
+    "the write COMMITTED. Smartsheet has no idempotency key. Do NOT auto-retry; re-read "
+    "the sheet to establish the truth, then re-issue only if it did not commit."
+)
+
+
+def _translate(exc: sdk_exc.SmartsheetException, *, idempotent: bool) -> SmartsheetError:
+    """Map an SDK exception onto our typed hierarchy.
+
+    ``idempotent`` — REQUIRED and keyword-only, the exact contract
+    ``_translate_smartsheet_error`` already carries for the raw-REST helpers, so a new SDK
+    helper must DECIDE rather than inherit retry-safety from whichever branch it lands in.
+    It gates the self-healing classification ONLY (5xx, non-JSON 5xx, and the
+    ``UnexpectedRequestError`` timeout/connection fallthrough):
+
+      * ``True``  (a GET / lookup) → ``SmartsheetTransientError``, which
+        ``is_transient_error()`` reports as retry-safe and ``_transient_retry`` re-issues.
+      * ``False`` (add_rows / update_rows / delete_rows / add_columns / update_column /
+        attach / create / move / delete sheet) → base ``SmartsheetError`` carrying
+        ``_NON_IDEMPOTENT_SUFFIX``.
+
+    WHY (the round-4 finding this closes, 2026-07-21). Round 3 threaded ``idempotent``
+    through ``_translate_smartsheet_error``, which fixed the four raw-REST helpers — but
+    THIS path still classified by STATUS ALONE, so an ``add_rows`` that 500s or times out
+    yielded ``SmartsheetTransientError`` and ``is_transient_error()`` answered True for it.
+    That is a PUBLIC predicate contradicting its own contract, and it is load-bearing:
+    ``sustained_failure.TransientFence`` consults exactly this predicate, so a failed WRITE
+    reaching a fenced pass boundary was softened from an immediate CRITICAL to a counted
+    ERROR as though it were a safe-to-reissue read. A timed-out ``add_rows`` may well have
+    COMMITTED; labelling that "transient" is a claim of retry-safety no caller can honour.
+    Narrowed at the raise site — the one place the read/write fact is actually known —
+    rather than asking every future consumer to know which helpers are writes.
+    """
     if isinstance(exc, sdk_exc.ApiError):
         result = exc.error.result
         status = result.status_code
@@ -177,11 +243,33 @@ def _translate(exc: sdk_exc.SmartsheetException) -> SmartsheetError:
         if status == 404:
             return SmartsheetNotFoundError(detail)
         if status == 429:
+            # NOT transient: the SDK already spent its full retry budget on 4003.
             return SmartsheetRateLimitError(detail)
+        if status >= 500:
+            if idempotent:
+                return SmartsheetTransientError(detail)
+            return SmartsheetError(detail + _NON_IDEMPOTENT_SUFFIX)
         return SmartsheetError(detail)
     if isinstance(exc, sdk_exc.HttpError):
-        return SmartsheetError(f"HTTP {exc.status_code}: {exc.body!r}")
-    return SmartsheetError(str(exc))
+        # Non-JSON error body. GATE ON STATUS exactly like the ApiError branch above —
+        # "the body was not JSON" is not by itself evidence of a self-healing fault. A
+        # captive portal / corporate proxy / Cloudflare challenge answers 401/403/407
+        # with an HTML page; retrying that 3× and then softening it to an ERROR would
+        # hide a real, deterministic access problem behind a "blip" label.
+        http_detail = f"HTTP {exc.status_code}: {exc.body!r}"
+        if isinstance(exc.status_code, int) and exc.status_code >= 500:
+            if idempotent:
+                return SmartsheetTransientError(http_detail)
+            return SmartsheetError(http_detail + _NON_IDEMPOTENT_SUFFIX)
+        return SmartsheetError(http_detail)
+    # Fallthrough is dominated by UnexpectedRequestError, which the SDK raises from
+    # `_request` for every `requests` exception (ReadTimeout / ConnectionError) BEFORE
+    # its retry loop can see it — see SmartsheetTransientError's docstring. A timeout is
+    # the WORST case for a write: the request was fully transmitted and only the RESPONSE
+    # was lost, so "it may have committed" is not hypothetical.
+    if idempotent:
+        return SmartsheetTransientError(str(exc))
+    return SmartsheetError(str(exc) + _NON_IDEMPOTENT_SUFFIX)
 
 
 # ---- Circuit breaker wiring (F08) ---------------------------------------
@@ -258,9 +346,358 @@ _breaker_guard = circuit_breaker.guard(
     config_loader=_load_circuit_config,
 )
 
+
+# ---- Bounded transient retry (reads only) --------------------------------
+#
+# The layer the SDK does NOT provide (see SmartsheetTransientError): ONE bounded
+# in-process re-issue sequence for a 5xx / timeout, on IDEMPOTENT READS ONLY.
+#
+# A write is NEVER enrolled and never will be: Smartsheet has no idempotency key, so a
+# timed-out add_rows may well have COMMITTED — a blind re-issue would duplicate the row.
+# `_TRANSIENT_RETRY_ENROLLED` + the structural AST guard in tests/test_smartsheet_retry.py
+# bind that for FUTURE helpers too, not just today's list.
+
+
+@dataclass(frozen=True)
+class RetryConfig:
+    """Resolved ``smartsheet.retry.*`` settings for this process."""
+
+    enabled: bool
+    max_extra_attempts: int
+    backoff_seconds: tuple[float, ...]
+    #: Per-key "<key>=<ITS_Config|default>" summary — the observable-config-resolution
+    #: standard (never resolve a setting without being able to say where it came from).
+    source_summary: str
+
+
+_retry_config_cache: RetryConfig | None = None
+# Re-entrancy guard. COLD START without it: the first guarded call resolves the circuit
+# config BEFORE calling fn; that read runs under `circuit_breaker.bypass()`, which
+# short-circuits only the GUARD — the call still descends into get_rows' _transient_retry
+# wrapper, which loads ITS retry config, which reads get_setting → get_rows → … forever.
+# While a config read is in flight the retry decorator is a straight pass-through.
+_loading_retry_config = False
+
+_RETRY_BACKOFF_SEPARATORS = ","
+
+
+def _coerce_backoff(raw: str | None, default: tuple[float, ...]) -> tuple[float, ...]:
+    if raw is None:
+        return default
+    try:
+        parsed = tuple(
+            float(part.strip())
+            for part in raw.split(_RETRY_BACKOFF_SEPARATORS)
+            if part.strip()
+        )
+    except (ValueError, TypeError):
+        return default
+    return parsed or default
+
+
+def _clamp_attempts(value: int) -> int:
+    """Bound ``max_extra_attempts`` to [0, ceiling], WARNing when a row is out of range.
+
+    An unbounded knob is an outage surface: a typo'd ``200`` would hold every daemon on
+    one failing read for ~100 min. The dashboard's ``v_int`` validator rejects
+    out-of-range up front; this clamp covers the value that got in by another path (a
+    hand-edited ITS_Config cell), because the client — not the editor — is where the
+    number actually costs wall-clock.
+    """
+    ceiling = defaults.SMARTSHEET_RETRY_MAX_ATTEMPTS_CEILING
+    clamped = max(0, min(value, ceiling))
+    if clamped != value:
+        _local_warn(
+            f"smartsheet.retry.max_extra_attempts={value} is out of range — "
+            f"CLAMPED to {clamped} (allowed 0-{ceiling}). Fix the ITS_Config row."
+        )
+    return clamped
+
+
+def _clamp_backoff(values: tuple[float, ...]) -> tuple[float, ...]:
+    """Drop negatives and cap the SUMMED backoff of one sequence, WARNing when it bites.
+
+    Capping the total (rather than each entry) is what actually bounds the cost: three
+    entries of 20 s each are individually plausible and collectively a minute of sleep.
+    Entries past the cap are truncated, so the sequence gets shorter, never longer.
+    """
+    cap = defaults.SMARTSHEET_RETRY_MAX_TOTAL_BACKOFF_SECS
+    kept: list[float] = []
+    total = 0.0
+    for value in values:
+        step = max(0.0, value)
+        if total + step > cap:
+            break
+        kept.append(step)
+        total += step
+    out = tuple(kept)
+    if out != values:
+        _local_warn(
+            f"smartsheet.retry.backoff_seconds={values} exceeds the {cap:g}s total cap "
+            f"(or contains a negative) — TRUNCATED to {out}. Fix the ITS_Config row."
+        )
+    return out
+
+
+def _defaults_retry_config() -> RetryConfig:
+    return RetryConfig(
+        enabled=defaults.SMARTSHEET_RETRY_ENABLED,
+        max_extra_attempts=defaults.SMARTSHEET_RETRY_MAX_EXTRA_ATTEMPTS,
+        backoff_seconds=defaults.SMARTSHEET_RETRY_BACKOFF_SECONDS,
+        source_summary="enabled=default max_extra_attempts=default backoff_seconds=default",
+    )
+
+
+def _load_retry_config() -> RetryConfig:
+    """Resolve ``smartsheet.retry.*`` from ITS_Config; ``defaults.py`` on any gap.
+
+    Mirrors ``_load_circuit_config`` exactly (bypass-wrapped reads, process-lifetime
+    cache — launchd gives each daemon a fresh process per cycle, so an operator change
+    lands next cycle at the cost of one extra round-trip per process). Re-entrant calls
+    (see ``_loading_retry_config``) get defaults WITHOUT caching them, so the real read
+    still wins once the outer load completes.
+
+    TOTAL by construction, like ``circuit_breaker._resolve_config``: resolving config must
+    never be the thing that breaks the call it is configuring.
+    """
+    global _retry_config_cache, _loading_retry_config
+    if _retry_config_cache is not None:
+        return _retry_config_cache
+    if _loading_retry_config:
+        return _defaults_retry_config()
+    _loading_retry_config = True
+    try:
+        with circuit_breaker.bypass():
+            # ONE round-trip for all three knobs. `_load_circuit_config` above reads its
+            # three keys one at a time; doing the same here DOUBLED the per-process
+            # ITS_Config traffic (3 → 6) across ~12 daemons firing every 60-120 s, for
+            # rows that share a prefix and live on the same sheet. `get_rows` is the
+            # actual cost unit, and the prefix read spends exactly one of them.
+            rows = get_settings_with_prefix("smartsheet.retry.", workstream="global")
+    except Exception:  # noqa: BLE001 — a config read must never wedge the call it configures
+        return _defaults_retry_config()
+    finally:
+        _loading_retry_config = False
+    enabled_raw = rows.get("smartsheet.retry.enabled")
+    attempts_raw = rows.get("smartsheet.retry.max_extra_attempts")
+    backoff_raw = rows.get("smartsheet.retry.backoff_seconds")
+    sources = " ".join(
+        f"{name}={'ITS_Config' if raw is not None else 'default'}"
+        for name, raw in (
+            ("enabled", enabled_raw),
+            ("max_extra_attempts", attempts_raw),
+            ("backoff_seconds", backoff_raw),
+        )
+    )
+    cfg = RetryConfig(
+        enabled=_coerce_bool(enabled_raw, defaults.SMARTSHEET_RETRY_ENABLED),
+        max_extra_attempts=_clamp_attempts(
+            _coerce_int(attempts_raw, defaults.SMARTSHEET_RETRY_MAX_EXTRA_ATTEMPTS)
+        ),
+        backoff_seconds=_clamp_backoff(
+            _coerce_backoff(backoff_raw, defaults.SMARTSHEET_RETRY_BACKOFF_SECONDS)
+        ),
+        source_summary=sources,
+    )
+    _retry_config_cache = cfg
+    return cfg
+
+
+# ---- Recovery visibility (D3) --------------------------------------------
+#
+# A retry that SUCCEEDS is invisible by construction — nothing raises, nothing is logged.
+# A chronically flaky sheet would then be silently absorbed, which is the "never silent"
+# invariant inverted. So every recovered sequence emits ONE local WARN line, AND is
+# accumulated here for a pass-boundary summary row (drained by
+# `sustained_failure.flush_retry_recovery`). A process NOT enrolled simply discards its
+# accumulator at exit — the local WARN line still went to the on-disk log, so nothing is
+# silent; only the ITS_Errors summary is skipped.
+#
+# WHICH PROCESSES FLUSH (verified 2026-07-21): every one-shot launchd pass with a clean
+# exit point — the six intake daemons, the five bound send pollers via `send_poll_core`,
+# `publish_daemon`, and `scripts/watchdog.py`. DELIBERATELY NOT `operator_dashboard`: it
+# is a long-lived multi-THREADED FastAPI server with no pass boundary at all, so the only
+# candidate site is per-HTTP-request — which would both race on this process-global dict
+# across worker threads and mint an ITS_Errors row per browser poll of a read-only
+# observation surface. Its recoveries stay local-log-only, by decision not by omission.
+# `safety_reports/compile_now_poll.py` is owned by a parallel change and is untouched here.
+_RETRY_RECOVERY_MAX_KEYS = 32
+_RETRY_RECOVERY_OVERFLOW_KEY = "(other)"
+_retry_recoveries: dict[str, dict[str, Any]] = {}
+
+
+def _local_warn(message: str) -> None:
+    """Best-effort local WARN via a lazy ``error_log`` import (error_log imports THIS
+    module at top level — hence lazy). Never raises."""
+    try:
+        from . import error_log
+
+        error_log.local_log(error_log.Severity.WARN, "shared.smartsheet_client", message)
+    except Exception:  # noqa: BLE001 — logging must never break a recovered call
+        pass
+
+
+def _note_retry_recovery(
+    call: str, attempts: int, elapsed: float, last_error: BaseException, cfg: RetryConfig
+) -> None:
+    _local_warn(
+        f"transient Smartsheet failure RECOVERED on retry: call={call} "
+        f"extra_attempts={attempts} elapsed={elapsed:.2f}s "
+        f"last_error={type(last_error).__name__}: {last_error} "
+        f"[retry config: {cfg.source_summary}]"
+    )
+    key = call
+    if key not in _retry_recoveries and len(_retry_recoveries) >= _RETRY_RECOVERY_MAX_KEYS:
+        key = _RETRY_RECOVERY_OVERFLOW_KEY
+    entry = _retry_recoveries.setdefault(key, {"sequences": 0, "attempts": 0})
+    entry["sequences"] += 1
+    entry["attempts"] += attempts
+
+
+def drain_retry_recovery() -> dict[str, dict[str, Any]]:
+    """Return the accumulated recovered-retry summary and CLEAR it.
+
+    Public because the pass-boundary fence (`shared.sustained_failure.TransientFence`)
+    is in another module: it drains at end of pass and writes ONE summarized WARN
+    ``ITS_Errors`` row, so a chronically flaky sheet stays visible on the dashboard
+    instead of only in the local log.
+    """
+    drained = dict(_retry_recoveries)
+    _retry_recoveries.clear()
+    return drained
+
+
+def _transient_retry[F: Callable[..., Any]](fn: F) -> F:
+    """Re-issue ``fn`` up to ``max_extra_attempts`` times on SmartsheetTransientError.
+
+    Retries NOTHING else — CircuitOpen / Validation / Auth / Permission / NotFound /
+    RateLimit all propagate on the first raise, and the final transient failure is
+    re-raised with its type UNCHANGED so callers keep their existing `except` clauses.
+
+    PLACEMENT IS LOAD-BEARING — this must sit INSIDE `_breaker_guard`::
+
+        @_breaker_guard
+        @_transient_retry      # applied first (bottom-up) ⇒ runs INSIDE the guard
+        def get_rows(...): ...
+
+    The guard records at most one failure/success per wrapped call, so an exhausted
+    3-attempt sequence is exactly ONE breaker failure and the breaker's
+    consecutive-failure semantics are preserved. Retry OUTSIDE the guard would (a)
+    triple the failure-count rate, tripping the breaker 3× sooner than configured, and
+    (b) catch-and-sleep on SmartsheetCircuitOpenError — hammering the very
+    short-circuit the breaker exists to provide.
+
+    CONTROL-PLANE READS GET EXACTLY ONE ATTEMPT. A call made under
+    ``circuit_breaker.bypass()`` is the breaker's / error_log's / the heartbeat's own
+    plumbing, not the daemon's work: multiplying it turned a cold config bootstrap on a
+    failing backend into 12 SDK calls and ~21 s of sleeps, on the very path that exists
+    so an OPEN breaker cannot block it. Same shape as the ``_loading_retry_config``
+    short-circuit below, one level out.
+    """
+
+    @wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if _loading_retry_config or circuit_breaker.in_bypass():
+            return fn(*args, **kwargs)
+        cfg = _load_retry_config()
+        if not cfg.enabled or cfg.max_extra_attempts <= 0:
+            return fn(*args, **kwargs)
+        started = time.monotonic()
+        extra = 0
+        last_error: BaseException | None = None
+        while True:
+            try:
+                result = fn(*args, **kwargs)
+            except SmartsheetTransientError as exc:
+                if extra >= cfg.max_extra_attempts:
+                    raise
+                last_error = exc
+                if cfg.backoff_seconds:
+                    time.sleep(cfg.backoff_seconds[min(extra, len(cfg.backoff_seconds) - 1)])
+                extra += 1
+                continue
+            if extra and last_error is not None:
+                _note_retry_recovery(fn.__name__, extra, time.monotonic() - started, last_error, cfg)
+            return result
+
+    wrapper.__its_transient_retry__ = True  # type: ignore[attr-defined]
+    return wrapper  # type: ignore[return-value]
+
+
+#: Every helper carrying `_transient_retry`. READS / IDEMPOTENT LOOKUPS ONLY — a write is
+#: never enrollable (no idempotency key ⇒ a timed-out write may have committed). Held as
+#: data so `tests/test_smartsheet_retry.py` can assert SET EQUALITY against the approved
+#: list: adding an enrollment forces a deliberate test edit, and the companion AST guard
+#: independently proves no enrolled body reaches an SDK mutator or requests.post/put/delete.
+#: `get_setting` / `get_settings_with_prefix` are deliberately absent — they delegate to the
+#: enrolled `get_rows` and inherit the retry (same reason they carry no breaker guard). That
+#: single fact is what covers both 2026-07-21 CRITICAL paths (publish_daemon's config read
+#: and progress_send_poll's approver read).
+_TRANSIENT_RETRY_ENROLLED: frozenset[str] = frozenset({
+    "get_sheet",
+    "get_row",
+    "get_rows",
+    "get_cell_history",
+    "list_columns_with_options",
+    "find_sheet_by_name_in_folder",
+    "count_workspace_sheets",
+    "find_folder_by_name_in_folder",
+    "find_folder_by_name_in_workspace",
+    "list_workspace_share_emails",
+})
+
+
+def is_transient_error(exc: BaseException) -> bool:
+    """True iff ``exc`` is the precisely-typed self-healing Smartsheet class.
+
+    THE CONTRACT, stated as a promise the code keeps rather than an aspiration: True means
+    "re-issuing the SAME call is safe". It is therefore NEVER True for a failed WRITE. Both
+    translation paths enforce that at the raise site — ``_translate(…, idempotent=…)`` for
+    the SDK helpers and ``_translate_smartsheet_error(…, idempotent=…)`` for the raw-REST
+    ones — because only the raise site knows whether the call was a read. A 5xx or a
+    timeout on ``add_rows`` / ``update_rows`` / ``delete_rows`` / an attach / a create
+    carries NO information about whether it committed, and Smartsheet has no idempotency
+    key to settle it, so those raise base ``SmartsheetError`` and this answers False.
+    ``tests/test_smartsheet_client.py::test_no_sdk_write_helper_is_ever_classified_retry_safe``
+    holds the line for helpers added later.
+
+    Defined in terms of the TYPE, never as "not one of the deterministic subclasses":
+    a future subclass must be classified deliberately at its definition site, not
+    inherit transience by omission from one mechanism and determinism from another.
+
+    SmartsheetCircuitOpenError and SmartsheetRateLimitError are deliberately EXCLUDED
+    and handled explicitly by `sustained_failure.TransientFence` — see its docstring.
+
+    WHY IT MATTERS. ``sustained_failure.TransientFence.handle`` consults this predicate to
+    decide whether a pass-boundary failure is SOFTENED (halt + counted ERROR) or left to
+    ``@its_error_log``'s immediate ``uncaught_exception`` CRITICAL. A write must never be
+    softened: "cycle halted, retrying next cycle" is the wrong story for an operation that
+    may already have committed.
+    """
+    return isinstance(exc, SmartsheetTransientError)
+
+
 # Register the same loader so arg-free circuit_breaker.is_open() (the daemons'
 # CIRCUIT_OPEN status surfacing) resolves live Smartsheet config too.
 circuit_breaker.set_config_loader(_load_circuit_config)
+
+
+def _close_fleet_circuit_open_window() -> None:
+    """Breaker-recovery hook: a real call answered, so the fleet outage window is over.
+
+    LOCAL import, deliberately: `sustained_failure` imports THIS module (for the exception
+    types + `is_transient_error`), so a module-level import here is circular. Registering
+    the hook from `smartsheet_client` — rather than from `sustained_failure` — is what
+    makes it present in EVERY Smartsheet-touching process, including the daemons that own
+    no fence; otherwise a window opened by a fenced daemon could only ever be closed by a
+    fenced daemon.
+    """
+    from shared import sustained_failure
+
+    sustained_failure.clear_circuit_open()
+
+
+circuit_breaker.set_recovery_hook(_close_fleet_circuit_open_window)
 
 
 # ---- Column-map cache ----------------------------------------------------
@@ -270,7 +707,7 @@ def _fetch_column_map(sheet_id: int) -> dict[str, int]:
     try:
         sheet = get_client().Sheets.get_sheet(sheet_id, include="columns")
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
     return {col.title: col.id for col in sheet.columns}
 
 
@@ -348,15 +785,17 @@ def _resolve_cells(sheet_id: int, values: dict[str, Any]) -> list[Any]:
 
 
 @_breaker_guard
+@_transient_retry
 def get_sheet(sheet_id: int):
     """Fetch the full sheet object (SDK model). Most callers want get_rows()."""
     try:
         return get_client().Sheets.get_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
 
 
 @_breaker_guard
+@_transient_retry
 def get_row(sheet_id: int, row_id: int) -> dict[str, Any]:
     """Fetch one row by ID as a `{_row_id, <title>: value, ...}` dict.
 
@@ -368,7 +807,7 @@ def get_row(sheet_id: int, row_id: int) -> dict[str, Any]:
     try:
         sheet = get_client().Sheets.get_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
     title_by_id = {col.id: col.title for col in sheet.columns}
     for row in sheet.rows:
         if row.id != row_id:
@@ -385,6 +824,7 @@ def get_row(sheet_id: int, row_id: int) -> dict[str, Any]:
 
 
 @_breaker_guard
+@_transient_retry
 def get_rows(
     sheet_id: int,
     *,
@@ -399,7 +839,7 @@ def get_rows(
     try:
         sheet = get_client().Sheets.get_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
 
     title_by_id = {col.id: col.title for col in sheet.columns}
     out: list[dict[str, Any]] = []
@@ -497,6 +937,7 @@ class CellHistoryEvent:
 
 
 @_breaker_guard
+@_transient_retry
 def get_cell_history(
     sheet_id: int, row_id: int, column_title: str
 ) -> list[CellHistoryEvent]:
@@ -534,7 +975,7 @@ def get_cell_history(
             sheet_id, row_id, column_id, include_all=True
         )
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
 
     events: list[CellHistoryEvent] = []
     for item in result.data:
@@ -585,7 +1026,7 @@ def add_rows(sheet_id: int, rows: list[dict[str, Any]]) -> list[int]:
     try:
         result = get_client().Sheets.add_rows(sheet_id, sdk_rows)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     return [r.id for r in result.result]
 
 
@@ -617,7 +1058,7 @@ def update_rows(sheet_id: int, updates: list[dict[str, Any]]) -> None:
     try:
         get_client().Sheets.update_rows(sheet_id, sdk_rows)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -628,7 +1069,7 @@ def delete_rows(sheet_id: int, row_ids: list[int]) -> None:
     try:
         get_client().Sheets.delete_rows(sheet_id, row_ids)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -653,7 +1094,7 @@ def find_row_by_primary(
     try:
         sheet = get_client().Sheets.get_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
 
     title_by_id = {col.id: col.title for col in sheet.columns}
     for row in sheet.rows:
@@ -699,7 +1140,7 @@ def update_row_cells_by_id(
     try:
         get_client().Sheets.update_rows(sheet_id, [row])
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -730,7 +1171,7 @@ def add_row_by_id(sheet_id: int, cells_by_column_id: dict[int, Any]) -> int:
     try:
         result = get_client().Sheets.add_rows(sheet_id, [row])
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     return result.result[0].id
 
 
@@ -738,6 +1179,7 @@ def add_row_by_id(sheet_id: int, cells_by_column_id: dict[int, Any]) -> int:
 
 
 @_breaker_guard
+@_transient_retry
 def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
     """Return one dict per column with `id`, `title`, `type`, and `options`.
 
@@ -775,7 +1217,7 @@ def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
         # none today, so that path is unexercised.)
         sheet = get_client().Sheets.get_sheet(sheet_id, include="columns", level=2)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
     out: list[dict[str, Any]] = []
     for col in sheet.columns:
         opts = getattr(col, "options", None) or []
@@ -832,7 +1274,7 @@ def update_column_options(
         })
         get_client().Sheets.update_column(sheet_id, column_id, body)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     invalidate_column_cache(sheet_id)
 
 
@@ -1033,7 +1475,7 @@ def create_picklist_column(
     try:
         result = get_client().Sheets.add_columns(sheet_id, [body])
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     invalidate_column_cache(sheet_id)
     added = result.result
     # `add_columns` returns the created Column(s) under `.result` (a list even
@@ -1042,13 +1484,30 @@ def create_picklist_column(
     return int(first.id)
 
 
-def _translate_smartsheet_error(response: requests.Response, *, context: str) -> None:
+def _translate_smartsheet_error(
+    response: requests.Response, *, context: str, idempotent: bool
+) -> None:
     """Raise a typed `SmartsheetError` for a non-2xx REST response.
 
     No-op on 2xx — callers continue. On 4xx/5xx, dispatch the status code
     onto the same typed-exception hierarchy used by `_translate` for SDK
     errors (401 → Auth, 403 → Permission, 404 → NotFound, 429 → RateLimit,
     everything else → base `SmartsheetError`).
+
+    `idempotent` — REQUIRED, no default, so a new REST helper must decide rather than
+    inherit. It gates the 5xx branch ONLY:
+
+      * `True`  (a GET / lookup) → `SmartsheetTransientError`, which
+        `is_transient_error()` reports as retry-safe.
+      * `False` (a CREATE) → base `SmartsheetError`. A 5xx on a create carries NO
+        information about whether the folder/sheet was committed before the server
+        errored, and there is no idempotency key to settle it. Labelling that
+        "transient" is a claim of retry-safety the caller cannot honour: nothing retries
+        creates today, but `is_transient_error()` is a PUBLIC predicate, and a future
+        fence/retry consumer trusting it would duplicate a created folder or sheet. The
+        classification is narrowed at the raise site so the predicate cannot lie, rather
+        than relying on every future consumer to know which helpers are writes.
+        (Matches main's pre-2026-07-21 behaviour for these three creates exactly.)
 
     Internal helper for the REST-backed helpers below (`find_sheet_by_name_in_folder`,
     `find_folder_by_name_in_folder`, `create_folder_in_folder`,
@@ -1081,10 +1540,19 @@ def _translate_smartsheet_error(response: requests.Response, *, context: str) ->
             raise SmartsheetNotFoundError(f"{context}: HTTP 404: {body_text}") from e
         if status == 429:
             raise SmartsheetRateLimitError(f"{context}: HTTP 429: {body_text}") from e
+        if status >= 500 and idempotent:
+            raise SmartsheetTransientError(f"{context}: HTTP {status}: {body_text}") from e
+        if status >= 500:
+            raise SmartsheetError(
+                f"{context}: HTTP {status}: {body_text} — NON-IDEMPOTENT operation: the "
+                "server errored, so it is UNKNOWN whether this create committed. Do NOT "
+                "auto-retry; re-run the find-or-create path, which is safe."
+            ) from e
         raise SmartsheetError(f"{context}: HTTP {status}: {body_text}") from e
 
 
 @_breaker_guard
+@_transient_retry
 def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
     """Return the sheet ID with title `name` inside `folder_id`, or None.
 
@@ -1117,8 +1585,8 @@ def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
             url, headers={"Authorization": f"Bearer {token}"}, timeout=30
         )
     except requests.RequestException as e:
-        raise SmartsheetError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     body = response.json()
     for sheet in body.get("sheets", []):
         if sheet.get("name") == name:
@@ -1127,6 +1595,7 @@ def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
 
 
 @_breaker_guard
+@_transient_retry
 def count_workspace_sheets(workspace_id: int) -> int:
     """Count every sheet in a workspace, recursing nested folders.
 
@@ -1145,8 +1614,8 @@ def count_workspace_sheets(workspace_id: int) -> int:
             url, headers={"Authorization": f"Bearer {token}"}, timeout=30
         )
     except requests.RequestException as e:
-        raise SmartsheetError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     return _count_sheets_in_node(response.json())
 
 
@@ -1159,6 +1628,7 @@ def _count_sheets_in_node(node: dict[str, Any]) -> int:
 
 
 @_breaker_guard
+@_transient_retry
 def find_folder_by_name_in_folder(parent_folder_id: int, name: str) -> int | None:
     """Return the sub-folder ID with title `name` inside `parent_folder_id`, or None.
 
@@ -1193,8 +1663,8 @@ def find_folder_by_name_in_folder(parent_folder_id: int, name: str) -> int | Non
             url, headers={"Authorization": f"Bearer {token}"}, timeout=30
         )
     except requests.RequestException as e:
-        raise SmartsheetError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     body = response.json()
     for folder in body.get("folders", []):
         if folder.get("name") == name:
@@ -1223,7 +1693,7 @@ def create_sheet_in_folder(
     try:
         result = get_client().Folders.create_sheet_in_folder(folder_id, sheet_model)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     return int(result.result.id)
 
 
@@ -1248,7 +1718,7 @@ def apply_column_styles(sheet_id: int, styles: list[dict[str, Any]]) -> None:
     try:
         cols = get_client().Sheets.get_columns(sheet_id, include_all=True).data
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
     by_title = {c.title: c for c in cols}
     for style in styles:
         title = style["title"]
@@ -1266,7 +1736,7 @@ def apply_column_styles(sheet_id: int, styles: list[dict[str, Any]]) -> None:
         try:
             get_client().Sheets.update_column(sheet_id, col.id, model)
         except sdk_exc.SmartsheetException as e:
-            raise _translate(e) from e
+            raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -1280,7 +1750,7 @@ def delete_sheet(sheet_id: int) -> None:
     try:
         get_client().Sheets.delete_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -1305,7 +1775,7 @@ def move_sheet_to_folder(sheet_id: int, folder_id: int) -> None:
     try:
         get_client().Sheets.move_sheet(sheet_id, dest)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 def delete_sheet_settling(
@@ -1410,13 +1880,17 @@ def create_folder_in_folder(parent_folder_id: int, name: str) -> int:
             timeout=30,
         )
     except requests.RequestException as e:
-        raise SmartsheetError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+        # A timeout/connection drop on a POST is the SAME unknown-commit case the 5xx arm
+        # below handles — the request was transmitted and only the response was lost. It
+        # must NOT wear the retry-safe type (round-4 finding, 2026-07-21).
+        raise SmartsheetError(f"{context}: {e!r}" + _NON_IDEMPOTENT_SUFFIX) from e
+    _translate_smartsheet_error(response, context=context, idempotent=False)
     body = response.json()
     return int(body["result"]["id"])
 
 
 @_breaker_guard
+@_transient_retry
 def find_folder_by_name_in_workspace(workspace_id: int, name: str) -> int | None:
     """Return the top-level folder ID named `name` in `workspace_id`, or None.
 
@@ -1453,8 +1927,8 @@ def find_folder_by_name_in_workspace(workspace_id: int, name: str) -> int | None
             url, headers={"Authorization": f"Bearer {token}"}, timeout=30
         )
     except requests.RequestException as e:
-        raise SmartsheetError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     body = response.json()
     for folder in body.get("folders", []):
         if folder.get("name") == name:
@@ -1502,13 +1976,17 @@ def create_folder_in_workspace(workspace_id: int, name: str) -> int:
             timeout=30,
         )
     except requests.RequestException as e:
-        raise SmartsheetError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+        # A timeout/connection drop on a POST is the SAME unknown-commit case the 5xx arm
+        # below handles — the request was transmitted and only the response was lost. It
+        # must NOT wear the retry-safe type (round-4 finding, 2026-07-21).
+        raise SmartsheetError(f"{context}: {e!r}" + _NON_IDEMPOTENT_SUFFIX) from e
+    _translate_smartsheet_error(response, context=context, idempotent=False)
     body = response.json()
     return int(body["result"]["id"])
 
 
 @_breaker_guard
+@_transient_retry
 def list_workspace_share_emails(workspace_id: int) -> frozenset[str]:
     """Return the lowercased member emails the workspace is directly shared with.
 
@@ -1549,8 +2027,8 @@ def list_workspace_share_emails(workspace_id: int) -> frozenset[str]:
             url, headers={"Authorization": f"Bearer {token}"}, timeout=30
         )
     except requests.RequestException as e:
-        raise SmartsheetError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     body = response.json()
     return frozenset(
         str(share["email"]).strip().lower()
@@ -1614,13 +2092,13 @@ def attach_pdf_to_row(
                 if att.name == filename:
                     client.Attachments.delete_attachment(sheet_id, att.id)
         except sdk_exc.SmartsheetException as e:
-            raise _translate(e) from e
+            raise _translate(e, idempotent=False) from e
     try:
         result = client.Attachments.attach_file_to_row(
             sheet_id, row_id, (filename, io.BytesIO(pdf_bytes), content_type)
         )
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     return int(result.result.id)
 
 
@@ -1681,8 +2159,11 @@ def create_sheet_in_folder_from_template(
             timeout=30,
         )
     except requests.RequestException as e:
-        raise SmartsheetError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+        # A timeout/connection drop on a POST is the SAME unknown-commit case the 5xx arm
+        # below handles — the request was transmitted and only the response was lost. It
+        # must NOT wear the retry-safe type (round-4 finding, 2026-07-21).
+        raise SmartsheetError(f"{context}: {e!r}" + _NON_IDEMPOTENT_SUFFIX) from e
+    _translate_smartsheet_error(response, context=context, idempotent=False)
     body = response.json()
     return int(body["result"]["id"])
 

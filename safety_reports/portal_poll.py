@@ -79,6 +79,7 @@ from shared import (
     review_queue,
     smartsheet_client,
     state_io,
+    sustained_failure,
 )
 from shared.creds_resolution import CREDS_TRANSIENT as _CREDS_TRANSIENT
 from shared.creds_resolution import TransientUnavailable
@@ -545,7 +546,13 @@ def poll_once() -> PollStats:
                 error_code="poll_lock_held",
             )
             return PollStats(skipped_locked=True)
-        return _poll_inside_lock()
+        try:
+            return _poll_inside_lock()
+        finally:
+            # D3 — one summarized WARN row if any Smartsheet call in this pass RECOVERED
+            # on retry. In `finally` so a raising pass still reports its recoveries
+            # instead of silently rolling them into the next cycle's row.
+            sustained_failure.flush_retry_recovery(SCRIPT_NAME)
 
 
 @dataclass(frozen=True)
@@ -781,12 +788,19 @@ def _poll_inside_lock() -> PollStats:
         # and self-heals; a SUSTAINED outage (>= threshold consecutive cycles) escalates to
         # CRITICAL — filing is stopped and that must PAGE, not just WARN at the next daily
         # watchdog. No watchdog marker either way (the un-faked Check-C marker is the backstop).
+        #
+        # The CRITICAL fires on the shared LADDER (crossing cycle, then 2×/4×/8× …), not on
+        # every cycle past the threshold: an open CRITICAL is never terminal per
+        # `errors_rotation`, so `n >= threshold` minted UNROTATABLE rows for the entire
+        # outage. Every cycle still writes its per-occurrence row, at ERROR in between.
         n = _record_fetch_failure()
-        sustained = n >= FETCH_FAIL_CRITICAL_THRESHOLD
+        sustained = sustained_failure.is_escalation_cycle(n, FETCH_FAIL_CRITICAL_THRESHOLD)
         error_log.log(
             Severity.CRITICAL if sustained else Severity.ERROR, SCRIPT_NAME,
-            f"failed to GET pending (consecutive failure #{n}"
-            + (f", SUSTAINED >={FETCH_FAIL_CRITICAL_THRESHOLD} cycles — filing STOPPED" if sustained else "")
+            f"failed to GET pending (consecutive failure #{n}, CRITICAL from "
+            f"{FETCH_FAIL_CRITICAL_THRESHOLD} on the escalation ladder"
+            + (" — SUSTAINED: filing is STOPPED and submissions are accumulating"
+               if sustained else "")
             + f"): {exc!r}",
             error_code="portal_pending_fetch_failed",
         )

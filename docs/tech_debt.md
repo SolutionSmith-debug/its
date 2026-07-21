@@ -316,8 +316,8 @@ secret/route is actually deployed — flipping the gate first produces a benign-
 CRITICAL storm on every cycle until the deploy catches up. Root-caused this session on a subcontract-lane
 `bearer_rejected` error. Apply this ordering on every future config-actuator/Worker-secret pairing.
 
-- **[OPEN 2026-07-21] A 4th, previously-uncounted replica of the DASH-14/#613 config-read fence gap:
-  `safety_reports/publish_daemon.py`.** The "FIXED 2026-07-19: all 3 replicas ported" claim above is
+- **[RESOLVED 2026-07-21] A 4th, previously-uncounted replica of the DASH-14/#613 config-read fence gap:
+  `safety_reports/publish_daemon.py` — plus the F22 approver gate, both closed by the transient-fence PR.** The "FIXED 2026-07-19: all 3 replicas ported" claim above is
   itself now stale — a fresh `grep` this session (2026-07-21, coverage-gap hunt) found
   `publish_daemon.py`'s own config-row reader (`get_setting(key, workstream=WORKSTREAM)`, ~line 195)
   still catches only `SmartsheetNotFoundError`/`SmartsheetCircuitOpenError`, not the generic
@@ -333,6 +333,18 @@ CRITICAL storm on every cycle until the deploy catches up. Root-caused this sess
   *severity*. No reclassification has been attempted here — flagged, not built, since it touches the F22
   security gate and warrants care before touching. Trigger: next error-hygiene pass, or the next time
   either surface actually pages on a Smartsheet blip. See blueprint memory-archive §G72.
+  **RESOLUTION (2026-07-21, the transient-fence PR).** Both surfaces are now fenced.
+  `publish_daemon` adopts `shared/creds_resolution.read_base_url` and PROPAGATES
+  `SmartsheetCircuitOpenError` instead of swallowing it into a fail-open "polling disabled"
+  (reporting a breaker outage as a disabled gate was a lie, and it kept the fleet's fastest
+  observer out of the circuit-open escalation). The F22 gate was reclassified with explicit
+  operator ratification — severity only, never behaviour: a transient approver-read failure
+  records ERROR and counts toward a sustained counter (threshold 3 at the 15-min send cadence)
+  instead of paging immediately, while auth/permission errors still page at once. Fail-closed is
+  unchanged and now PROVEN by test (zero `send_fn` calls on ANY approver-load failure, transient
+  or not); the prove-it-bites injection for that assertion dispatched a real send and the test
+  caught it. `_load_authorized_approvers`' §42 contract docstring was rewritten in the same diff
+  so the contract cannot contradict the code.
 
 - **[OPEN 2026-07-21, Seth-owned] `po_materials.rfq_send.polling_enabled` shipped `first_activation_gated`
   (dashboard tier "A") rather than `elevated_confirm`, per PR #627's own in-code rationale — and, found

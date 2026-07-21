@@ -85,6 +85,7 @@ from shared import (
     sheet_ids,
     smartsheet_client,
     state_io,
+    sustained_failure,
 )
 from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
@@ -428,7 +429,11 @@ def sync_once() -> int:
                 error_code="sync_lock_held",
             )
             return 0
-        return _sync_inside_lock().mirrored
+        try:
+            return _sync_inside_lock().mirrored
+        finally:
+            # D3 — see portal_poll: one summarized WARN row per pass that recovered on retry.
+            sustained_failure.flush_retry_recovery(SCRIPT_NAME)
 
 
 def _record_pending_fetch_failure() -> int:
@@ -543,9 +548,12 @@ def _sync_inside_lock() -> SyncStats:
         # /equipment-snapshot) that may well be reachable this cycle, so they MUST still run.
         counters["errors"] += 1
         n = _record_pending_fetch_failure()
-        if n >= PENDING_FETCH_FAIL_CRITICAL_THRESHOLD:
+        if sustained_failure.is_escalation_cycle(n, PENDING_FETCH_FAIL_CRITICAL_THRESHOLD):
             # SUSTAINED outage — the decoupled cycle no longer goes Check-C-stale, so escalate to
             # CRITICAL (the triple-fire push path). Mirrors portal_poll's Check-Q.
+            # On the shared LADDER, not every cycle past the threshold: an open CRITICAL is
+            # never terminal, so the old `n >= threshold` minted UNROTATABLE rows for the
+            # whole outage. See `sustained_failure.is_escalation_cycle`.
             error_log.log(
                 Severity.CRITICAL, SCRIPT_NAME,
                 f"pending-jobs fetch failing for {n} consecutive cycles — SUSTAINED job-queue "

@@ -52,6 +52,55 @@ One of:
   probe-failures rather than resetting each cycle.
 - Smartsheet operations across multiple daemons start failing fast with a
   "circuit breaker OPEN — short-circuiting" message in ITS_Errors.
+- A **CRITICAL page** with `Script` = `shared.smartsheet_client` and `Error` =
+  `smartsheet_circuit_open_sustained`, reading *"Smartsheet circuit breaker has been OPEN
+  for N min … approved sends are FROZEN and nothing is being filed."* Same root cause as
+  the watchdog page above, but it does **not** wait for the 07:00 watchdog run — see the
+  note below.
+
+#### Why there are two pages for one outage, and what each is worth
+
+The watchdog's prolonged-open CRITICAL is real but it only fires when the watchdog runs,
+which is **07:00 daily**. An outage starting at 08:00 would therefore have sat unpaged for
+~23 hours while every approved send stayed frozen. `smartsheet_circuit_open_sustained`
+closes that: a daemon that finds the breaker OPEN **at one of its fenced reads** records an
+observation in a **shared, fleet-wide** window, and the first observation at or after
+**10 minutes** pages.
+
+- **Which daemons actually observe — three, not "any daemon".** Only the two fenced call
+  sites contribute: `publish_daemon`'s config reads (120 s cadence) and the review-sheet /
+  approver reads inside `send_poll_core`, which the five send pollers share. Of those five,
+  `po_send_poll`, `rfq_send_poll` and `subcontract_send_poll` default to
+  `polling_enabled = false`, so during an outage their gate read fails open to *false* and
+  the cycle exits before reaching either fence — they never observe. The live observer set
+  is **publish_daemon (120 s), weekly_send_poll (15 min), progress_send_poll (15 min)**.
+- **Time to page:** ~10–12 min with `publish_daemon` running; ~10–25 min if it is down or
+  gated off and only the two 15-minute pollers observe. Either way, minutes, not a day.
+- **You will get ONE page, not one per daemon.** Every daemon records under the same fixed
+  `(shared.smartsheet_client, smartsheet_circuit_open_sustained)` pair, so the alert-dedupe
+  window collapses the whole fleet into a single wake-up. ITS_Errors still records one row
+  per observation — that is the forensic trail, not extra pages.
+- **Only a handful of those rows are CRITICAL — the rest are ERROR, deliberately.** The
+  escalation rides the same geometric ladder as every other sustained-failure escalation in
+  ITS (`sustained_failure.is_escalation_cycle`): the first observation at or past the
+  10-minute window is CRITICAL, then the 2nd, 4th, 8th, 16th and 32nd, then every 48th —
+  roughly a re-notify every ~75 min while the outage lasts. Every observation in between
+  still writes its row, at **ERROR**. Reason: an open CRITICAL is never *terminal*, so it
+  can never be reclaimed by ITS_Errors row-cap rotation at any floor. Firing one on every
+  observation put ~720 permanently-unrotatable rows a day into a sheet with a 20,000-row
+  hard cap — the same cap that produced the 2026-07-13 "NOTHING is deletable" lockout. When
+  reading the ITS_Errors trail during an outage, filter on the **error code**, not on
+  Severity, or you will see only the ladder rungs.
+- **It clears itself.** The window is closed by the **breaker's own recovery** — the first
+  real Smartsheet call that succeeds after the breaker left its healthy state. No operator
+  action is needed. (It is deliberately *not* closed by a daemon deciding its own read
+  "succeeded": several readers fail open and return a fallback with no error, and wiring
+  the clear to that let the 120 s daemon wipe the window every 2 minutes and suppress this
+  page entirely.) A window that somehow outlives its outage expires by itself after an
+  hour, so a missed close can never make the *next* outage page instantly.
+
+Treat it exactly like the `CIRCUIT_OPEN` symptom above — the checks and the escalation
+boundary are identical.
 
 ### What the Successor-Operator checks
 
@@ -184,8 +233,140 @@ Re-enable the breaker (`circuit_breaker.enabled = true`, or just leave the
 default) once the investigation is done; disabling it removes the
 incident-protection it exists to provide.
 
+## Procedure — "Smartsheet transient failures RECOVERED on retry" (Tier-2, usually no action)
+
+### Symptom
+
+A **WARN** row in ITS_Errors with `Error` = `smartsheet_retry_recovered`, e.g.
+*"Smartsheet transient failures RECOVERED on retry this cycle: get_rows×2 (3 extra
+attempts)"*. It is a WARN, never a page.
+
+### What it means
+
+Since 2026-07-21 ITS re-issues a Smartsheet **read** that failed with an HTTP 5xx or a
+network timeout — the two classes the Smartsheet SDK does *not* retry on its own. When a
+re-issue succeeds the cycle carries on normally, and this WARN is the only trace. **Writes
+are never retried** (a timed-out write may already have committed, and Smartsheet has no
+way to say "only do this once"), so this line always names a read.
+
+One or two of these a week is normal cloud weather. **No action.**
+
+### What the Successor-Operator checks
+
+1. **How often?** Filter ITS_Errors on `Error = smartsheet_retry_recovered`. If it appears
+   on most cycles for hours, the backend is chronically flaky rather than blipping.
+2. **Is anything actually failing?** Look for `*_transient` / `*_sustained` rows from the
+   same daemon in the same window. Recoveries alone mean ITS absorbed the problem; paired
+   failures mean it did not.
+3. **Check Smartsheet's own status page** if the pattern is sustained.
+
+### The Claude prompt or UI action
+
+> "Show me every `smartsheet_retry_recovered` row in the last 24 hours grouped by Script,
+> and any `_transient` or `_sustained` rows from the same daemons."
+
+If recoveries are constant AND the extra latency is a problem, retry can be turned off from
+the dashboard's ITS_Config editor: `smartsheet.retry.enabled` (workstream `global`) →
+`false`. That makes reads fail fast again — it does not fix Smartsheet, it just stops
+waiting. Prefer leaving it on.
+
+All three `smartsheet.retry.*` rows are **seeded** by `scripts/seed_its_config.py` and
+registered in the editor, so they appear in the config editor's *Operational gates* /
+*Tuning knobs* groups with their current values. (If a row is genuinely missing on some
+host, the editor refuses the edit with "seed the row before editing" — re-run the seeder;
+do not hand-create the row.)
+
+### Escalate-to-Seth condition
+
+- Recoveries are constant for **more than a day** (an infrastructure question, not a repair).
+- You are considering changing `smartsheet.retry.max_extra_attempts` or `.backoff_seconds`
+  — tuning retry against a live backend is a Seth call.
+
+## Procedure — a `*_sustained` CRITICAL from a daemon (Tier-2 → Seth if it persists)
+
+### Symptom
+
+A **CRITICAL** page whose `Error` ends in `_sustained` — e.g.
+`publish_daemon.config_read_sustained`, `<daemon>.approver_read_sustained`,
+`<daemon>.review_read_sustained`. The message reads *"Smartsheet read failing for N
+consecutive cycles — SUSTAINED outage, not a blip"*.
+
+### What it means
+
+That daemon could not complete a Smartsheet read it does **before** any real work, on N
+cycles in a row (5 for the fast 60–120 s daemons, 3 for the 15-minute send pollers). Each of
+those cycles **halted safely and did nothing** — in particular **no email was sent**, because
+the send pollers abort before dispatch whenever they cannot load the approver list. Nothing
+is lost; the work is waiting.
+
+A single such failure is only an ERROR (`*_transient`) and is expected occasionally. The
+CRITICAL means it stopped self-healing.
+
+### The CRITICAL does NOT repeat every cycle — that is not "it recovered"
+
+The escalation fires on a **ladder**: the threshold-crossing cycle, then at 2×, 4× and 8× the
+threshold, and every 8× thereafter. Every cycle in between still writes a row, at **ERROR**
+(`*_transient`), with its consecutive count. So the honest read of the ITS_Errors trail is:
+
+- **Rising `*_transient` counts, no new `*_sustained`** → still broken, still counting. The
+  ladder is spacing the pages, not clearing them.
+- **`*_transient` rows stop entirely** → *that* is recovery.
+
+Why not one CRITICAL per cycle: an open CRITICAL is never terminal, so it can never be
+reclaimed by row-cap rotation. At one per cycle a 21 h outage on a 120 s daemon would mint
+~626 permanent rows — ITS_Errors reached 19,975 of its 20,000 cap on 2026-07-13 and locked
+out with "nothing is deletable" — and would bury the real open CRITICALs on the dashboard's
+Open-CRITICALs panel and in watchdog Check B.
+
+### THE IMPORTANT CAVEAT
+
+ITS **cannot tell the difference** between "Smartsheet is having a bad hour" and "this
+particular sheet returns a 500 every single time" — both look like the same transient error.
+So a `*_sustained` CRITICAL can mean either:
+
+- **a genuine outage** (most common — check the Smartsheet status page), or
+- **something permanently wrong with one sheet or one workspace** (e.g. a corrupted sheet
+  that errors on every read).
+
+Before 2026-07-21 the second case paged immediately; now it pages a few minutes later. If
+Smartsheet is otherwise healthy, assume the second case.
+
+### What the Successor-Operator checks
+
+1. **Is Smartsheet reachable at all?** Load ITS_Config in the web UI. If the whole service
+   is down this is an outage — wait; the daemons resume on their own and the CRITICAL stops.
+2. **Are OTHER daemons fine?** If exactly one daemon is failing while the rest are healthy,
+   the problem is that daemon's *specific* sheet or workspace, not Smartsheet.
+3. **Open the sheet that daemon reads** (named in the runbook the CRITICAL points at) in the
+   web UI. Does it load?
+4. **Is the breaker OPEN too?** If yes, work the circuit-breaker procedure above first —
+   that is the same root cause. Circuit-open deliberately does *not* count toward these
+   per-daemon `_sustained` counters (one outage would otherwise page 6–10 times on
+   separate dedupe keys); it feeds the fleet-wide `smartsheet_circuit_open_sustained`
+   page instead, which fires **once**. So during a real outage expect the fleet page, and
+   expect these per-daemon counters to freeze wherever they were — that is by design, not
+   a stuck counter.
+
+### The Claude prompt or UI action
+
+> "Show me the `*_transient` and `*_sustained` rows for `<daemon>` over the last 6 hours,
+> and whether any other daemon logged Smartsheet errors in the same window."
+
+If Smartsheet has recovered, **no action** — the next successful cycle clears the counter
+automatically. To confirm recovery, watch the daemon's `Last Cycle Status` in
+ITS_Daemon_Health return to OK.
+
+### Escalate-to-Seth condition
+
+- Smartsheet is healthy in the browser but ONE daemon keeps failing → a sheet- or
+  permission-level fault; **escalate**.
+- The CRITICAL is `*_approver_read_sustained` **and** the workspace share list looks wrong
+  or empty → approver membership is the External Send Gate's authority, a FIXED
+  high-capability class. **Escalate; do not edit shares.**
+- Any 401/403 in the same window → auth/secrets, a FIXED high-capability class. **Escalate.**
+
 ## Owner
 
-`@solutionsmith`. New circuit-breaker / alert-cap failure modes that become
-Tier-2-reachable should be added here as additional Symptom → checks → action →
+`@solutionsmith`. New circuit-breaker / alert-cap / transient-retry failure modes that
+become Tier-2-reachable should be added here as additional Symptom → checks → action →
 escalate blocks, per Op Stds §43.

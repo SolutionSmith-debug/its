@@ -48,10 +48,11 @@ The trigger scan runs ~3 Smartsheet calls for EVERY Active job in EVERY served w
 summarized row per pass, with two escalations layered on: a CYCLE counter
 (`compile_now_scan_sustained`) fires CRITICAL once a majority-failing cycle repeats, and a per-JOB
 ledger (`compile_now_job_scan_sustained`) fires CRITICAL for a single job whose sheet stays
-unreachable. BOTH escalations re-fire on a geometric ladder (threshold, 2×, 4×, 8× … consecutive
-cycles); every cycle in between still records its row, at ERROR, because an open CRITICAL is never
+unreachable. BOTH escalations re-fire on the SHARED capped ladder (threshold, 2×, 4×, 8× … up to
+threshold × `sustained_failure.LADDER_MAX_MULTIPLIER`, then every threshold × that forever);
+every cycle in between still records its row, at ERROR, because an open CRITICAL is never
 rotatable and a per-cycle CRITICAL on a 90 s daemon is thousands of unreclaimable rows a day
-(`_is_escalation_cycle`). Every summarized row (ERROR and CRITICAL alike) carries
+(`sustained_failure.is_escalation_cycle`). Every summarized row (ERROR and CRITICAL alike) carries
 the CAUSE — the distinct exception types plus a bounded sample of their messages — because the
 scan is fenced with a bare `except Exception`, so a code regression would otherwise be reported in
 exactly the words of a transient Smartsheet incident (`_cause_clause`). A failed ITS_Active_Jobs
@@ -218,10 +219,6 @@ SCAN_CAUSE_DETAIL_MAX = 240
 #: the 90s cadence, well past any transient. This covers the case the cycle-level fraction
 #: cannot see: a single job's week sheet 500ing for hours while every other job scans fine.
 JOB_SCAN_CRITICAL_THRESHOLD = 20
-
-#: Geometric re-notify base for BOTH escalations: past its threshold, a streak re-fires
-#: CRITICAL only at threshold × 2ⁿ (threshold, 2×, 4×, 8× …). See `_is_escalation_cycle`.
-ESCALATION_LADDER_FACTOR = 2
 
 # Cycle-level escalation, on the shared 5-consecutive-cycles threshold (~7.5 min at 90s —
 # the fast-daemon cadence class).
@@ -507,52 +504,25 @@ def _cycle_is_failing(stats: CompileStats) -> bool:
     return stats.scan_failures / stats.jobs_scanned >= SCAN_FAILURE_CYCLE_FRACTION
 
 
-def _is_escalation_cycle(consecutive: int, threshold: int) -> bool:
-    """True on the threshold-CROSSING cycle and then only at threshold × 2ⁿ (2×, 4×, 8× …).
-
-    WHY A LADDER AND NOT EVERY CYCLE. Both escalations here are per-occurrence records on a
-    ~90 s daemon, so "CRITICAL every cycle past the threshold" is ~960 rows/day per failing
-    job (measured: a 3-job total outage produced 263 `ITS_Errors` rows in two hours; a
-    20-job/6-dead deployment ~5,760 rows/day). An open CRITICAL is NEVER terminal —
-    `shared.errors_rotation.errors_row_is_terminal` excludes it — so watchdog Check O and the
-    dashboard clear verb cannot reclaim those rows at ANY floor. `ITS_Errors` reached 19,975
-    of its 20,000-row hard cap on 2026-07-13 and fired a "NOTHING is deletable" lockout
-    twice; an unbounded CRITICAL stream re-opens that by the one route rotation cannot
-    rescue, and buries the real open CRITICALs that watchdog Check B and the dashboard
-    Open-CRITICALs panel exist to surface.
-
-    WHY DOCTRINE IS STILL SATISFIED. §3.1's per-occurrence RECORD mandate is met in full —
-    every failing cycle still writes its own `ITS_Errors` row; the ladder only decides that
-    row's SEVERITY. A genuine sustained outage still escalates to CRITICAL on the crossing
-    cycle and still RE-notifies on a widening interval (so a hours-long outage wakes the
-    operator more than once), while every intermediate row stays terminal and therefore
-    reclaimable. The push legs were already `alert_dedupe`-bounded on (script, error_code);
-    this bounds the record leg the same way in spirit.
-
-    CONVERGENCE TARGET: `shared.sustained_failure` — this is deliberately a small private
-    helper rather than a shared one because an identical ladder is landing there on a
-    parallel branch; converge onto it once both land (`docs/tech_debt.md`).
-    """
-    if threshold <= 0 or consecutive < threshold:
-        return False
-    multiple, remainder = divmod(consecutive, threshold)
-    if remainder:
-        return False
-    # `multiple` >= 1 here, so the power-of-`FACTOR` test is a plain repeated divide.
-    while multiple % ESCALATION_LADDER_FACTOR == 0:
-        multiple //= ESCALATION_LADDER_FACTOR
-    return multiple == 1
-
-
-def _next_escalation_cycle(consecutive: int, threshold: int) -> int:
-    """The next ladder rung STRICTLY above `consecutive` — quoted in the intermediate ERROR
-    rows so the operator can see the outage is known and when it will page again."""
-    if threshold <= 0:
-        return 0
-    rung = threshold
-    while rung <= consecutive:
-        rung *= ESCALATION_LADDER_FACTOR
-    return rung
+# WHY BOTH ESCALATIONS BELOW RIDE A LADDER RATHER THAN FIRING EVERY CYCLE (the reasoning is
+# kept here, at the consumer, because the numbers are this daemon's). Both are per-occurrence
+# records on a ~90 s daemon, so "CRITICAL every cycle past the threshold" is ~960 rows/day per
+# failing job (measured: a 3-job total outage produced 263 `ITS_Errors` rows in two hours; a
+# 20-job/6-dead deployment ~5,760 rows/day). An open CRITICAL is NEVER terminal —
+# `shared.errors_rotation.errors_row_is_terminal` excludes it — so watchdog Check O and the
+# dashboard clear verb cannot reclaim those rows at ANY floor. `ITS_Errors` reached 19,975 of
+# its 20,000-row hard cap on 2026-07-13 and fired a "NOTHING is deletable" lockout twice.
+# §3.1 is still satisfied in full: every failing cycle still writes its own row; the ladder
+# only decides that row's SEVERITY.
+#
+# THE LADDER ITSELF IS `shared.sustained_failure` (converged 2026-07-21 — this daemon carried a
+# private copy for one day only, to avoid a cross-branch dependency while both landed). Three
+# predicates, one arithmetic: `has_crossed_threshold` (has it ever escalated), then
+# `is_escalation_cycle` (page now) vs `next_escalation_cycle` (quote the next page). Adopting
+# the shared one CAPS the rungs at threshold × LADDER_MAX_MULTIPLIER instead of doubling
+# forever, which is the better behaviour: the private copy's rungs (5, 10, 20, 40, 80, 160,
+# 320, 640 …) meant a multi-day outage went silent for exponentially longer stretches, and an
+# escalation that re-pages 21 h from now is not a notification.
 
 
 def _cause_clause(failures: list[_ScanFailure]) -> str:
@@ -656,8 +626,10 @@ def _record_scan_outcome(
     the first few and counts the rest.
 
     SEVERITY, not the row itself, is what the escalation ladder decides: a streak escalates
-    to CRITICAL on the threshold-crossing cycle and re-notifies at 2×/4×/8×, and records
-    ERROR in between so the rows stay terminal and reclaimable. See `_is_escalation_cycle`.
+    to CRITICAL on the threshold-crossing cycle and re-notifies at 2×/4×/8× up to the shared
+    cap and at that fixed interval thereafter, and records ERROR in between so the rows stay
+    terminal and reclaimable. See `sustained_failure.is_escalation_cycle` and the ladder note
+    above `_cause_clause`.
     """
     failing_cycle = _cycle_is_failing(stats)
     if failing_cycle:
@@ -665,11 +637,13 @@ def _record_scan_outcome(
     else:
         _SCAN_FAILS.reset()
         consecutive = 0
-    sustained = failing_cycle and consecutive >= sustained_failure.DEFAULT_CRITICAL_THRESHOLD
+    sustained = failing_cycle and sustained_failure.has_crossed_threshold(
+        consecutive, sustained_failure.DEFAULT_CRITICAL_THRESHOLD
+    )
 
     if failures or stats.active_jobs_read_failures:
         message = _scan_summary_message(stats, failures, week, consecutive)
-        if sustained and _is_escalation_cycle(
+        if sustained and sustained_failure.is_escalation_cycle(
             consecutive, sustained_failure.DEFAULT_CRITICAL_THRESHOLD
         ):
             error_log.log(
@@ -681,8 +655,10 @@ def _record_scan_outcome(
             )
         elif sustained:
             # Past the threshold but between ladder rungs: still a per-occurrence row (§3.1),
-            # just a TERMINAL one so rotation can reclaim it. See `_is_escalation_cycle`.
-            nxt = _next_escalation_cycle(
+            # just a TERMINAL one so rotation can reclaim it. The quoted next rung comes from
+            # the SAME predicate that will fire it (`sustained_failure.next_escalation_cycle`),
+            # so the promise in the row and the page the operator gets cannot disagree.
+            nxt = sustained_failure.next_escalation_cycle(
                 consecutive, sustained_failure.DEFAULT_CRITICAL_THRESHOLD
             )
             error_log.log(
@@ -741,14 +717,16 @@ def _record_scan_outcome(
         )
     for failure in sorted(failures, key=lambda f: f.key):
         count = counts.get(failure.key, 0)
-        if count < JOB_SCAN_CRITICAL_THRESHOLD:
+        # The SAME predicate the ladder answers with, not an inverted hand-rolled compare:
+        # a job below the first rung has never escalated and gets no row of its own here.
+        if not sustained_failure.has_crossed_threshold(count, JOB_SCAN_CRITICAL_THRESHOLD):
             continue
         message = (
             f"{failure.label} compile-now trigger scan has failed {count} consecutive "
             f"cycles (week {week.start}) {premise}. See "
             f"docs/runbooks/compile_now_poll.md: {failure.detail}"
         )
-        if _is_escalation_cycle(count, JOB_SCAN_CRITICAL_THRESHOLD):
+        if sustained_failure.is_escalation_cycle(count, JOB_SCAN_CRITICAL_THRESHOLD):
             error_log.log(
                 Severity.CRITICAL, SCRIPT_NAME, message,
                 error_code="compile_now_job_scan_sustained",
@@ -756,8 +734,8 @@ def _record_scan_outcome(
             )
         else:
             # Between ladder rungs — per-occurrence row kept, severity dropped so the row is
-            # TERMINAL and reclaimable. See `_is_escalation_cycle`.
-            nxt = _next_escalation_cycle(count, JOB_SCAN_CRITICAL_THRESHOLD)
+            # TERMINAL and reclaimable. See the ladder note above `_cause_clause`.
+            nxt = sustained_failure.next_escalation_cycle(count, JOB_SCAN_CRITICAL_THRESHOLD)
             error_log.log(
                 Severity.ERROR, SCRIPT_NAME,
                 f"{message} (ALREADY escalated CRITICAL as compile_now_job_scan_sustained; "

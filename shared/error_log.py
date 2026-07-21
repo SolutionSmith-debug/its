@@ -89,6 +89,17 @@ def _local_log(severity: Severity, script: str, message: str, exc_info: str | No
     print(line)
 
 
+def local_log(severity: Severity, script: str, message: str, exc_info: str | None = None) -> None:
+    """PUBLIC local-file-only log line — no ITS_Errors row, no push leg.
+
+    The seam for modules BELOW the Smartsheet boundary (`shared.smartsheet_client`,
+    `shared.circuit_breaker`) that must say something without recursing into the
+    Smartsheet write they are wrapping. Delegates to `_local_log` so the existing
+    test mocks of that symbol keep working.
+    """
+    _local_log(severity, script, message, exc_info)
+
+
 def _should_write_info_to_smartsheet() -> bool:
     return os.environ.get("ITS_ERROR_LOG_INFO") == "1"
 

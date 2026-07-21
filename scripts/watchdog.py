@@ -126,6 +126,7 @@ from shared import (
     sheet_ids,
     smartsheet_client,
     state_io,
+    sustained_failure,
 )
 from shared.error_log import (
     Severity,
@@ -2644,6 +2645,15 @@ def main() -> None:
 
     for check in CHECKS:
         _run_check(check, alerts_suppressed=alerts_suppressed)
+
+    # D3: summarize any Smartsheet retries that SUCCEEDED across this run into ONE WARN
+    # row. The watchdog issues more enrolled reads in a single pass than any daemon (20
+    # checks, most of them sheet reads), so a chronically-flaky sheet shows up here first
+    # — and without this the recoveries are invisible by construction (nothing raises,
+    # nothing is logged). Placed after the checks and before the liveness marker so a
+    # partial run still reports what it absorbed; best-effort inside, so it can never
+    # disturb the marker or the heartbeat beacon below.
+    sustained_failure.flush_retry_recovery(_SCRIPT)
 
     # Local Check-C freshness marker for the watchdog's own run. The
     # watchdog is deliberately NOT in TRACKED_JOBS (self-tracking has a

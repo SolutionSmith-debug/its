@@ -260,7 +260,7 @@ A field submission enters at the send-free portal, is pulled + filed on the Mac,
 **Resolutions (in order):**
 - Smartsheet cause and most jobs named → wait and watch; this self-heals. Nothing is lost — the Compile Now checkbox stays set and the daemon retries every ~90s, so the packet compiles once Smartsheet reads recover.
 - A code-error cause, or a renamed/moved sheet found by the per-job checks → this is NOT the self-healing case; do the rename-back repair or escalate the code error to Seth.
-- The CRITICAL re-pages on a DOUBLING interval (5, 10, 20, 40 … consecutive failing cycles), not every cycle; every cycle in between still writes an ERROR compile_now_poll.scan_failed row. Recovery is proven by those ERROR rows stopping, NOT by the CRITICAL going quiet.
+- The CRITICAL re-pages on a DOUBLING-then-FIXED interval (5, 10, 20, 40, 80, then every 40 consecutive failing cycles — roughly hourly at the 90s cadence), not every cycle; every cycle in between still writes an ERROR compile_now_poll.scan_failed row. Recovery is proven by those ERROR rows stopping, NOT by the CRITICAL going quiet.
 - Mark the CRITICAL resolved once new ERROR rows stop appearing. Do NOT disable the daemon to silence it (that hides the outage and stops the recovery retries).
 - Still firing after ~30 minutes with Smartsheet reachable → hand Claude the Correlation_ID to diagnose.
 
@@ -280,7 +280,7 @@ A field submission enters at the send-free portal, is pulled + filed on the Mac,
 
 **Resolutions (in order):**
 - Isolated-fault wording only. If a folder or week sheet was renamed, rename it back to match ITS_Active_Jobs; if the job row's Project Name was edited by mistake, restore it. The rows stop on the next successful scan (~90s).
-- The CRITICAL re-pages at 20, 40, 80 … consecutive cycles, not every cycle; in between the same fault writes an ERROR compile_now_poll.job_scan_failed row carrying "next CRITICAL at N consecutive cycle(s)". Recovery is proven by those ERROR rows stopping.
+- The CRITICAL re-pages at 20, 40, 80, 160 and then every 160 consecutive cycles (320, 480 …), not every cycle; in between the same fault writes an ERROR compile_now_poll.job_scan_failed row carrying "next CRITICAL at N consecutive cycle(s)". Recovery is proven by those ERROR rows stopping.
 - Never set the job Inactive to silence it — that silently stops its reports.
 - A missing or deleted week sheet, or anything that looks like sharing/permissions, escalates to Seth (re-creating or re-sharing a week sheet is not a Tier-2 repair).
 
@@ -1026,13 +1026,15 @@ The shared infrastructure every workstream rides on: launchd, heartbeats + marke
 
 **Resolution class:** Operator-resolvable (solo)
 
-**Signals:** circuit breaker open, prolonged-open
+**Signals:** circuit breaker open, prolonged-open, smartsheet_circuit_open_sustained
 
 **Checks (in order):**
 - Is it a transient storm (auto-recovers after cooldown) or a prolonged open with a real underlying cause?
+- A `smartsheet_circuit_open_sustained` CRITICAL (Script `shared.smartsheet_client`) is the fleet-wide sub-hour page for the SAME condition — one page for the whole fleet, not one per daemon.
 
 **Resolutions (in order):**
 - For a transient storm past cooldown, clearing the local breaker state file is a documented low-class action. If the root cause is high-class (auth, deploy), escalate.
+- The fleet circuit-open window needs no operator action — the first daemon to complete a successful Smartsheet read closes it.
 
 **See also:** runbook `docs/runbooks/circuit_breaker.md` · watchdog `_check_circuit_breaker_prolonged_open`
 

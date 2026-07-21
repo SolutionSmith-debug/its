@@ -34,6 +34,9 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | `circuit_breaker.prolonged_open_alert_seconds` | int | 600 | How long (seconds) the breaker may stay open before the watchdog fires a prolonged-open CRITICAL page. | watchdog |
 | `picklist_sync.size_hard_halt_threshold` | int | 400 | Option count that HARD-HALTS that one mapping's sync (a runaway guardrail). | run_picklist_sync, shared.picklist_sync |
 | `picklist_sync.size_warn_threshold` | int | 200 | Option count on a synced picklist that triggers a WARN (a large but still-processed list). | run_picklist_sync, shared.picklist_sync |
+| `smartsheet.retry.backoff_seconds` | str | 2.0,5.0 | Comma-separated wait (seconds) before each extra attempt, e.g. '2.0,5.0'. The last value repeats if there are more attempts than entries. | shared.smartsheet_client |
+| `smartsheet.retry.enabled` | bool | true | Whether ITS re-issues a Smartsheet READ that failed with a 5xx or a network timeout — the two classes the Smartsheet SDK does not retry itself. Writes are never retried. Set false for a pure pass-through escape hatch. | shared.smartsheet_client |
+| `smartsheet.retry.max_extra_attempts` | int | 2 | How many EXTRA attempts a failed Smartsheet read gets before the error is raised to the caller (0 = no retry). | shared.smartsheet_client |
 | `smartsheet.sheet_count_ceiling` | int | 1500 | Per-workspace sheet-count ceiling; a new week/period sheet that would land past it routes to the Review Queue instead of being created silently. | shared.sheet_capacity |
 | `smartsheet.sheet_count_margin` | int | 50 | Headroom below the ceiling at which the sheet-capacity guard starts warning. | shared.sheet_capacity |
 | `system.heartbeat_url` | str | *(unset)* | The external UptimeRobot heartbeat URL the watchdog pings each run so a total MacBook-death (the watchdog can't alert about itself) is caught. | watchdog |

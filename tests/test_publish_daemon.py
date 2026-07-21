@@ -10,6 +10,14 @@ import pytest
 
 import shared.kill_switch as ks
 from safety_reports import publish_daemon as pd
+from shared import sustained_failure
+
+#: The REAL gate reader, captured at import BEFORE any fixture patches it. The `stub`
+#: fixture mocks `pd._polling_enabled` wholesale, which is exactly why the fleet-window
+#: suppressor below could ship: no test ever drove the real
+#: `_polling_enabled → _read_str_setting → get_setting` chain. Tests that need the
+#: production chain re-install this.
+_REAL_POLLING_ENABLED = pd._polling_enabled
 
 
 def _create_def() -> dict:
@@ -246,6 +254,215 @@ def test_halted_cycles_never_fake_check_c_freshness(stub, arrange, expected_halt
     arrange(stub)
     assert pd.publish_once().halted == expected_halt
     stub["marker"].assert_not_called()
+
+
+# ── transient Smartsheet fence (2026-07-21) ──────────────────────────────────────
+
+
+@pytest.fixture
+def fence_state(mocker, tmp_path):
+    """Point the module-level fence at a per-test state file (never live state)."""
+    fence = pd.sustained_failure.TransientFence(
+        pd.SCRIPT_NAME,
+        state_path=tmp_path / "publish_config_read.json",
+        transient_error_code="publish_daemon.config_read_transient",
+        sustained_error_code="publish_daemon.config_read_sustained",
+        threshold=pd.sustained_failure.DEFAULT_CRITICAL_THRESHOLD,
+        runbook="docs/runbooks/safety_portal_forms.md",
+    )
+    mocker.patch.object(pd, "_CONFIG_READ_FENCE", fence)
+    return fence
+
+
+# ── the fleet-window suppressor (2026-07-21 re-review) ──────────────────────────
+#
+# These are INTEGRATION-SHAPED on purpose. The unit tests above cannot see this class of
+# bug: `stub` mocks `_polling_enabled` wholesale, and tests/test_transient_fence.py drives
+# `handle()` in isolation. So the production chain — circuit-open raised inside
+# `get_setting`, swallowed into a fail-open "false" by `_read_str_setting`, the cycle
+# returning NORMALLY, and the "success" path then clearing SHARED fleet state — was
+# exercised by nothing, and shipped a control that provably never fires in production.
+
+
+@pytest.fixture
+def real_gate(mocker):
+    """Re-install the REAL `_polling_enabled` and mock the Smartsheet call under it."""
+    mocker.patch.object(pd, "_polling_enabled", _REAL_POLLING_ENABLED)
+    return mocker.patch.object(pd.smartsheet_client, "get_setting")
+
+
+def _open_fleet_window() -> None:
+    """Prime the shared circuit-open window as another daemon's observation would."""
+    sustained_failure.record_circuit_open("some.other_daemon", "breaker OPEN")
+
+
+def test_circuit_open_gate_read_never_wipes_the_shared_fleet_window(
+    stub, fence_state, real_gate
+):
+    """THE regression: publish-daemon runs at StartInterval 120, so if its cycle clears the
+    fleet circuit-open window the window can never mature to CIRCUIT_OPEN_SUSTAINED_SECONDS
+    (600 s) and the fleet CRITICAL is unreachable in production — leaving watchdog Check J
+    at 07:00 daily as the only page, i.e. up to ~24 h to notice frozen sends.
+
+    A fail-open fallback is NOT evidence that the backend is reachable. Whatever this cycle
+    concludes about its own gate, it has learned NOTHING that entitles it to close a
+    fleet-scoped window opened by another process."""
+    real_gate.side_effect = pd.smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN")
+    _open_fleet_window()
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists()
+
+    pd.publish_once()
+
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists(), (
+        "the 120 s publish daemon wiped the fleet circuit-open window during an outage — "
+        "the fleet escalation can never mature"
+    )
+
+
+def test_circuit_open_gate_read_is_observed_not_silently_read_as_disabled(
+    stub, fence_state, real_gate
+):
+    """Collapsing circuit-open into the gate's "false" fallback is the unobservable-config-
+    resolution anti-pattern `_read_str_setting`'s own docstring names: the daemon reports
+    `polling_disabled` (a lie — the operator never paused it) and contributes nothing to
+    the fleet's outage picture."""
+    real_gate.side_effect = pd.smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN")
+
+    out = pd.publish_once()
+
+    assert out.halted != "polling_disabled"
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists(), (
+        "publish_daemon must reach a fenced site during an outage — otherwise the docs' "
+        "claim that its 120 s cadence drives the fleet time-to-page is false"
+    )
+    stub["pending"].assert_not_called()  # still fail-closed
+
+
+def test_one_daemon_resetting_cannot_erase_another_daemons_fleet_observation(tmp_path):
+    """The interleaving that the isolated fence tests could not see: daemon A observes the
+    outage; daemon B (a different process, different lane, possibly a fail-open read) calls
+    reset(). B's local success says nothing about A's window."""
+    observer = sustained_failure.TransientFence(
+        "daemon_a",
+        state_path=tmp_path / "a.json",
+        transient_error_code="a.transient",
+        sustained_error_code="a.sustained",
+    )
+    other = sustained_failure.TransientFence(
+        "daemon_b",
+        state_path=tmp_path / "b.json",
+        transient_error_code="b.transient",
+        sustained_error_code="b.sustained",
+    )
+    observer.handle(pd.smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN"))
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists()
+
+    other.reset()
+
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists(), (
+        "TransientFence.reset() cleared fleet-scoped state on one daemon's local belief"
+    )
+
+
+def test_transient_gate_read_halts_without_paging(stub, fence_state):
+    """The 14:37Z signature: a ReadTimeout inside get_setting escaped the pass and landed
+    as CRITICAL uncaught_exception. Now: halted, ERROR, no page, recovered next cycle."""
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetTransientError("ReadTimeout")
+    out = pd.publish_once()
+    assert out.halted == "smartsheet_transient"
+    assert not _critical_fired(stub)
+    stub["pending"].assert_not_called()
+    stub["hb_row"].assert_called_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "ERROR"
+
+
+def test_transient_base_url_read_halts_without_naming_credentials(stub, fence_state):
+    """A failed READ must not be reported as a MISSING credential — that misdirects the
+    §43 repair at a high-capability-class secrets action."""
+    stub["creds"].return_value = pd.creds_resolution.TransientUnavailable(
+        reason="SmartsheetTransientError: HTTP 500", circuit_open=False
+    )
+    out = pd.publish_once()
+    assert out.halted == "creds_transient"
+    assert not _critical_fired(stub)
+    messages = [c.args[2] for c in stub["log"].call_args_list if len(c.args) > 2]
+    assert not any("bearer" in m or "credential" in m for m in messages)
+    # …but it IS counted, so a sustained base-URL outage still escalates on the ladder.
+    assert "publish_daemon.config_read_transient" in _codes(stub)
+
+
+def test_circuit_open_base_url_read_halts_uncounted(stub, fence_state, tmp_path):
+    stub["creds"].return_value = pd.creds_resolution.CREDS_TRANSIENT
+    out = pd.publish_once()
+    assert out.halted == "creds_transient"
+    assert not (tmp_path / "publish_config_read.json").exists()
+
+
+def test_sustained_transient_gate_read_escalates_to_critical(stub, fence_state):
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetTransientError("HTTP 500")
+    for _ in range(pd.sustained_failure.DEFAULT_CRITICAL_THRESHOLD):
+        pd.publish_once()
+    sustained = [c for c in stub["log"].call_args_list
+                 if c.kwargs.get("error_code") == "publish_daemon.config_read_sustained"]
+    assert len(sustained) == 1
+    assert sustained[0].args[0] == pd.Severity.CRITICAL
+
+
+def test_non_transient_gate_read_still_propagates(stub, fence_state):
+    """Unwrapped so the propagation is visible: `publish_once` is @its_error_log-wrapped,
+    and a propagated exception there IS the CRITICAL uncaught_exception path. Nothing
+    about a real misconfig or bug got softened."""
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetAuthError("401")
+    with pytest.raises(pd.smartsheet_client.SmartsheetAuthError):
+        pd.publish_once()
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pd.smartsheet_client.SmartsheetRateLimitError("429"),
+        pd.smartsheet_client.SmartsheetValidationError("400"),
+    ],
+)
+def test_non_transient_base_url_read_is_not_softened_by_the_shared_sentinel(
+    stub, fence_state, exc
+):
+    """`read_base_url`'s transient bucket is BROAD (it swallows 429 and any bodied
+    SmartsheetError) because that is right for the five portal pullers. This daemon's own
+    reader never did — a 429 propagated to CRITICAL — so routing the read through the
+    shared sentinel must not soften it. The re-classification at the call site is what
+    keeps that promise."""
+    stub["creds"].return_value = pd.creds_resolution.TransientUnavailable(
+        reason=f"{type(exc).__name__}: {exc!r}", circuit_open=False, exc=exc
+    )
+
+    with pytest.raises(type(exc)):
+        pd.publish_once()
+
+    stub["pending"].assert_not_called()
+
+
+def test_gate_read_success_clears_the_ladder_even_when_polling_is_disabled(
+    stub, fence_state, tmp_path
+):
+    """Resetting only on the FULL-success path left a stale count behind every
+    `polling_disabled` return: a counter that reached 4 before the operator paused polling
+    would fire CRITICAL on the very first transient after resume."""
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetTransientError("HTTP 500")
+    for _ in range(pd.sustained_failure.DEFAULT_CRITICAL_THRESHOLD - 1):
+        pd.publish_once()
+
+    stub["enabled"].side_effect = None
+    stub["enabled"].return_value = False  # operator pauses polling; the gate read SUCCEEDS
+    assert pd.publish_once().halted == "polling_disabled"
+
+    stub["enabled"].return_value = True
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetTransientError("HTTP 500")
+    pd.publish_once()
+
+    sustained = [c for c in stub["log"].call_args_list
+                 if c.kwargs.get("error_code") == "publish_daemon.config_read_sustained"]
+    assert sustained == []
 
 
 def test_already_leased_row_is_skipped(stub):

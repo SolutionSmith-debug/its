@@ -427,7 +427,11 @@ def poll_once() -> RfqPollStats:
                 error_code="rfq_poll_lock_held",
             )
             return RfqPollStats(skipped_locked=True)
-        return _poll_inside_lock()
+        try:
+            return _poll_inside_lock()
+        finally:
+            # D3 — see portal_poll: one summarized WARN row per pass that recovered on retry.
+            sustained_failure.flush_retry_recovery(SCRIPT_NAME)
 
 
 def _poll_inside_lock() -> RfqPollStats:
@@ -566,9 +570,14 @@ def _rfq_pass(creds: _RfqCreds, counters: dict[str, int]) -> None:
     except portal_client.PortalTransportError as exc:
         counters["errors"] += 1
         n = _FETCH_FAILS.record()
-        if n >= sustained_failure.DEFAULT_CRITICAL_THRESHOLD:
+        if sustained_failure.is_escalation_cycle(
+            n, sustained_failure.DEFAULT_CRITICAL_THRESHOLD
+        ):
             # SUSTAINED outage: escalate to CRITICAL (the triple-fire push path + the
             # dashboard fire surfaces key on CRITICAL — per-cycle ERROR alone is invisible).
+            # On the shared LADDER, not every cycle past the threshold: an open CRITICAL is
+            # never terminal, so the old `n >= threshold` minted ~626 UNROTATABLE rows per
+            # 21 h outage. See `sustained_failure.is_escalation_cycle`.
             error_log.log(
                 Severity.CRITICAL, SCRIPT_NAME,
                 f"pending fetch failing for {n} consecutive cycles — SUSTAINED intake outage "

@@ -1275,6 +1275,33 @@ def test_poll_once_skipped_when_lock_held(_patch_all, mocker):
     _patch_all["get_pending"].assert_not_called()
 
 
+def test_poll_once_summarizes_recovered_retries_at_the_pass_boundary(_patch_all, mocker):
+    """D3 coverage beyond the two fenced daemons.
+
+    A Smartsheet call that RECOVERED on retry is invisible by construction — nothing
+    raises, nothing is logged — so a chronically flaky backend gets absorbed silently.
+    Shipping the summary row only as a `TransientFence` method gave it to 2 daemons out of
+    ~12; `portal_poll` (and po/rfq/estimate/subcontract/fieldops) flush at their pass exit
+    too, which is the dashboard surface D3 exists to feed.
+    """
+    mocker.patch.object(portal_poll, "_polling_enabled", return_value=True)
+    log = mocker.patch.object(portal_poll.error_log, "log")
+    mocker.patch.object(
+        portal_poll.sustained_failure.smartsheet_client, "drain_retry_recovery",
+        return_value={"get_rows": {"sequences": 1, "attempts": 2}},
+    )
+
+    poll_once()
+
+    rows = [
+        c for c in log.call_args_list
+        if c.kwargs.get("error_code") == "smartsheet_retry_recovered"
+    ]
+    assert len(rows) == 1
+    assert rows[0].args[0] == portal_poll.Severity.WARN
+    assert rows[0].args[1] == portal_poll.SCRIPT_NAME
+
+
 # ---- wiring --------------------------------------------------------------
 
 

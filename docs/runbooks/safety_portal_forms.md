@@ -128,6 +128,37 @@ work (the exact command is in the alert). `migration_check_failed` after several
 consecutive cycles is also Seth's: it means the daemon cannot even verify the database
 state (network / Cloudflare auth).
 
+### Publish idle — `publish_daemon.config_read_transient` / `config_read_sustained` (Op Stds §43)
+
+**Symptom.** ERROR rows in ITS_Errors reading *"transient Smartsheet failure — cycle halted,
+retrying next cycle (N consecutive, CRITICAL at 5)"*, and — if it keeps happening — a
+CRITICAL `publish_daemon.config_read_sustained`. Queued publishes sit still; nothing fails.
+
+**Why.** Before doing any work the publish daemon reads two Smartsheet config rows (its
+on/off gate and the portal Worker URL). If that read times out or 500s, the cycle stops
+safely: nothing is claimed, nothing is deployed, the queue is untouched. Until 2026-07-21 a
+single 30-second timeout here paged CRITICAL `uncaught_exception` even though the daemon was
+healthy 120 s later — and it named *credentials*, which were never the problem. Now the
+first few are ERRORs and only a sustained run (5 cycles ≈ 10 min) pages, then on a ladder
+(cycles 5, 10, 20, 40, then every 40) rather than every cycle — the in-between cycles keep
+writing ERROR rows, so **a gap between CRITICALs is not recovery**; the ERROR rows stopping
+is. See `docs/runbooks/circuit_breaker.md` → "The CRITICAL does NOT repeat every cycle".
+
+A **circuit-open** gate read is different: it is not counted toward this daemon's own ladder
+at all. It logs a WARN here and feeds the shared fleet window that pages once as
+`smartsheet_circuit_open_sustained` (same runbook). This daemon's 120 s cadence is what makes
+that fleet page land in ~10-12 min rather than ~25.
+
+**Low-class repair (Successor-Operator can do).** Usually none — wait one or two cycles and
+confirm the queued publish resumes. Check Smartsheet loads in the browser; if the whole
+service is down, that is the answer. See `docs/runbooks/circuit_breaker.md` → "a
+`*_sustained` CRITICAL from a daemon" for the full check-list, **including the caveat that a
+sheet which permanently 500s is indistinguishable from an outage and now pages at the
+threshold rather than immediately.**
+
+**Escalate to Seth (Tier 3).** Smartsheet is healthy in the browser but this daemon alone
+keeps failing; or any 401/403 appears in the same window (auth — a FIXED high-class action).
+
 ## Escalate to Seth (Tier 3) when
 
 - Authoring or editing any `safety_portal/forms/*.json` (code).

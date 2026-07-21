@@ -150,3 +150,13 @@ guard; `_resolve_progress_recipients` is the contact-then-stakeholder fallback) 
 `safety_reports/weekly_send.py` (the shared Stage-2b contamination guard + the write-ahead
 `SENDING` marker that makes a post-send stamp failure non-re-dispatchable — no double-send).
 Companion runbook: `docs/runbooks/safety_weekly_send.md`.
+
+## Symptom — `<daemon>.approver_read_*` / `review_read_*` (shared send-poller core)
+
+This send poller shares its dispatch core with the other four
+(`safety_reports/send_poll_core.py`), so a Smartsheet read failure before dispatch behaves
+identically everywhere. The full §43 entry — what it means, why ZERO sends happen, the
+3-consecutive-cycle CRITICAL threshold, and the always-escalate approver-list boundary —
+lives once in [`safety_weekly_send.md` → Symptom E](safety_weekly_send.md), with the
+outage-vs-permanently-broken-sheet caveat in
+[`circuit_breaker.md`](circuit_breaker.md).

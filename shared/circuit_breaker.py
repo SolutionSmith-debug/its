@@ -3,11 +3,21 @@
 Purpose:
     Stop daemons from hammering a sustained-degraded backend (Smartsheet
     today; Box/Graph reuse the same generic guard with their own exception
-    sets). The breaker sits STRICTLY ABOVE the typed-exception layer of an
-    SDK wrapper: the SDK's own HTTP retry/backoff handles transient/per-call
-    failures; this breaker handles SUSTAINED, CROSS-CALL — and, because state
-    is persisted, CROSS-PROCESS — failure. It does NOT re-implement retry
-    (Op Stds v16 §14: wrap, don't reimplement).
+    sets). The breaker sits STRICTLY ABOVE the per-call retry layer of an SDK
+    wrapper: per-call transients are somebody else's job; this breaker handles
+    SUSTAINED, CROSS-CALL — and, because state is persisted, CROSS-PROCESS —
+    failure.
+
+    CORRECTION (2026-07-21, verified against the installed smartsheet-python-sdk
+    3.9.0): this docstring used to claim "the SDK's own HTTP retry/backoff handles
+    transient/per-call failures". It demonstrably does NOT for the two classes seen
+    live — an HTTP 500 carrying errorCode 4000 is absent from the SDK's should_retry
+    lookup, and a requests-level ReadTimeout/ConnectionError raises out of the SDK's
+    `_request` before its retry loop can evaluate should_retry. Both got ZERO SDK
+    retries and escaped as `uncaught_exception` CRITICALs. That gap is now covered by
+    `smartsheet_client._transient_retry`, which sits INSIDE this guard (so an exhausted
+    sequence is exactly ONE breaker failure and the consecutive-failure semantics below
+    are preserved). This module still re-implements no retry of its own (Op Stds §14).
 
     Wire it by decorating the wrapper's network-issuing methods:
 
@@ -124,6 +134,11 @@ class CircuitConfig:
 # import. Tests inject a loader explicitly instead.
 _registered_config_loader: Callable[[], CircuitConfig] | None = None
 
+# Registered recovery callback — see ``set_recovery_hook``. Fired by
+# ``_record_success`` only on the transition OUT of the healthy CLOSED/0 state,
+# i.e. on a genuine post-failure round-trip the backend answered.
+_registered_recovery_hook: Callable[[], None] | None = None
+
 # Bypass flag. A depth counter (supports nesting) is safe because launchd
 # daemons are single-process / single-threaded — there is no other thread to
 # observe a transiently-raised flag.
@@ -137,6 +152,25 @@ def set_config_loader(loader: Callable[[], CircuitConfig] | None) -> None:
     """Register the global config loader (called once by ``smartsheet_client``)."""
     global _registered_config_loader
     _registered_config_loader = loader
+
+
+def set_recovery_hook(hook: Callable[[], None] | None) -> None:
+    """Register a callback fired when a real call SUCCEEDS after a non-healthy breaker.
+
+    Same registration pattern as ``set_config_loader``, and for the same reason: the
+    consumer (``shared.sustained_failure``'s fleet circuit-open window) imports
+    ``smartsheet_client``, which imports this module, so a direct import here would be
+    circular. ``smartsheet_client`` registers it at import, so EVERY Smartsheet-touching
+    process wires it up.
+
+    Why this event and not a daemon's "my read worked" belief: this fires only on the
+    transition out of CLOSED/0 — a genuine network round-trip that the backend answered.
+    A daemon-side reset can be reached after a FAIL-OPEN fallback, which proves nothing;
+    letting that close a fleet-scoped window made the 120 s publish daemon suppress the
+    fleet outage page entirely (2026-07-21 re-review).
+    """
+    global _registered_recovery_hook
+    _registered_recovery_hook = hook
 
 
 def _defaults_config() -> CircuitConfig:
@@ -308,6 +342,20 @@ def bypass() -> Iterator[None]:
         _bypass_depth -= 1
 
 
+def in_bypass() -> bool:
+    """True while a ``bypass()`` context is active anywhere up the call stack.
+
+    Public because the layer BELOW the guard needs it too. ``smartsheet_client``'s
+    bounded transient retry sits INSIDE the guard, so without this it also wraps the
+    guard's own bypass-protected config read: on a failing backend a cold bootstrap went
+    from 3 SDK calls to 12, plus ~21 s of backoff — on the one path that exists precisely
+    so an OPEN breaker cannot block it, and re-run on every launchd fire because each
+    cycle is a fresh process. A bypass-wrapped call is control-plane, not work: it gets
+    exactly one attempt.
+    """
+    return _bypass_depth > 0
+
+
 # ---- transitions (the only lock-acquiring paths) --------------------------
 
 
@@ -371,18 +419,31 @@ def _record_probe_failure(path: Path, cfg: CircuitConfig) -> None:
 def _record_success(path: Path) -> None:
     """Reset to CLOSED/0. HOT-PATH SHORT-CIRCUIT: if already CLOSED with a zero
     count, return WITHOUT acquiring the lock or writing — a healthy system does
-    zero state writes."""
+    zero state writes.
+
+    Past the short-circuit we have just learned something no other site knows: a real
+    Smartsheet call SUCCEEDED while the breaker was in a non-healthy state. That is the
+    system's only proof of recovery, so it is where the registered recovery hook fires
+    (see ``set_recovery_hook``). Placing it here costs the healthy path NOTHING — the
+    short-circuit above returns first on every call of a healthy system."""
     state = _load_state(path)
     if state["state"] == CLOSED and int(state.get("consecutive_failures", 0)) == 0:
         return
+    recovered = False
     try:
         with state_io.with_path_lock(path):
             current = _load_state(path)
             if current["state"] == CLOSED and int(current.get("consecutive_failures", 0)) == 0:
                 return
             _write_state(path, _blank_state())
+            recovered = True
     except state_io.StateLockTimeoutError:
         _warn("circuit_breaker: lock timeout recording success (skipped)")
+    if recovered and _registered_recovery_hook is not None:
+        try:
+            _registered_recovery_hook()
+        except Exception:  # noqa: BLE001 — a hook must never break the call it observes
+            _warn("circuit_breaker: recovery hook raised (ignored)")
 
 
 def _try_claim_probe(path: Path, cfg: CircuitConfig) -> bool:
@@ -501,6 +562,6 @@ def _warn(message: str) -> None:
     try:
         from . import error_log
 
-        error_log._local_log(error_log.Severity.WARN, "shared.circuit_breaker", message)
+        error_log.local_log(error_log.Severity.WARN, "shared.circuit_breaker", message)
     except Exception:  # noqa: BLE001 — logging must never break the breaker
         pass
