@@ -316,6 +316,78 @@ secret/route is actually deployed — flipping the gate first produces a benign-
 CRITICAL storm on every cycle until the deploy catches up. Root-caused this session on a subcontract-lane
 `bearer_rejected` error. Apply this ordering on every future config-actuator/Worker-secret pairing.
 
+- **[RESOLVED 2026-07-21] A 4th, previously-uncounted replica of the DASH-14/#613 config-read fence gap:
+  `safety_reports/publish_daemon.py` — plus the F22 approver gate, both closed by the transient-fence PR.** The "FIXED 2026-07-19: all 3 replicas ported" claim above is
+  itself now stale — a fresh `grep` this session (2026-07-21, coverage-gap hunt) found
+  `publish_daemon.py`'s own config-row reader (`get_setting(key, workstream=WORKSTREAM)`, ~line 195)
+  still catches only `SmartsheetNotFoundError`/`SmartsheetCircuitOpenError`, not the generic
+  `SmartsheetError` base — the exact #613 shape, a direct one-file port away, not a design question
+  (unlike the F22 `_load_authorized_approvers` contrast noted above, which is correctly untouched).
+  **Separately, still open (found same session, NOT fixed):** the F22 gate itself
+  (`send_poll_core._load_authorized_approvers`, shared by all five send-poll daemons —
+  `weekly_send_poll`/`progress_send_poll`/`po_send_poll`/`subcontract_send_poll`/`rfq_send_poll`) is
+  *deliberately* unfenced/fail-closed by its own §42 docstring — correct for the SEND decision (never
+  dispatch on an unreadable approver set) but means a one-cycle transient `list_workspace_share_emails`
+  blip still pages a full CRITICAL and aborts the cycle, the same noisy-but-safe class #613/#628 quieted
+  elsewhere via a WARN-and-skip reclassification that didn't touch the fail-closed *behavior*, only the
+  *severity*. No reclassification has been attempted here — flagged, not built, since it touches the F22
+  security gate and warrants care before touching. Trigger: next error-hygiene pass, or the next time
+  either surface actually pages on a Smartsheet blip. See blueprint memory-archive §G72.
+  **RESOLUTION (2026-07-21, this PR).** Both surfaces are now fenced. `publish_daemon` adopts
+  `shared/creds_resolution.read_base_url` and PROPAGATES `SmartsheetCircuitOpenError` rather than
+  swallowing it into a fail-open "polling disabled" (reporting a breaker outage as a disabled gate was a
+  lie, and it kept the fleet's fastest observer out of the circuit-open escalation). The F22 gate was
+  reclassified with explicit operator ratification — severity only, never behaviour: a transient
+  approver-read failure records ERROR and counts toward a sustained counter (threshold 3 at the 15-min
+  send cadence) instead of paging immediately, while auth/permission errors still page at once.
+  Fail-closed is unchanged and now PROVEN by test: zero `send_fn` calls on ANY approver-load failure,
+  transient or not. The prove-it-bites injection for that assertion dispatched a real send and the test
+  caught it. `_load_authorized_approvers`' §42 contract docstring was rewritten in the same diff so the
+  contract cannot contradict the code.
+
+- **[OPEN 2026-07-21, Seth-owned] `po_materials.rfq_send.polling_enabled` shipped `first_activation_gated`
+  (dashboard tier "A") rather than `elevated_confirm`, per PR #627's own in-code rationale — and, found
+  live the same session, the gate already reads `true` on the mirror (as do `po_send`/`subcontract_send`/
+  `estimate_poll`/`rfq_poll`), contradicting `CLAUDE.md`'s `po_materials/rfq_*` row (still says "ships
+  **dark**... Go-live = FIXED high-class External-Send-Gate flip ... → Seth") and this repo's own prior
+  session-close records. #627 itself only fixed the *dashboard's* notes to stop asserting a live-state
+  claim (§42/§55.4 truthful-reporting fix) — it deliberately did **not** touch the gate value or resolve
+  whether tier "A" is the right activation posture for an External-Send-Gate crossing. Two things need
+  Seth's call, not autonomous action: (1) whether `rfq_send` (and the sibling procurement gates) should
+  in fact be live on the mirror, or the flip was premature; (2) whether the console's activation tier for
+  this class of gate should be `elevated_confirm` (PIN + typed confirm + attestation) rather than the
+  faster-brake "A" tier, given `apply_elevated_edit` can already complete a false→true send-gate flip
+  today. Also stale from the same finding: `CLAUDE.md` lines ~148/249 still say "16 tracked jobs" —
+  `TRACKED_JOBS` grew to 18 in PR #642 (`config_actuator` + `publish_daemon` markers) and neither
+  CLAUDE.md line was updated in that PR — a small docs-currency fix, unrelated in cause but adjacent in
+  kind to the rfq_send staleness above (CLAUDE.md's own "What's stubbed vs. real" table is not one of
+  this agent's living-doc surfaces, so left for a normal PR rather than edited here). Trigger: next
+  operator RFQ-send go-live/activation-posture session. See blueprint memory-archive §G72.2.
+
+- **[OPEN 2026-07-21, low, Seth-owned] `config_actuator` reads `safety_reports.portal.worker_base_url`
+  under `workstream="po_materials"`; `po_poll` reads the same key under `workstream="safety_reports"`.**
+  Both rows exist so both resolve today — this is a **preserved-byte-for-byte** divergence, not a live
+  bug (`config_actuator.py`'s own docstring at `_resolve_creds` names it explicitly and declines to
+  "fix" it mid-unrelated-change, per §14). Worth a doctrine/config-model look at some point: either the
+  two workstream scopes should converge on one, or the divergence should be named as intentional
+  (e.g., "config_actuator reads its own daemon's workstream scope for every config key, no exceptions")
+  rather than left implicit. Trigger: next config-model/`ITS_Config` schema session.
+
+- **[OPEN 2026-07-21, low] `scripts/verify_cutover.py`'s VC-01 docstring undercounts required secrets:
+  says 18, `REQUIRED_SECRETS` is actually 20.** The tuple itself (`NON_BOX_SECRETS` 11 +
+  `BOX_SECRETS` 3 + `PO_SECRETS` 1 + `DARK_BEARER_SECRETS` 4 + `OPERATOR_SECRETS` 1 = 20) already
+  correctly enrolls `ITS_PORTAL_ESTIMATE_TOKEN` + `ITS_PORTAL_RFQ_TOKEN` (added with the RFQ/estimate
+  lane) — the cutover CHECK is not under-enforcing, only the module-docstring summary line (~line 33) is
+  stale. Trivial fix, not urgent (no functional gap). Trigger: next `verify_cutover.py` touch.
+
+- **[OPEN 2026-07-21, low] `operator_dashboard/act/registry.py` enrolls `subcontracts.subcontract_send.
+  polling_enabled` (added by PR #627) but not its `from_mailbox`/`scheduled_send_local` siblings** —
+  `rfq_send` got all three (`polling_enabled`, `from_mailbox`, `scheduled_send_local`) in the same PR,
+  `subcontract_send` only got the one that was already-missing-and-flagged. A parity gap between two
+  structurally-identical send lanes' console coverage, same shape as the coverage-gap hunt's other
+  findings this session. Trigger: next dashboard registry touch, or the next `subcontract_send` config
+  session.
+
 ## 2026-07-15 error-flood diagnosis — open gaps surfaced, not fixed [OPEN 2026-07-17]
 
 Diagnosis-only session (no code changes) that decomposed "today's massive error log" into two unrelated
