@@ -315,6 +315,58 @@ def test_read_failure_surfaces_empty_and_warns(monkeypatch, caplog):
     assert any("read failed" in r.message for r in caplog.records)
 
 
+def test_last_read_failed_reports_a_failed_read(monkeypatch):
+    """The silent-hole regression: a read failure returns [] (unchanged contract), and an
+    iterating caller can now TELL that apart from a genuinely empty job list."""
+    def boom(sheet_id: int):
+        raise smartsheet_client.SmartsheetError("read timeout")
+    monkeypatch.setattr(smartsheet_client, "get_rows", boom)
+    assert active_jobs.list_active_jobs() == []
+    assert active_jobs.last_read_failed() is True
+
+
+def test_last_read_failed_is_false_for_a_genuinely_empty_sheet(patch_rows):
+    patch_rows([])
+    assert active_jobs.list_active_jobs() == []
+    assert active_jobs.last_read_failed() is False
+
+
+def test_last_read_failed_is_false_before_any_read():
+    assert active_jobs.last_read_failed() is False  # never fabricate a failure
+
+
+def test_last_read_failed_survives_the_cache_ttl_window(monkeypatch):
+    """A failed read caches [] for the TTL; a caller served from that cache is equally
+    blind, so the flag must keep reporting the failure until the next real read."""
+    def boom(sheet_id: int):
+        raise smartsheet_client.SmartsheetError("read timeout")
+    monkeypatch.setattr(smartsheet_client, "get_rows", boom)
+    active_jobs.list_active_jobs()
+    active_jobs.list_active_jobs()  # served from cache, no second call
+    assert active_jobs.last_read_failed() is True
+
+
+def test_last_read_failed_is_per_sheet(monkeypatch):
+    def selective(sheet_id: int):
+        if sheet_id == active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG.sheet_id:
+            raise smartsheet_client.SmartsheetError("progress sheet down")
+        return [_row("JOB-0001", "Bradley 1")]
+    monkeypatch.setattr(smartsheet_client, "get_rows", selective)
+    active_jobs.list_active_jobs(active_jobs.SAFETY_ACTIVE_JOBS_CONFIG)
+    active_jobs.list_active_jobs(active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG)
+    assert active_jobs.last_read_failed(active_jobs.SAFETY_ACTIVE_JOBS_CONFIG) is False
+    assert active_jobs.last_read_failed(active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG) is True
+
+
+def test_invalidate_cache_clears_the_read_outcome(monkeypatch):
+    def boom(sheet_id: int):
+        raise smartsheet_client.SmartsheetError("read timeout")
+    monkeypatch.setattr(smartsheet_client, "get_rows", boom)
+    active_jobs.list_active_jobs()
+    active_jobs.invalidate_cache()
+    assert active_jobs.last_read_failed() is False
+
+
 def test_ttl_cache_avoids_repeat_reads(patch_rows):
     calls = patch_rows([_row("JOB-0001", "Bradley 1")])
     active_jobs.get_job("JOB-0001")

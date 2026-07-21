@@ -41,6 +41,12 @@ A `get_rows` SmartsheetError (sheet not wired / transient) → WARN-announce and
 return an empty list (cached). Never raises; never crashes intake. Every resolution
 then routes to the Review Queue until the next successful read — surfaced, not silent.
 
+That contract is load-bearing for the resolution callers, but it makes an outage
+indistinguishable from "no jobs" for an ITERATING caller: a daemon that loops
+`list_active_jobs()` sees zero jobs and reports a clean cycle while the sheet is
+down. `last_read_failed(config)` is the additive companion that closes it — every
+return shape above is unchanged (see its docstring).
+
 Consumers
 ---------
 - safety_reports/intake.py `resolve_project()` — resolves a submission's Job ID
@@ -180,6 +186,13 @@ def _flatten_cc(slots: list[str], job_label: str) -> tuple[str, ...]:
 # a progress read never share state (mix-up prevention) and each keeps its own 60s window.
 _cache: dict[int, tuple[list[ActiveJob], float]] = {}
 
+# Per-sheet outcome of the read that produced the CURRENT cache entry: {sheet_id: read_failed}.
+# Written only on a cache MISS, so it keeps describing the read behind whatever list a caller
+# just got — including during the 60s window in which a failed read's empty list is served.
+# Read via last_read_failed(); never consulted by the functions above (their contracts are
+# untouched).
+_last_read_failed: dict[int, bool] = {}
+
 
 def _cell(row: dict[str, Any], key: str) -> str:
     """Coerce a Smartsheet cell to a stripped string ('' when absent/blank).
@@ -246,16 +259,37 @@ def _load_jobs(config: ActiveJobsConfig = SAFETY_ACTIVE_JOBS_CONFIG) -> list[Act
         )
         jobs = []
         _cache[config.sheet_id] = (jobs, now + CACHE_TTL_SECONDS)
+        _last_read_failed[config.sheet_id] = True
         return jobs
 
     jobs = [j for j in (_row_to_job(row, config) for row in rows) if j is not None]
     _cache[config.sheet_id] = (jobs, now + CACHE_TTL_SECONDS)
+    _last_read_failed[config.sheet_id] = False
     return jobs
+
+
+def last_read_failed(config: ActiveJobsConfig = SAFETY_ACTIVE_JOBS_CONFIG) -> bool:
+    """Did the read behind the CURRENTLY-CACHED job list for `config`'s sheet fail?
+
+    Additive companion to the return-empty-on-failure contract of the accessors below,
+    which is depended on by 5+ consumers (notably `portal_poll._push_active_jobs`, whose
+    empty-set refusal is the mirror-loop guard) and therefore must not change. Call this
+    immediately AFTER `list_active_jobs()` / `list_all_jobs()` / `get_job()`: it describes
+    the read that produced the list just returned, including a cache HIT inside the TTL of
+    a failed read (a caller in that window is equally blind).
+
+    Returns False when the sheet has never been read — "no evidence of failure", never a
+    fabricated one. The intended consumer is an ITERATING daemon
+    (`safety_reports/compile_now_poll`), which otherwise cannot tell a sheet outage from a
+    genuinely empty job list and reports a clean cycle through an outage.
+    """
+    return _last_read_failed.get(config.sheet_id, False)
 
 
 def invalidate_cache() -> None:
     """Drop the in-process cache (ALL sheets). Used by tests + ad-hoc operator scripts."""
     _cache.clear()
+    _last_read_failed.clear()
 
 
 def get_job(

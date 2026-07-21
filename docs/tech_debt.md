@@ -2086,6 +2086,21 @@ last duplicated copies of this pattern. Trigger: next touch to either daemon, or
 observability-consolidation pass. See `docs/session_logs/2026-07-20_po-hub-tab-fold.md`;
 `shared/sustained_failure.py` CLAUDE.md row already documents the gap.
 
+## Converge `compile_now_poll._is_escalation_cycle` onto the shared escalation ladder [OPEN 2026-07-21]
+
+`safety_reports/compile_now_poll.py` carries a PRIVATE geometric re-notify ladder
+(`_is_escalation_cycle` / `_next_escalation_cycle`, `ESCALATION_LADDER_FACTOR`): past its threshold a
+failure streak re-fires CRITICAL only at threshold × 2ⁿ, and records its per-occurrence row at ERROR on
+every other cycle. It exists because a per-occurrence CRITICAL on a 90 s daemon is thousands of rows a
+day and an open CRITICAL is NEVER terminal per `shared/errors_rotation.errors_row_is_terminal`, so no
+rotation floor can reclaim them (`ITS_Errors` hit 19,975 of its 20,000-row cap on 2026-07-13 and locked
+out twice) — the same latent shape a fleet-wide analysis found across the other sustained-failure
+consumers. An IDENTICAL helper is landing in `shared/sustained_failure.py` on a parallel branch; it was
+implemented privately here only to avoid a cross-branch dependency. **Trigger: once both land, delete the
+private pair and bind the shared one** — the semantics were written to match exactly (fire on the
+threshold-crossing cycle, then 2×/4×/8×, all threshold-relative). Same convergence bucket as the
+`fieldops_sync`/`portal_poll` entry above.
+
 ## Legacy jobs missing structured `job_no`/address after migration 0057 — per-job manual backfill only [OPEN 2026-07-20]
 
 Migration 0057 (PR #634) added `jobs.job_no` (the Evergreen `YYYY.NNN` number) and structured

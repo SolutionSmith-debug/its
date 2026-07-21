@@ -242,6 +242,50 @@ A field submission enters at the send-free portal, is pulled + filed on the Mac,
 
 **See also:** runbook `docs/runbooks/compile_now_poll.md`
 
+#### A CRITICAL says the compile-now trigger scan is failing for most jobs (or the Active-Jobs read itself failed) several cycles running.
+
+**Resolution class:** Operator-resolvable (solo)
+
+**Signals:** compile_now_scan_sustained, compile_now_poll.scan_failed, ITS_Active_Jobs read FAILED, compile-now-poll heartbeat DEGRADED
+
+**Checks (in order):**
+- Read the CRITICAL message — how many of how many scanned jobs, and does it name an ITS_Active_Jobs read failure?
+- Read the "cause(s):" clause — SmartsheetError / HTTP 5xx / timeout is a platform incident; a code error (TypeError, AttributeError, KeyError) is NOT transient and escalates to Seth immediately.
+- Can you open ITS_Active_Jobs and a week sheet in the Smartsheet browser? A broad Smartsheet incident is the usual cause.
+- Are other daemons erroring in ITS_Errors in the same window (platform-wide, not this daemon)?
+- ITS_Daemon_Health safety_reports.compile_now_poll — Last Cycle At still advancing means the daemon is alive and retrying.
+- Is there a compile_now_job_scan_sustained row in the same window? Read ITS WORDING, not the job count. "while other jobs scan fine" means at least one job DID scan — a per-job fault wearing a Fault-D costume; work the "a CRITICAL names ONE job" checks below first, a renamed folder never self-heals. "as did EVERY other scanned job (N/N) … BROAD scan outage" means nothing scanned at all; stay here and rename nothing.
+- Message ends "…and N more"? The complete failing set with per-job consecutive counts is on the ITS host in ~/its/state/compile_now_job_scan_failures.json — ask Claude to read it.
+
+**Resolutions (in order):**
+- Smartsheet cause and most jobs named → wait and watch; this self-heals. Nothing is lost — the Compile Now checkbox stays set and the daemon retries every ~90s, so the packet compiles once Smartsheet reads recover.
+- A code-error cause, or a renamed/moved sheet found by the per-job checks → this is NOT the self-healing case; do the rename-back repair or escalate the code error to Seth.
+- The CRITICAL re-pages on a DOUBLING interval (5, 10, 20, 40 … consecutive failing cycles), not every cycle; every cycle in between still writes an ERROR compile_now_poll.scan_failed row. Recovery is proven by those ERROR rows stopping, NOT by the CRITICAL going quiet.
+- Mark the CRITICAL resolved once new ERROR rows stop appearing. Do NOT disable the daemon to silence it (that hides the outage and stops the recovery retries).
+- Still firing after ~30 minutes with Smartsheet reachable → hand Claude the Correlation_ID to diagnose.
+
+**See also:** runbook `docs/runbooks/compile_now_poll.md`
+
+#### A CRITICAL names ONE job whose compile-now trigger scan has failed for many consecutive cycles. The row comes in TWO wordings that mean opposite things — read which one you have first.
+
+**Resolution class:** Operator-resolvable (solo)
+
+**Signals:** compile_now_job_scan_sustained, compile_now_poll.job_scan_failed, this job's week sheet is unreachable, BROAD scan outage, NOT a per-job fault
+
+**Checks (in order):**
+- FIRST — which wording? "while other jobs scan fine" = an isolated per-job fault; continue below. "as did EVERY other scanned job (N/N) … BROAD scan outage, NOT a per-job fault" = nothing scanned at all (on a small deployment a total Smartsheet outage makes EVERY job look 20-cycles dead); none of the checks below apply — go to the compile-now scan-outage node and rename nothing.
+- The row names the workstream, project, job ID and week — confirm that week sheet exists in that project's Jobs folder in the matching workspace.
+- Compare the Project Name in ITS_Active_Jobs / ITS_Active_Jobs_Progress against the Smartsheet folder name; a rename is the usual cause.
+- A compile_now_scan_sustained CRITICAL alongside an isolated-fault row does NOT mean a broad outage — on a small deployment one broken job is already half the scanned jobs, so both rows fire for the SAME fault. The isolated-fault row is the specific one; work it first. Decide by the WORDING, never by counting named jobs.
+
+**Resolutions (in order):**
+- Isolated-fault wording only. If a folder or week sheet was renamed, rename it back to match ITS_Active_Jobs; if the job row's Project Name was edited by mistake, restore it. The rows stop on the next successful scan (~90s).
+- The CRITICAL re-pages at 20, 40, 80 … consecutive cycles, not every cycle; in between the same fault writes an ERROR compile_now_poll.job_scan_failed row carrying "next CRITICAL at N consecutive cycle(s)". Recovery is proven by those ERROR rows stopping.
+- Never set the job Inactive to silence it — that silently stops its reports.
+- A missing or deleted week sheet, or anything that looks like sharing/permissions, escalates to Seth (re-creating or re-sharing a week sheet is not a Tier-2 repair).
+
+**See also:** runbook `docs/runbooks/compile_now_poll.md`
+
 ### Human approves a WSR row; weekly-send transmits it (send half)
 
 | What happens | |
