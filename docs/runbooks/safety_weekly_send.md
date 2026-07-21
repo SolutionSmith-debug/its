@@ -155,6 +155,12 @@ Before 2026-07-21 the very first timeout paged CRITICAL `uncaught_exception`; th
 real on `progress_send_poll` at 05:36Z on 2026-07-21 for a blip that had healed by the next
 cycle.
 
+After that third cycle the CRITICAL re-fires on a **ladder** — cycles 3, 6, 12, 24, then
+every 24 — not on every cycle. In between, each cycle still writes an **ERROR**
+`*_transient` row carrying its consecutive count. **A gap between CRITICALs is not
+recovery**; recovery is the `*_transient` rows stopping. See
+`docs/runbooks/circuit_breaker.md` → "The CRITICAL does NOT repeat every cycle" for why.
+
 **Low-class repair (Successor-Operator can do).**
 
 1. If you see only `*_transient` ERRORs and they stop, **no action** — that is the design.

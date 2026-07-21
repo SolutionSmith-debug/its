@@ -14,7 +14,9 @@ Run with: pytest -q tests/test_transient_fence.py
 """
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
@@ -73,16 +75,109 @@ def test_sustained_transients_escalate_to_critical_exactly_at_the_threshold(tmp_
     assert "docs/runbooks/example.md" in critical["message"]
 
 
-def test_critical_fires_every_cycle_past_the_threshold(tmp_path, logged):
-    """Op Stds §3.1: the ITS_Errors record leg is PER-OCCURRENCE. Suppressing repeats
-    belongs to the push legs (alert_dedupe), never to the record."""
-    fence = _fence(tmp_path, threshold=2)
+# ---- the escalation CADENCE (geometric ladder) ---------------------------
+#
+# WHY A LADDER AND NOT `n >= threshold` (2026-07-21 re-review). An open CRITICAL is NEVER
+# terminal per `shared/errors_rotation.errors_row_is_terminal`, so a CRITICAL row is
+# UNROTATABLE at any floor, including the storm floor. Firing CRITICAL on EVERY cycle past
+# the threshold means a 21 h outage on a 120 s daemon mints ~626 permanent rows.
+# ITS_Errors hit 19,975 of its 20,000 hard cap on 2026-07-13 and fired a "NOTHING is
+# deletable" lockout twice; this path re-opens that by a route rotation cannot rescue, and
+# buries the genuinely-open CRITICALs that watchdog Check B and the dashboard panel exist
+# to surface. The ladder keeps BOTH doctrine requirements — a real sustained outage
+# escalates to CRITICAL, and every cycle still writes a per-occurrence row — while leaving
+# all but a handful of those rows TERMINAL and reclaimable.
+
+
+def _ladder_rows(logged):
+    return [c for c in logged if c["error_code"] in
+            ("test_daemon.read_sustained", "test_daemon.read_transient")]
+
+
+def test_the_ladder_fires_on_the_crossing_cycle_then_geometrically(tmp_path, logged):
+    fence = _fence(tmp_path, threshold=5)
     exc = smartsheet_client.SmartsheetTransientError("HTTP 503")
 
-    for _ in range(5):
+    for _ in range(50):
         fence.handle(exc)
 
-    assert _severities(logged, "test_daemon.read_sustained") == [Severity.CRITICAL] * 4
+    criticals = [i + 1 for i, c in enumerate(_ladder_rows(logged))
+                 if c["error_code"] == "test_daemon.read_sustained"]
+    # threshold, 2×, 4×, 8× — and the 8× step is the cap, so it repeats every 40 from there.
+    assert criticals == [5, 10, 20, 40]
+    assert criticals[0] == 5, "the FIRST CRITICAL must land exactly on the crossing cycle"
+
+
+def test_every_cycle_past_the_threshold_still_writes_a_row(tmp_path, logged):
+    """Op Stds §3.1: the ITS_Errors record leg is PER-OCCURRENCE. The ladder changes the
+    SEVERITY of the repeats, never their existence — nothing is silent."""
+    fence = _fence(tmp_path, threshold=5)
+    exc = smartsheet_client.SmartsheetTransientError("HTTP 503")
+
+    for _ in range(50):
+        fence.handle(exc)
+
+    rows = _ladder_rows(logged)
+    assert len(rows) == 50
+    assert len([c for c in rows if c["severity"] == Severity.CRITICAL]) == 4
+    assert len([c for c in rows if c["severity"] == Severity.ERROR]) == 46
+    assert {c["severity"] for c in rows} == {Severity.CRITICAL, Severity.ERROR}
+
+
+def test_a_post_threshold_error_row_is_terminal_and_therefore_rotatable(tmp_path, logged):
+    """The property the ladder exists to preserve, asserted against the REAL predicate
+    rather than by inspection: the 46 repeats must be reclaimable by row-cap rotation."""
+    from shared import errors_rotation
+
+    fence = _fence(tmp_path, threshold=5)
+    for _ in range(50):
+        fence.handle(smartsheet_client.SmartsheetTransientError("HTTP 503"))
+
+    terminal = [
+        r for r in _ladder_rows(logged)
+        if errors_rotation.errors_row_is_terminal(
+            {"Severity": r["severity"].value, "Resolved At": None}
+        )
+    ]
+    assert len(terminal) == 46, (
+        "an open CRITICAL is never terminal — firing one every cycle mints unrotatable "
+        "rows and re-opens the 2026-07-13 ITS_Errors hard-cap lockout"
+    )
+
+
+@pytest.mark.parametrize(
+    "threshold, expected",
+    [
+        (1, [1, 2, 4, 8, 16, 24, 32, 40, 48]),   # cap = 1×8 = 8, then every 8
+        (3, [3, 6, 12, 24, 48]),                 # cap = 24, then every 24
+        (5, [5, 10, 20, 40]),                    # cap = 40
+    ],
+)
+def test_is_escalation_cycle_is_the_one_place_the_cadence_is_decided(threshold, expected):
+    """ONE helper, so the compare cannot drift between the fence and the six daemons that
+    hand-rolled `n >= threshold`."""
+    fired = [n for n in range(1, 51)
+             if sustained_failure.is_escalation_cycle(n, threshold)]
+    assert fired == expected
+    assert not any(sustained_failure.is_escalation_cycle(n, threshold)
+                   for n in range(1, threshold))
+
+
+def test_is_escalation_cycle_keeps_re_notifying_forever():
+    """Capped, not purely geometric: an outage lasting days must not go silent because the
+    next rung is 10 h away."""
+    cap = 5 * sustained_failure.LADDER_MAX_MULTIPLIER
+    tail = [n for n in range(200, 2001) if sustained_failure.is_escalation_cycle(n, 5)]
+    assert tail  # it never stops
+    assert all(b - a == cap for a, b in zip(tail, tail[1:], strict=False))
+
+
+def test_is_escalation_cycle_is_total_on_a_nonsense_threshold():
+    """A misconfigured threshold must not wedge the escalation decision (never silent, but
+    also never a crash inside an error-handling path)."""
+    assert sustained_failure.is_escalation_cycle(5, 0) is True
+    assert sustained_failure.is_escalation_cycle(5, -3) is True
+    assert sustained_failure.is_escalation_cycle(0, 5) is False
 
 
 def test_one_off_transient_never_criticals_and_reset_zeroes_the_counter(tmp_path, logged):
@@ -228,22 +323,84 @@ def test_the_whole_fleet_pages_under_one_alert_dedupe_key(tmp_path, logged, flee
     assert per_daemon == set()
 
 
-def test_a_successful_read_closes_the_fleet_window(tmp_path, logged, fleet_clock):
-    """Any daemon's successful read proves the backend is reachable, so the next outage
-    starts its own window rather than inheriting a stale one and paging instantly."""
-    window = sustained_failure.CIRCUIT_OPEN_SUSTAINED_SECONDS
-    fleet_clock(0, window + 1)
-    fence = _fence(tmp_path)
-    exc = smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN")
+def test_a_fence_reset_must_not_close_the_fleet_window(tmp_path, logged, fleet_clock):
+    """Fleet-scoped state is not any one daemon's to clear.
 
-    fence.handle(exc)
+    `reset()` is reached on a daemon's own BELIEF that its read succeeded, and readers
+    that fail OPEN reach it having proved nothing. Wiring the clear here let the 120 s
+    publish daemon wipe the window every 2 minutes during an outage, so it could never
+    mature to the 600 s threshold — a fleet-wide alert suppressor that every unit test
+    reported green."""
+    fleet_clock(0)
+    fence = _fence(tmp_path)
+
+    fence.handle(smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN"))
     assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists()
 
     fence.reset()
-    assert not sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists()
 
-    fence.handle(exc)  # a fresh window opens; the old elapsed time is gone
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists()
+
+
+def test_the_breaker_recovery_transition_closes_the_fleet_window(tmp_path, logged, mocker):
+    """The ONE genuine proof of reachability: a real Smartsheet call answered while the
+    breaker was in a non-healthy state. Driven through the REAL `circuit_breaker` state
+    machine, not by calling `clear_circuit_open` directly — the wiring is the thing that
+    broke, so the wiring is what is asserted."""
+    from shared import circuit_breaker
+
+    breaker_state = tmp_path / "breaker.json"
+    mocker.patch.object(circuit_breaker, "STATE_FILE", breaker_state)
+    cfg = circuit_breaker.CircuitConfig(
+        enabled=True, failure_threshold=2, cooldown_seconds=0
+    )
+
+    _fence(tmp_path).handle(smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN"))
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists()
+
+    # Two failures trip the breaker, then a real success recovers it.
+    circuit_breaker._record_failure(breaker_state, cfg)
+    circuit_breaker._record_failure(breaker_state, cfg)
+    circuit_breaker._record_success(breaker_state)
+
+    assert not sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists()
+    # …and the sidecar goes with it, rather than orphaning in ~/its/state after every
+    # outage (the litter class the state-write discipline exists to prevent).
+    from shared import state_io
+    assert not state_io.lock_path_for(sustained_failure.CIRCUIT_OPEN_STATE_PATH).exists()
+
+
+def test_a_healthy_breaker_never_pays_for_the_recovery_hook(tmp_path, mocker):
+    """The hook sits PAST `_record_success`'s hot-path short-circuit, so a healthy system
+    does not so much as `stat` the fleet window on every Smartsheet call."""
+    from shared import circuit_breaker
+
+    breaker_state = tmp_path / "breaker.json"
+    hook = mocker.patch.object(circuit_breaker, "_registered_recovery_hook")
+
+    circuit_breaker._record_success(breaker_state)   # never failed → already CLOSED/0
+
+    hook.assert_not_called()
+
+
+def test_a_stale_window_is_abandoned_rather_than_paging_instantly(tmp_path, logged, mocker):
+    """Closing the window is best-effort, so the counter must self-heal if a close is
+    missed: the FIRST observation of a NEW outage must not inherit a six-hour-old
+    `first_seen_epoch` and page as though the fleet had been down all along."""
+    base = 1_000_000.0
+    stale = sustained_failure.CIRCUIT_OPEN_WINDOW_STALE_SECONDS
+    mocker.patch.object(
+        sustained_failure.time, "time", side_effect=[base, base + stale + 60]
+    )
+    fence = _fence(tmp_path)
+    exc = smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN")
+
+    fence.handle(exc)              # opens a window nobody ever closes
+    fence.handle(exc)              # a NEW outage, long after
+
     assert _fleet_pages(logged) == []
+    state = json.loads(sustained_failure.CIRCUIT_OPEN_STATE_PATH.read_text())
+    assert state["observations"] == 1  # a fresh window, not an inherited one
 
 
 def test_fleet_counter_state_glitch_warns_instead_of_paging(tmp_path, logged, mocker):
@@ -355,3 +512,119 @@ def test_flush_never_disturbs_an_otherwise_successful_pass(tmp_path, logged, moc
         smartsheet_client, "drain_retry_recovery", side_effect=RuntimeError("boom")
     )
     _fence(tmp_path).flush_retry_recovery()  # must not raise
+
+
+# ---- the cadence cannot drift back (parity guard) -------------------------
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+#: Every first-party module that escalates a PER-CYCLE consecutive-failure counter to
+#: CRITICAL. Each must route the decision through `is_escalation_cycle`, or a 21 h outage
+#: mints unrotatable rows again. Derived from disk below, so this list is the CLAIM and
+#: the walk is the check — adding a seventh escalation site RED-lights until enrolled.
+LADDER_CONSUMERS = frozenset({
+    "shared/sustained_failure.py",        # TransientFence (publish_daemon + 5 send pollers)
+    "po_materials/po_poll.py",
+    "po_materials/rfq_poll.py",
+    "po_materials/estimate_poll.py",
+    "subcontracts/subcontract_poll.py",
+    "field_ops/fieldops_sync.py",
+    "safety_reports/portal_poll.py",
+})
+
+#: `scripts/watchdog.py` Check Q compares the SAME counter with `>=`, correctly: it is the
+#: DAILY backstop reading the persisted count once per run, not a per-cycle escalation, so
+#: it can fire at most once a day and mints at most one row. Allowlisted with that reason
+#: rather than silently skipped.
+LADDER_EXEMPT = frozenset({"scripts/watchdog.py"})
+
+_FIRST_PARTY = (
+    "shared", "safety_reports", "progress_reports", "po_materials",
+    "subcontracts", "field_ops", "operator_dashboard", "scripts",
+)
+
+
+def _first_party_sources() -> list[Path]:
+    out: list[Path] = []
+    for pkg in _FIRST_PARTY:
+        out.extend(sorted((REPO_ROOT / pkg).rglob("*.py")))
+    return out
+
+
+def _threshold_ge_compares(tree: ast.Module) -> list[int]:
+    """Line numbers of every `<x> >= <…CRITICAL_THRESHOLD>` comparison in the module."""
+    hits: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare) or not node.ops:
+            continue
+        if not isinstance(node.ops[0], ast.GtE):
+            continue
+        for comparator in node.comparators:
+            name = (
+                comparator.attr if isinstance(comparator, ast.Attribute)
+                else comparator.id if isinstance(comparator, ast.Name)
+                else ""
+            )
+            if name.endswith("CRITICAL_THRESHOLD"):
+                hits.append(node.lineno)
+    return hits
+
+
+def test_no_daemon_hand_rolls_the_threshold_compare_again():
+    """PROVE-IT-BITES anchor: reverting any daemon to `if n >= …CRITICAL_THRESHOLD:` for
+    its per-cycle escalation RED-lights here, so the ladder cannot silently regress in one
+    lane while the other six stay correct."""
+    offenders: dict[str, list[int]] = {}
+    for path in _first_party_sources():
+        rel = str(path.relative_to(REPO_ROOT))
+        if rel in LADDER_EXEMPT:
+            continue
+        lines = _threshold_ge_compares(
+            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        )
+        if lines:
+            offenders[rel] = lines
+    assert not offenders, (
+        "per-cycle CRITICAL escalation must go through "
+        "`sustained_failure.is_escalation_cycle`, not a raw `n >= threshold` compare — an "
+        f"open CRITICAL is never terminal, so `>=` mints unrotatable rows: {offenders}"
+    )
+
+
+def _calls_the_helper(tree: ast.Module) -> bool:
+    """A real CALL to `is_escalation_cycle`, not a mention of it.
+
+    Deliberately AST, not a substring scan: every one of these modules NAMES the helper in
+    the comment explaining why it uses it, so a substring scan stays green when a daemon
+    is reverted to `n >= threshold` with the comment left behind — which is exactly the
+    shape a careless revert takes. Prose is not reach (the `_reachable_names` lesson in
+    tests/test_smartsheet_retry.py)."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = (
+            fn.attr if isinstance(fn, ast.Attribute)
+            else fn.id if isinstance(fn, ast.Name)
+            else ""
+        )
+        if name == "is_escalation_cycle":
+            return True
+    return False
+
+
+def test_every_escalation_site_routes_through_the_shared_helper():
+    """The other half: the helper exists AND every escalating module actually calls it."""
+    callers = set()
+    for path in _first_party_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if _calls_the_helper(tree) or (
+            # the DEFINING module counts as a consumer — `TransientFence` calls it
+            path.name == "sustained_failure.py"
+        ):
+            callers.add(str(path.relative_to(REPO_ROOT)))
+    assert callers == LADDER_CONSUMERS, (
+        "the set of modules routing through `is_escalation_cycle` drifted from the "
+        f"declared list. missing={LADDER_CONSUMERS - callers} unexpected={callers - LADDER_CONSUMERS}"
+    )

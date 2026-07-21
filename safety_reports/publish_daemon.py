@@ -212,16 +212,29 @@ def _lease_owner() -> str:
 
 
 def _read_str_setting(key: str, fallback: str) -> str:
-    """ITS_Config read, fail-soft to `fallback` (mirrors portal_poll's reader).
+    """ITS_Config read, fail-soft to `fallback` ONLY when the row is genuinely absent.
 
-    A TRANSIENT failure deliberately PROPAGATES rather than collapsing into `fallback`:
-    silently reading the polling gate as "false" during a Smartsheet blip is the
-    unobservable-config-resolution anti-pattern. `publish_once` fences it instead, so the
-    halt is an ERROR row naming the real cause (and a CRITICAL once it is sustained).
+    Every failure that means "we could not READ" — transient AND circuit-open —
+    deliberately PROPAGATES rather than collapsing into `fallback`: silently reading the
+    polling gate as "false" during a Smartsheet outage is the unobservable-config-
+    resolution anti-pattern. `publish_once` fences it instead, so the halt is an ERROR row
+    naming the real cause (and a CRITICAL once it is sustained).
+
+    CIRCUIT-OPEN PROPAGATES TOO (2026-07-21 re-review; it used to be swallowed here). Two
+    things went wrong while it was caught. (1) The cycle reported
+    `halted="polling_disabled"` — a lie: nobody paused the daemon, Smartsheet was down —
+    and the daemon contributed NOTHING to the fleet outage picture despite being its
+    fastest potential observer at 120 s. (2) Because the call returned normally, the cycle
+    then executed the "the read succeeded" path, which at the time also cleared the SHARED
+    fleet circuit-open window; at StartInterval 120 that wiped the window every 2 minutes,
+    so the fleet escalation could never mature to its 600 s threshold and was unreachable
+    in production. A fail-open fallback is not evidence of reachability, and this reader
+    must not manufacture one. `SmartsheetNotFoundError` still falls back — a missing row
+    genuinely IS "unset", which for a polling gate means false.
     """
     try:
         raw = smartsheet_client.get_setting(key, workstream=WORKSTREAM)
-    except (smartsheet_client.SmartsheetNotFoundError, smartsheet_client.SmartsheetCircuitOpenError):
+    except smartsheet_client.SmartsheetNotFoundError:
         return fallback
     return raw if isinstance(raw, str) and raw else fallback
 

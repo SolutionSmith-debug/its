@@ -425,13 +425,19 @@ def _load_retry_config() -> RetryConfig:
     _loading_retry_config = True
     try:
         with circuit_breaker.bypass():
-            enabled_raw = _read_global_setting("smartsheet.retry.enabled")
-            attempts_raw = _read_global_setting("smartsheet.retry.max_extra_attempts")
-            backoff_raw = _read_global_setting("smartsheet.retry.backoff_seconds")
+            # ONE round-trip for all three knobs. `_load_circuit_config` above reads its
+            # three keys one at a time; doing the same here DOUBLED the per-process
+            # ITS_Config traffic (3 → 6) across ~12 daemons firing every 60-120 s, for
+            # rows that share a prefix and live on the same sheet. `get_rows` is the
+            # actual cost unit, and the prefix read spends exactly one of them.
+            rows = get_settings_with_prefix("smartsheet.retry.", workstream="global")
     except Exception:  # noqa: BLE001 — a config read must never wedge the call it configures
         return _defaults_retry_config()
     finally:
         _loading_retry_config = False
+    enabled_raw = rows.get("smartsheet.retry.enabled")
+    attempts_raw = rows.get("smartsheet.retry.max_extra_attempts")
+    backoff_raw = rows.get("smartsheet.retry.backoff_seconds")
     sources = " ".join(
         f"{name}={'ITS_Config' if raw is not None else 'default'}"
         for name, raw in (
@@ -460,9 +466,18 @@ def _load_retry_config() -> RetryConfig:
 # A chronically flaky sheet would then be silently absorbed, which is the "never silent"
 # invariant inverted. So every recovered sequence emits ONE local WARN line, AND is
 # accumulated here for a pass-boundary summary row (drained by
-# `sustained_failure.TransientFence.flush_retry_recovery`). A process NOT enrolled in the
-# fence simply discards its accumulator at exit — the local WARN line still went to the
-# on-disk log, so nothing is silent; only the ITS_Errors summary is skipped.
+# `sustained_failure.flush_retry_recovery`). A process NOT enrolled simply discards its
+# accumulator at exit — the local WARN line still went to the on-disk log, so nothing is
+# silent; only the ITS_Errors summary is skipped.
+#
+# WHICH PROCESSES FLUSH (verified 2026-07-21): every one-shot launchd pass with a clean
+# exit point — the six intake daemons, the five bound send pollers via `send_poll_core`,
+# `publish_daemon`, and `scripts/watchdog.py`. DELIBERATELY NOT `operator_dashboard`: it
+# is a long-lived multi-THREADED FastAPI server with no pass boundary at all, so the only
+# candidate site is per-HTTP-request — which would both race on this process-global dict
+# across worker threads and mint an ITS_Errors row per browser poll of a read-only
+# observation surface. Its recoveries stay local-log-only, by decision not by omission.
+# `safety_reports/compile_now_poll.py` is owned by a parallel change and is untouched here.
 _RETRY_RECOVERY_MAX_KEYS = 32
 _RETRY_RECOVERY_OVERFLOW_KEY = "(other)"
 _retry_recoveries: dict[str, dict[str, Any]] = {}
@@ -605,6 +620,24 @@ def is_transient_error(exc: BaseException) -> bool:
 # Register the same loader so arg-free circuit_breaker.is_open() (the daemons'
 # CIRCUIT_OPEN status surfacing) resolves live Smartsheet config too.
 circuit_breaker.set_config_loader(_load_circuit_config)
+
+
+def _close_fleet_circuit_open_window() -> None:
+    """Breaker-recovery hook: a real call answered, so the fleet outage window is over.
+
+    LOCAL import, deliberately: `sustained_failure` imports THIS module (for the exception
+    types + `is_transient_error`), so a module-level import here is circular. Registering
+    the hook from `smartsheet_client` — rather than from `sustained_failure` — is what
+    makes it present in EVERY Smartsheet-touching process, including the daemons that own
+    no fence; otherwise a window opened by a fenced daemon could only ever be closed by a
+    fenced daemon.
+    """
+    from shared import sustained_failure
+
+    sustained_failure.clear_circuit_open()
+
+
+circuit_breaker.set_recovery_hook(_close_fleet_circuit_open_window)
 
 
 # ---- Column-map cache ----------------------------------------------------
@@ -1391,13 +1424,30 @@ def create_picklist_column(
     return int(first.id)
 
 
-def _translate_smartsheet_error(response: requests.Response, *, context: str) -> None:
+def _translate_smartsheet_error(
+    response: requests.Response, *, context: str, idempotent: bool
+) -> None:
     """Raise a typed `SmartsheetError` for a non-2xx REST response.
 
     No-op on 2xx — callers continue. On 4xx/5xx, dispatch the status code
     onto the same typed-exception hierarchy used by `_translate` for SDK
     errors (401 → Auth, 403 → Permission, 404 → NotFound, 429 → RateLimit,
     everything else → base `SmartsheetError`).
+
+    `idempotent` — REQUIRED, no default, so a new REST helper must decide rather than
+    inherit. It gates the 5xx branch ONLY:
+
+      * `True`  (a GET / lookup) → `SmartsheetTransientError`, which
+        `is_transient_error()` reports as retry-safe.
+      * `False` (a CREATE) → base `SmartsheetError`. A 5xx on a create carries NO
+        information about whether the folder/sheet was committed before the server
+        errored, and there is no idempotency key to settle it. Labelling that
+        "transient" is a claim of retry-safety the caller cannot honour: nothing retries
+        creates today, but `is_transient_error()` is a PUBLIC predicate, and a future
+        fence/retry consumer trusting it would duplicate a created folder or sheet. The
+        classification is narrowed at the raise site so the predicate cannot lie, rather
+        than relying on every future consumer to know which helpers are writes.
+        (Matches main's pre-2026-07-21 behaviour for these three creates exactly.)
 
     Internal helper for the REST-backed helpers below (`find_sheet_by_name_in_folder`,
     `find_folder_by_name_in_folder`, `create_folder_in_folder`,
@@ -1430,8 +1480,14 @@ def _translate_smartsheet_error(response: requests.Response, *, context: str) ->
             raise SmartsheetNotFoundError(f"{context}: HTTP 404: {body_text}") from e
         if status == 429:
             raise SmartsheetRateLimitError(f"{context}: HTTP 429: {body_text}") from e
-        if status >= 500:
+        if status >= 500 and idempotent:
             raise SmartsheetTransientError(f"{context}: HTTP {status}: {body_text}") from e
+        if status >= 500:
+            raise SmartsheetError(
+                f"{context}: HTTP {status}: {body_text} — NON-IDEMPOTENT operation: the "
+                "server errored, so it is UNKNOWN whether this create committed. Do NOT "
+                "auto-retry; re-run the find-or-create path, which is safe."
+            ) from e
         raise SmartsheetError(f"{context}: HTTP {status}: {body_text}") from e
 
 
@@ -1470,7 +1526,7 @@ def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
         )
     except requests.RequestException as e:
         raise SmartsheetTransientError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     body = response.json()
     for sheet in body.get("sheets", []):
         if sheet.get("name") == name:
@@ -1499,7 +1555,7 @@ def count_workspace_sheets(workspace_id: int) -> int:
         )
     except requests.RequestException as e:
         raise SmartsheetTransientError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     return _count_sheets_in_node(response.json())
 
 
@@ -1548,7 +1604,7 @@ def find_folder_by_name_in_folder(parent_folder_id: int, name: str) -> int | Non
         )
     except requests.RequestException as e:
         raise SmartsheetTransientError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     body = response.json()
     for folder in body.get("folders", []):
         if folder.get("name") == name:
@@ -1765,7 +1821,7 @@ def create_folder_in_folder(parent_folder_id: int, name: str) -> int:
         )
     except requests.RequestException as e:
         raise SmartsheetTransientError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+    _translate_smartsheet_error(response, context=context, idempotent=False)
     body = response.json()
     return int(body["result"]["id"])
 
@@ -1809,7 +1865,7 @@ def find_folder_by_name_in_workspace(workspace_id: int, name: str) -> int | None
         )
     except requests.RequestException as e:
         raise SmartsheetTransientError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     body = response.json()
     for folder in body.get("folders", []):
         if folder.get("name") == name:
@@ -1858,7 +1914,7 @@ def create_folder_in_workspace(workspace_id: int, name: str) -> int:
         )
     except requests.RequestException as e:
         raise SmartsheetTransientError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+    _translate_smartsheet_error(response, context=context, idempotent=False)
     body = response.json()
     return int(body["result"]["id"])
 
@@ -1906,7 +1962,7 @@ def list_workspace_share_emails(workspace_id: int) -> frozenset[str]:
         )
     except requests.RequestException as e:
         raise SmartsheetTransientError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+    _translate_smartsheet_error(response, context=context, idempotent=True)
     body = response.json()
     return frozenset(
         str(share["email"]).strip().lower()
@@ -2038,7 +2094,7 @@ def create_sheet_in_folder_from_template(
         )
     except requests.RequestException as e:
         raise SmartsheetTransientError(f"{context}: {e!r}") from e
-    _translate_smartsheet_error(response, context=context)
+    _translate_smartsheet_error(response, context=context, idempotent=False)
     body = response.json()
     return int(body["result"]["id"])
 

@@ -306,6 +306,29 @@ def test_retry_is_passthrough_while_loading_retry_config(mocker, retry_enabled, 
     sleeps.assert_not_called()
 
 
+def _retry_rows(mocker, **rows: str):
+    """Stub the ONE prefix read `_load_retry_config` issues. Keys are full setting names."""
+    return mocker.patch.object(
+        smartsheet_client, "get_settings_with_prefix", return_value=dict(rows)
+    )
+
+
+def test_retry_config_costs_exactly_one_its_config_round_trip(mocker):
+    """The knobs share a prefix and a sheet, so reading them one-at-a-time TRIPLED the cost
+    for nothing: `_load_retry_config` firing 3 reads on top of `_load_circuit_config`'s 3
+    took every process from 3 ITS_Config round-trips to 6 — across ~12 daemons waking every
+    60-120 s. `get_rows` is the actual cost unit, and one prefix read spends one."""
+    mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
+    prefix = _retry_rows(mocker, **{"smartsheet.retry.max_extra_attempts": "3"})
+
+    cfg = smartsheet_client._load_retry_config()
+
+    assert prefix.call_count == 1
+    assert prefix.call_args.args == ("smartsheet.retry.",)
+    assert prefix.call_args.kwargs == {"workstream": "global"}
+    assert cfg.max_extra_attempts == 3
+
+
 def test_reentrant_config_load_returns_defaults_without_caching(mocker):
     mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
     mocker.patch.object(smartsheet_client, "_loading_retry_config", True)
@@ -319,12 +342,12 @@ def test_reentrant_config_load_returns_defaults_without_caching(mocker):
 
 
 def test_config_read_failure_falls_back_to_defaults(mocker, sleeps):
-    """`_read_global_setting` swallows SmartsheetError itself; this proves the loader is
-    still TOTAL if that contract ever regressed — resolving config must never be the
-    thing that breaks the call it configures."""
+    """The prefix read can raise (it goes through the guarded `get_rows`); this proves the
+    loader is still TOTAL — resolving config must never be the thing that breaks the
+    call it configures."""
     mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
     mocker.patch.object(
-        smartsheet_client, "_read_global_setting",
+        smartsheet_client, "get_settings_with_prefix",
         side_effect=RuntimeError("config surface exploded"),
     )
 
@@ -337,12 +360,14 @@ def test_config_read_failure_falls_back_to_defaults(mocker, sleeps):
 
 def test_config_backoff_parsed_from_its_config(mocker):
     mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
-    values = {
-        "smartsheet.retry.enabled": "true",
-        "smartsheet.retry.max_extra_attempts": "4",
-        "smartsheet.retry.backoff_seconds": "1.5, 3, 9",
-    }
-    mocker.patch.object(smartsheet_client, "_read_global_setting", side_effect=values.get)
+    _retry_rows(
+        mocker,
+        **{
+            "smartsheet.retry.enabled": "true",
+            "smartsheet.retry.max_extra_attempts": "4",
+            "smartsheet.retry.backoff_seconds": "1.5, 3, 9",
+        },
+    )
 
     cfg = smartsheet_client._load_retry_config()
 
@@ -355,7 +380,7 @@ def test_config_backoff_parsed_from_its_config(mocker):
 
 def test_config_sources_report_defaults_when_rows_missing(mocker):
     mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
-    mocker.patch.object(smartsheet_client, "_read_global_setting", return_value=None)
+    _retry_rows(mocker)
 
     cfg = smartsheet_client._load_retry_config()
 
@@ -366,10 +391,7 @@ def test_config_sources_report_defaults_when_rows_missing(mocker):
 
 def test_malformed_backoff_falls_back_to_default(mocker):
     mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
-    mocker.patch.object(
-        smartsheet_client, "_read_global_setting",
-        side_effect=lambda key: "not,a,number" if key.endswith("backoff_seconds") else None,
-    )
+    _retry_rows(mocker, **{"smartsheet.retry.backoff_seconds": "not,a,number"})
 
     cfg = smartsheet_client._load_retry_config()
 
@@ -538,10 +560,7 @@ def test_out_of_range_attempts_is_clamped_not_obeyed(mocker):
     """A typo'd `200` would hold every daemon on one failing read for ~100 min."""
     mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
     warn = mocker.patch("shared.error_log.local_log")
-    mocker.patch.object(
-        smartsheet_client, "_read_global_setting",
-        side_effect=lambda key: "200" if key.endswith("max_extra_attempts") else None,
-    )
+    _retry_rows(mocker, **{"smartsheet.retry.max_extra_attempts": "200"})
 
     cfg = smartsheet_client._load_retry_config()
 
@@ -552,10 +571,7 @@ def test_out_of_range_attempts_is_clamped_not_obeyed(mocker):
 def test_negative_attempts_clamps_to_zero(mocker):
     mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
     mocker.patch("shared.error_log.local_log")
-    mocker.patch.object(
-        smartsheet_client, "_read_global_setting",
-        side_effect=lambda key: "-3" if key.endswith("max_extra_attempts") else None,
-    )
+    _retry_rows(mocker, **{"smartsheet.retry.max_extra_attempts": "-3"})
 
     assert smartsheet_client._load_retry_config().max_extra_attempts == 0
 
@@ -565,10 +581,7 @@ def test_backoff_over_the_total_cap_is_truncated(mocker):
     are a minute of sleep inside every failing read."""
     mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
     warn = mocker.patch("shared.error_log.local_log")
-    mocker.patch.object(
-        smartsheet_client, "_read_global_setting",
-        side_effect=lambda key: "20,20,20" if key.endswith("backoff_seconds") else None,
-    )
+    _retry_rows(mocker, **{"smartsheet.retry.backoff_seconds": "20,20,20"})
 
     cfg = smartsheet_client._load_retry_config()
 
@@ -580,10 +593,7 @@ def test_backoff_over_the_total_cap_is_truncated(mocker):
 def test_negative_backoff_entry_is_floored_not_slept_backwards(mocker):
     mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
     mocker.patch("shared.error_log.local_log")
-    mocker.patch.object(
-        smartsheet_client, "_read_global_setting",
-        side_effect=lambda key: "-5,2" if key.endswith("backoff_seconds") else None,
-    )
+    _retry_rows(mocker, **{"smartsheet.retry.backoff_seconds": "-5,2"})
 
     assert smartsheet_client._load_retry_config().backoff_seconds == (0.0, 2.0)
 

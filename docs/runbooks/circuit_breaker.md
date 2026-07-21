@@ -63,17 +63,30 @@ One of:
 The watchdog's prolonged-open CRITICAL is real but it only fires when the watchdog runs,
 which is **07:00 daily**. An outage starting at 08:00 would therefore have sat unpaged for
 ~23 hours while every approved send stayed frozen. `smartsheet_circuit_open_sustained`
-closes that: any daemon that finds the breaker OPEN records an observation in a **shared,
-fleet-wide** window, and the first observation at or after **10 minutes** pages.
+closes that: a daemon that finds the breaker OPEN **at one of its fenced reads** records an
+observation in a **shared, fleet-wide** window, and the first observation at or after
+**10 minutes** pages.
 
-- **Time to page:** ~10–12 min when the 120 s daemons are running; ~15–30 min if the only
-  live observers are the 15-minute send pollers. Either way, minutes, not a day.
+- **Which daemons actually observe — three, not "any daemon".** Only the two fenced call
+  sites contribute: `publish_daemon`'s config reads (120 s cadence) and the review-sheet /
+  approver reads inside `send_poll_core`, which the five send pollers share. Of those five,
+  `po_send_poll`, `rfq_send_poll` and `subcontract_send_poll` default to
+  `polling_enabled = false`, so during an outage their gate read fails open to *false* and
+  the cycle exits before reaching either fence — they never observe. The live observer set
+  is **publish_daemon (120 s), weekly_send_poll (15 min), progress_send_poll (15 min)**.
+- **Time to page:** ~10–12 min with `publish_daemon` running; ~10–25 min if it is down or
+  gated off and only the two 15-minute pollers observe. Either way, minutes, not a day.
 - **You will get ONE page, not one per daemon.** Every daemon records under the same fixed
   `(shared.smartsheet_client, smartsheet_circuit_open_sustained)` pair, so the alert-dedupe
   window collapses the whole fleet into a single wake-up. ITS_Errors still records one row
   per observation — that is the forensic trail, not extra pages.
-- **It clears itself.** The first daemon to complete a successful Smartsheet read closes
-  the window; no operator action is needed to reset it.
+- **It clears itself.** The window is closed by the **breaker's own recovery** — the first
+  real Smartsheet call that succeeds after the breaker left its healthy state. No operator
+  action is needed. (It is deliberately *not* closed by a daemon deciding its own read
+  "succeeded": several readers fail open and return a fallback with no error, and wiring
+  the clear to that let the 120 s daemon wipe the window every 2 minutes and suppress this
+  page entirely.) A window that somehow outlives its outage expires by itself after an
+  hour, so a missed close can never make the *next* outage page instantly.
 
 Treat it exactly like the `CIRCUIT_OPEN` symptom above — the checks and the escalation
 boundary are identical.
@@ -277,6 +290,22 @@ is lost; the work is waiting.
 
 A single such failure is only an ERROR (`*_transient`) and is expected occasionally. The
 CRITICAL means it stopped self-healing.
+
+### The CRITICAL does NOT repeat every cycle — that is not "it recovered"
+
+The escalation fires on a **ladder**: the threshold-crossing cycle, then at 2×, 4× and 8× the
+threshold, and every 8× thereafter. Every cycle in between still writes a row, at **ERROR**
+(`*_transient`), with its consecutive count. So the honest read of the ITS_Errors trail is:
+
+- **Rising `*_transient` counts, no new `*_sustained`** → still broken, still counting. The
+  ladder is spacing the pages, not clearing them.
+- **`*_transient` rows stop entirely** → *that* is recovery.
+
+Why not one CRITICAL per cycle: an open CRITICAL is never terminal, so it can never be
+reclaimed by row-cap rotation. At one per cycle a 21 h outage on a 120 s daemon would mint
+~626 permanent rows — ITS_Errors reached 19,975 of its 20,000 cap on 2026-07-13 and locked
+out with "nothing is deletable" — and would bury the real open CRITICALs on the dashboard's
+Open-CRITICALs panel and in watchdog Check B.
 
 ### THE IMPORTANT CAVEAT
 

@@ -10,6 +10,14 @@ import pytest
 
 import shared.kill_switch as ks
 from safety_reports import publish_daemon as pd
+from shared import sustained_failure
+
+#: The REAL gate reader, captured at import BEFORE any fixture patches it. The `stub`
+#: fixture mocks `pd._polling_enabled` wholesale, which is exactly why the fleet-window
+#: suppressor below could ship: no test ever drove the real
+#: `_polling_enabled → _read_str_setting → get_setting` chain. Tests that need the
+#: production chain re-install this.
+_REAL_POLLING_ENABLED = pd._polling_enabled
 
 
 def _create_def() -> dict:
@@ -264,6 +272,96 @@ def fence_state(mocker, tmp_path):
     )
     mocker.patch.object(pd, "_CONFIG_READ_FENCE", fence)
     return fence
+
+
+# ── the fleet-window suppressor (2026-07-21 re-review) ──────────────────────────
+#
+# These are INTEGRATION-SHAPED on purpose. The unit tests above cannot see this class of
+# bug: `stub` mocks `_polling_enabled` wholesale, and tests/test_transient_fence.py drives
+# `handle()` in isolation. So the production chain — circuit-open raised inside
+# `get_setting`, swallowed into a fail-open "false" by `_read_str_setting`, the cycle
+# returning NORMALLY, and the "success" path then clearing SHARED fleet state — was
+# exercised by nothing, and shipped a control that provably never fires in production.
+
+
+@pytest.fixture
+def real_gate(mocker):
+    """Re-install the REAL `_polling_enabled` and mock the Smartsheet call under it."""
+    mocker.patch.object(pd, "_polling_enabled", _REAL_POLLING_ENABLED)
+    return mocker.patch.object(pd.smartsheet_client, "get_setting")
+
+
+def _open_fleet_window() -> None:
+    """Prime the shared circuit-open window as another daemon's observation would."""
+    sustained_failure.record_circuit_open("some.other_daemon", "breaker OPEN")
+
+
+def test_circuit_open_gate_read_never_wipes_the_shared_fleet_window(
+    stub, fence_state, real_gate
+):
+    """THE regression: publish-daemon runs at StartInterval 120, so if its cycle clears the
+    fleet circuit-open window the window can never mature to CIRCUIT_OPEN_SUSTAINED_SECONDS
+    (600 s) and the fleet CRITICAL is unreachable in production — leaving watchdog Check J
+    at 07:00 daily as the only page, i.e. up to ~24 h to notice frozen sends.
+
+    A fail-open fallback is NOT evidence that the backend is reachable. Whatever this cycle
+    concludes about its own gate, it has learned NOTHING that entitles it to close a
+    fleet-scoped window opened by another process."""
+    real_gate.side_effect = pd.smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN")
+    _open_fleet_window()
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists()
+
+    pd.publish_once()
+
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists(), (
+        "the 120 s publish daemon wiped the fleet circuit-open window during an outage — "
+        "the fleet escalation can never mature"
+    )
+
+
+def test_circuit_open_gate_read_is_observed_not_silently_read_as_disabled(
+    stub, fence_state, real_gate
+):
+    """Collapsing circuit-open into the gate's "false" fallback is the unobservable-config-
+    resolution anti-pattern `_read_str_setting`'s own docstring names: the daemon reports
+    `polling_disabled` (a lie — the operator never paused it) and contributes nothing to
+    the fleet's outage picture."""
+    real_gate.side_effect = pd.smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN")
+
+    out = pd.publish_once()
+
+    assert out.halted != "polling_disabled"
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists(), (
+        "publish_daemon must reach a fenced site during an outage — otherwise the docs' "
+        "claim that its 120 s cadence drives the fleet time-to-page is false"
+    )
+    stub["pending"].assert_not_called()  # still fail-closed
+
+
+def test_one_daemon_resetting_cannot_erase_another_daemons_fleet_observation(tmp_path):
+    """The interleaving that the isolated fence tests could not see: daemon A observes the
+    outage; daemon B (a different process, different lane, possibly a fail-open read) calls
+    reset(). B's local success says nothing about A's window."""
+    observer = sustained_failure.TransientFence(
+        "daemon_a",
+        state_path=tmp_path / "a.json",
+        transient_error_code="a.transient",
+        sustained_error_code="a.sustained",
+    )
+    other = sustained_failure.TransientFence(
+        "daemon_b",
+        state_path=tmp_path / "b.json",
+        transient_error_code="b.transient",
+        sustained_error_code="b.sustained",
+    )
+    observer.handle(pd.smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN"))
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists()
+
+    other.reset()
+
+    assert sustained_failure.CIRCUIT_OPEN_STATE_PATH.exists(), (
+        "TransientFence.reset() cleared fleet-scoped state on one daemon's local belief"
+    )
 
 
 def test_transient_gate_read_halts_without_paging(stub, fence_state):

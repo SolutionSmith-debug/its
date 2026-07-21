@@ -548,9 +548,12 @@ def _sync_inside_lock() -> SyncStats:
         # /equipment-snapshot) that may well be reachable this cycle, so they MUST still run.
         counters["errors"] += 1
         n = _record_pending_fetch_failure()
-        if n >= PENDING_FETCH_FAIL_CRITICAL_THRESHOLD:
+        if sustained_failure.is_escalation_cycle(n, PENDING_FETCH_FAIL_CRITICAL_THRESHOLD):
             # SUSTAINED outage — the decoupled cycle no longer goes Check-C-stale, so escalate to
             # CRITICAL (the triple-fire push path). Mirrors portal_poll's Check-Q.
+            # On the shared LADDER, not every cycle past the threshold: an open CRITICAL is
+            # never terminal, so the old `n >= threshold` minted UNROTATABLE rows for the
+            # whole outage. See `sustained_failure.is_escalation_cycle`.
             error_log.log(
                 Severity.CRITICAL, SCRIPT_NAME,
                 f"pending-jobs fetch failing for {n} consecutive cycles — SUSTAINED job-queue "
