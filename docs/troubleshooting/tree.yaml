@@ -174,11 +174,15 @@ workflows:
             signals: ["compile_now_scan_sustained", "compile_now_poll.scan_failed", "ITS_Active_Jobs read FAILED", "compile-now-poll heartbeat DEGRADED"]
             checks:
               - Read the CRITICAL message — how many of how many scanned jobs, and does it name an ITS_Active_Jobs read failure?
+              - Read the "cause(s):" clause — SmartsheetError / HTTP 5xx / timeout is a platform incident; a code error (TypeError, AttributeError, KeyError) is NOT transient and escalates to Seth immediately.
               - Can you open ITS_Active_Jobs and a week sheet in the Smartsheet browser? A broad Smartsheet incident is the usual cause.
               - Are other daemons erroring in ITS_Errors in the same window (platform-wide, not this daemon)?
               - ITS_Daemon_Health safety_reports.compile_now_poll — Last Cycle At still advancing means the daemon is alive and retrying.
+              - Only a FEW jobs named, or the SAME jobs every cycle? Half-or-more is a low bar on a small deployment — work the "a CRITICAL names ONE job" checks below first; a renamed folder never self-heals.
+              - Message ends "…and N more"? The complete failing set with per-job consecutive counts is on the ITS host in ~/its/state/compile_now_job_scan_failures.json — ask Claude to read it.
             resolutions:
-              - Wait and watch; this self-heals. Nothing is lost — the Compile Now checkbox stays set and the daemon retries every ~90s, so the packet compiles once Smartsheet reads recover.
+              - Smartsheet cause and most jobs named → wait and watch; this self-heals. Nothing is lost — the Compile Now checkbox stays set and the daemon retries every ~90s, so the packet compiles once Smartsheet reads recover.
+              - A code-error cause, or a renamed/moved sheet found by the per-job checks → this is NOT the self-healing case; do the rename-back repair or escalate the code error to Seth.
               - Mark the CRITICAL resolved once new ones stop appearing. Do NOT disable the daemon to silence it (that hides the outage and stops the recovery retries).
               - Still firing after ~30 minutes with Smartsheet reachable → hand Claude the Correlation_ID to diagnose.
             class: daniel_solo
@@ -189,12 +193,12 @@ workflows:
             checks:
               - The row names the workstream, project, job ID and week — confirm that week sheet exists in that project's Jobs folder in the matching workspace.
               - Compare the Project Name in ITS_Active_Jobs / ITS_Active_Jobs_Progress against the Smartsheet folder name; a rename is the usual cause.
-              - Confirm there is no compile_now_scan_sustained CRITICAL in the same window (that would mean a broad outage instead).
+              - A compile_now_scan_sustained CRITICAL alongside this one does NOT mean a broad outage — on a small deployment one broken job is already half the scanned jobs, so both rows fire for the SAME fault. This row is the specific one; work it first.
             resolutions:
               - If a folder or week sheet was renamed, rename it back to match ITS_Active_Jobs; if the job row's Project Name was edited by mistake, restore it. The CRITICAL stops on the next successful scan (~90s).
               - Never set the job Inactive to silence it — that silently stops its reports.
-              - A missing or deleted week sheet, or anything that looks like sharing/permissions, escalates to Seth.
-            class: seth_coresolve
+              - A missing or deleted week sheet, or anything that looks like sharing/permissions, escalates to Seth (re-creating or re-sharing a week sheet is not a Tier-2 repair).
+            class: daniel_solo
             runbook: docs/runbooks/compile_now_poll.md
       - id: approval_and_send
         title: Human approves a WSR row; weekly-send transmits it (send half)

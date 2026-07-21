@@ -48,9 +48,14 @@ The trigger scan runs ~3 Smartsheet calls for EVERY Active job in EVERY served w
 summarized row per pass, with two escalations layered on: a CYCLE counter
 (`compile_now_scan_sustained`) fires CRITICAL once a majority-failing cycle repeats, and a per-JOB
 ledger (`compile_now_job_scan_sustained`) fires CRITICAL for a single job whose sheet stays
-unreachable while the others scan fine. A failed ITS_Active_Jobs read — which contributes zero
-scanned jobs and used to leave a clean OK heartbeat — counts as a failing cycle and is named in
-the summary row (`shared.active_jobs.last_read_failed`). See `_record_scan_outcome`.
+unreachable while the others scan fine. Every summarized row (ERROR and CRITICAL alike) carries
+the CAUSE — the distinct exception types plus a bounded sample of their messages — because the
+scan is fenced with a bare `except Exception`, so a code regression would otherwise be reported in
+exactly the words of a transient Smartsheet incident (`_cause_clause`). A failed ITS_Active_Jobs
+read — which contributes zero scanned jobs and used to leave a clean OK heartbeat — counts as a
+failing cycle and is named in the summary row (`shared.active_jobs.last_read_failed`); such a
+BLIND cycle skips the per-job ledger write entirely, since it scanned nothing and a write would
+wipe the counts. See `_record_scan_outcome`.
 
 Per-workstream on/off gate: `<workstream>.compile_now_poll.polling_enabled` (default True), read
 under that workstream. Safety's key is the pre-existing
@@ -192,6 +197,18 @@ SCAN_FAILURE_CYCLE_FRACTION = 0.5
 #: Failing jobs named individually in the pass summary before it degrades to "…and N more".
 SCAN_SUMMARY_SAMPLE = 5
 
+#: DISTINCT failure details quoted verbatim in the pass summary (the exception TYPE names are
+#: ALWAYS all listed — they are short and they are what tells a Smartsheet outage apart from a
+#: code regression). Without a cause the summary says "20/20 jobs failed" and nothing else, so a
+#: TypeError from a schema change reads exactly like a 500 and lands the operator on the
+#: "wait, it self-heals" runbook branch. PR #608's summarizer (`shared/required_config.py`) is
+#: the precedent: it emits the distinct exception types with the collapsed count.
+SCAN_CAUSE_SAMPLE = 2
+
+#: Per-detail character ceiling in the summary row — a repr'd SDK error can be very long and the
+#: row must stay readable in the Smartsheet cell.
+SCAN_CAUSE_DETAIL_MAX = 240
+
 #: Consecutive failing cycles ONE job must accumulate before its own CRITICAL — ~30 min at
 #: the 90s cadence, well past any transient. This covers the case the cycle-level fraction
 #: cannot see: a single job's week sheet 500ing for hours while every other job scans fine.
@@ -214,6 +231,10 @@ class _ScanFailure:
     project_name: str
     job_id: str
     detail: str
+    #: Class name of the UNDERLYING exception (the `_ScanFailedError`'s `__cause__`) — the one
+    #: token that separates "Smartsheet is 500ing" from "a schema change broke the scan code".
+    #: Always carried into the pass summary; see `_cause_clause`.
+    exc_type: str
 
     @property
     def key(self) -> str:
@@ -241,9 +262,11 @@ class _JobScanLedger:
 
     Only CURRENTLY-FAILING keys are persisted, which makes reset-on-success and
     sweep-of-departed-jobs both structural (a key absent from `failed_keys` does not survive
-    the write) and bounds the file to the failing set. Tradeoff: a cycle that scanned nothing
-    (its ITS_Active_Jobs read failed) clears the per-job counts — precisely the case the
-    CYCLE-level counter covers.
+    the write) and bounds the file to the failing set. The corollary is a HARD CONTRACT on the
+    caller: `apply()` must only be called for a cycle that actually scanned every served
+    workstream's jobs. A blind cycle (ITS_Active_Jobs read failed) passing its empty failure
+    set here would silently wipe the counts, so `_record_scan_outcome` skips the write
+    entirely on such a cycle.
     """
 
     def __init__(self, path: Path, script_name: str, counter_error_code: str) -> None:
@@ -281,7 +304,13 @@ class _JobScanLedger:
             return {}
         if not isinstance(raw, dict):
             return {}
-        return {str(k): v for k, v in raw.items() if isinstance(v, int)}
+        # `isinstance(True, int)` is True and a negative count is nonsense — both would
+        # round-trip into a real consecutive-cycle count, so the guard rejects them.
+        return {
+            str(k): v
+            for k, v in raw.items()
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0
+        }
 
 
 _JOB_LEDGER = _JobScanLedger(
@@ -469,6 +498,33 @@ def _cycle_is_failing(stats: CompileStats) -> bool:
     return stats.scan_failures / stats.jobs_scanned >= SCAN_FAILURE_CYCLE_FRACTION
 
 
+def _cause_clause(failures: list[_ScanFailure]) -> str:
+    """The WHY of the summary row: every distinct exception type, plus a bounded verbatim
+    sample of the messages.
+
+    Load-bearing, not decorative. `_compile_triggered_job` fences the scan with a BARE
+    `except Exception`, so a genuine code regression (TypeError / AttributeError / KeyError
+    after a schema change) arrives here indistinguishable from a Smartsheet 500 — and a
+    causeless "20/20 scanned jobs failed" row escalates as `compile_now_scan_sustained`,
+    whose runbook branch tells the operator this class self-heals. Carrying the cause is what
+    keeps a real bug from hiding inside the transient classification.
+    """
+    if not failures:
+        return ""
+    types = sorted({f.exc_type for f in failures})
+    details = sorted({f.detail for f in failures})
+    quoted = [
+        d if len(d) <= SCAN_CAUSE_DETAIL_MAX else d[:SCAN_CAUSE_DETAIL_MAX] + "…"
+        for d in details[:SCAN_CAUSE_SAMPLE]
+    ]
+    clause = f"cause(s): {', '.join(types)}"
+    if quoted:
+        clause += f" — {' | '.join(quoted)}"
+    if len(details) > SCAN_CAUSE_SAMPLE:
+        clause += f" (+{len(details) - SCAN_CAUSE_SAMPLE} more distinct message(s))"
+    return clause
+
+
 def _scan_summary_message(
     stats: CompileStats,
     failures: list[_ScanFailure],
@@ -478,17 +534,30 @@ def _scan_summary_message(
     named = ", ".join(f.label for f in failures[:SCAN_SUMMARY_SAMPLE])
     if len(failures) > SCAN_SUMMARY_SAMPLE:
         named += f", …and {len(failures) - SCAN_SUMMARY_SAMPLE} more"
-    parts = [
-        f"compile-now trigger scan failed for {stats.scan_failures}/{stats.jobs_scanned} "
-        f"scanned jobs, week {week.start}"
-    ]
+    parts: list[str] = []
+    if stats.jobs_scanned == 0 and stats.active_jobs_read_failures:
+        # A pure ITS_Active_Jobs outage scanned nothing, so the fraction clause would read
+        # "0/0 scanned jobs" — and "how many of how many jobs" is the FIRST thing the runbook
+        # tells the operator to read off this row. Lead with the actual cause instead.
+        parts.append(
+            f"compile-now trigger scan scanned NO jobs, week {week.start} — ITS_Active_Jobs "
+            f"read FAILED for {stats.active_jobs_read_failures} served workstream(s)"
+        )
+    else:
+        parts.append(
+            f"compile-now trigger scan failed for {stats.scan_failures}/{stats.jobs_scanned} "
+            f"scanned jobs, week {week.start}"
+        )
+        if stats.active_jobs_read_failures:
+            parts.append(
+                f"ITS_Active_Jobs read FAILED for {stats.active_jobs_read_failures} served "
+                "workstream(s) — those jobs were never scanned"
+            )
     if named:
         parts.append(f"failing: {named}")
-    if stats.active_jobs_read_failures:
-        parts.append(
-            f"ITS_Active_Jobs read FAILED for {stats.active_jobs_read_failures} served "
-            "workstream(s) — those jobs were never scanned"
-        )
+    causes = _cause_clause(failures)
+    if causes:
+        parts.append(causes)
     parts.append(f"{consecutive} consecutive failing cycle(s)")
     return "; ".join(parts)
 
@@ -534,13 +603,25 @@ def _record_scan_outcome(
                 correlation_id=correlation_id,
             )
 
+    if stats.active_jobs_read_failures:
+        # BLIND CYCLE — a served workstream's job list could not be read, so its jobs were
+        # never scanned and their absence from `failures` means nothing. Writing the ledger
+        # here would DROP every one of their counts (only currently-failing keys survive a
+        # write), so a routine Active-Jobs blip would reset the per-job counters and a
+        # permanently-dead week sheet could never reach JOB_SCAN_CRITICAL_THRESHOLD — a blip
+        # every 10 cycles caps every count at 9. Leave the file untouched; the CYCLE counter
+        # (which this cycle already incremented) is what covers the outage itself.
+        return
+
     counts = _JOB_LEDGER.apply({f.key for f in failures})
-    if sustained:
-        # The pass row above already names a majority outage covering these same jobs; a
-        # per-job CRITICAL for each would be a duplicate storm. This also BOUNDS the per-job
-        # rows: reaching JOB_SCAN_CRITICAL_THRESHOLD on most jobs at once implies the cycle
-        # counter is already escalated, so the many-jobs case can only fire here below the
-        # fraction — a genuine minority outage nothing else reports.
+    if sustained and len(failures) > SCAN_SUMMARY_SAMPLE:
+        # Duplicate-storm bound, deliberately NOT keyed on `sustained` alone. The fraction is
+        # trivially reached on a small deployment (1 of 2 jobs failing IS >= 50%), so
+        # suppressing on `sustained` alone would mean ONE renamed job folder fires the
+        # "wait — this self-heals" cycle CRITICAL forever and NEVER the per-job "rename it
+        # back" one. Suppress only when the pass row could not name the failing jobs anyway
+        # (more of them than SCAN_SUMMARY_SAMPLE), which is also what bounds the per-job rows
+        # to at most SCAN_SUMMARY_SAMPLE per cycle.
         return
     for failure in sorted(failures, key=lambda f: f.key):
         count = counts.get(failure.key, 0)
@@ -590,8 +671,14 @@ def _poll_inside_lock(
                 # compile_failed fed a multi-hundred-row review backlog during outages.
                 stats.errors += 1
                 stats.scan_failures += 1
+                # `_compile_triggered_job` raises `... from exc`, so __cause__ is the real
+                # error; fall back to the wrapper's own type if the chain is ever absent.
+                cause = exc.__cause__ or exc
                 scan_failures.append(
-                    _ScanFailure(config.workstream, job.project_name, job.job_id, str(exc))
+                    _ScanFailure(
+                        config.workstream, job.project_name, job.job_id,
+                        str(exc), type(cause).__name__,
+                    )
                 )
             except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never blocks the rest
                 stats.errors += 1
@@ -608,8 +695,6 @@ def _poll_inside_lock(
                 generate_core._safe_review_queue(
                     config, job, week, type(exc).__name__, correlation_id, summary
                 )
-
-    _record_scan_outcome(stats, scan_failures, week, correlation_id)
 
     _write_heartbeat()
     if stats.errors > 0:
@@ -632,6 +717,15 @@ def _poll_inside_lock(
             error_code="daemon_health_write_failed",
         )
     _write_watchdog_marker()
+
+    # LAST, deliberately: this is the only step in the cycle that performs CRITICAL
+    # triple-fire egress (Resend + Sentry) on a sustained cycle. Every helper it calls is
+    # broad-caught, but if `error_log.log` itself ever raises, running it BEFORE the two
+    # liveness surfaces would cost the cycle its ITS_Daemon_Health heartbeat AND its Check-C
+    # watchdog marker — i.e. an alerting failure would masquerade as a dead daemon. Not
+    # fenced: an escalation that cannot be recorded must reach @its_error_log, and by here
+    # both liveness writes have already landed.
+    _record_scan_outcome(stats, scan_failures, week, correlation_id)
     return stats
 
 

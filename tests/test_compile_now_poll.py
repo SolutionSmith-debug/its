@@ -343,6 +343,76 @@ def test_scan_failures_summarize_to_one_row_naming_every_failing_job(stub):
         assert label in message
 
 
+def test_summary_row_carries_the_underlying_error(stub):
+    """REGRESSION (review MF1): the summary row MUST carry the cause. The scan is fenced with
+    a bare `except Exception`, so without it a genuine code regression reads exactly like a
+    Smartsheet 500 — 'N/N scanned jobs' and nothing else — and escalates onto the runbook
+    branch that tells the operator the condition self-heals."""
+    stub["jobs"].return_value = [_job("A", "JOB-A"), _job("B", "JOB-B")]
+    stub["rollup"].side_effect = SmartsheetError("HTTP 500 errorCode 4000")
+
+    cnp.poll_once()
+
+    message = _coded(stub["log"], "compile_now_poll.scan_failed")[0][2]
+    assert "SmartsheetError" in message           # the exception TYPE
+    assert "HTTP 500 errorCode 4000" in message   # and its message
+
+
+def test_summary_row_distinguishes_a_code_regression_from_an_outage(stub):
+    """The whole point of the cause clause: a TypeError from a schema change must not be
+    reported in the same words as a transient Smartsheet incident."""
+    stub["jobs"].return_value = [_job("A", "JOB-A")]
+    stub["rollup"].side_effect = TypeError("'NoneType' object is not subscriptable")
+
+    cnp.poll_once()
+
+    message = _coded(stub["log"], "compile_now_poll.scan_failed")[0][2]
+    assert "TypeError" in message
+    assert "'NoneType' object is not subscriptable" in message
+
+
+def test_sustained_critical_also_carries_the_cause(stub):
+    """The CRITICAL is the row that pages and lands on the 'wait, it self-heals' runbook
+    branch — it is the one that most needs the cause."""
+    stub["jobs"].return_value = [_job("A", "JOB-A")]
+    stub["rollup"].side_effect = AttributeError("'dict' object has no attribute 'cells'")
+    stub["scan_record"].return_value = cnp.sustained_failure.DEFAULT_CRITICAL_THRESHOLD
+
+    cnp.poll_once()
+
+    message = _coded(stub["log"], "compile_now_scan_sustained")[0][2]
+    assert "AttributeError" in message
+    assert "'dict' object has no attribute 'cells'" in message
+
+
+def test_cause_clause_lists_every_distinct_type_and_bounds_the_messages(stub):
+    """Types are short and diagnostic → all of them. Full details are long → a bounded
+    sample plus a count of the rest."""
+    n = cnp.SCAN_CAUSE_SAMPLE + 2
+    stub["jobs"].return_value = [_job(f"J{i}", f"JOB-{i}") for i in range(n)]
+    stub["rollup"].side_effect = [SmartsheetError(f"distinct {i}") for i in range(n - 1)] + [
+        TypeError("wrong shape")
+    ]
+
+    cnp.poll_once()
+
+    message = _coded(stub["log"], "compile_now_poll.scan_failed")[0][2]
+    assert "SmartsheetError, TypeError" in message  # sorted, every distinct type
+    assert f"(+{n - cnp.SCAN_CAUSE_SAMPLE} more distinct message(s))" in message
+
+
+def test_a_long_cause_is_truncated(stub):
+    stub["jobs"].return_value = [_job("A", "JOB-A")]
+    stub["rollup"].side_effect = SmartsheetError("x" * 4000)
+
+    cnp.poll_once()
+
+    message = _coded(stub["log"], "compile_now_poll.scan_failed")[0][2]
+    assert "SmartsheetError" in message
+    assert len(message) < 4000
+    assert "…" in message
+
+
 def test_summary_row_truncates_the_job_list_past_the_sample(stub):
     n = cnp.SCAN_SUMMARY_SAMPLE + 2
     stub["jobs"].return_value = [_job(f"J{i}", f"JOB-{i}") for i in range(n)]
@@ -455,21 +525,77 @@ def test_per_job_critical_stays_quiet_below_its_threshold(stub):
     assert _coded(stub["log"], "compile_now_job_scan_sustained") == []
 
 
-def test_per_job_criticals_are_suppressed_while_the_cycle_is_sustained(stub):
-    """Bound on the per-job rows: a majority outage is already named by the ONE pass
-    CRITICAL, so re-reporting each of the same jobs would be a duplicate storm."""
-    stub["jobs"].return_value = [_job("A", "JOB-A"), _job("B", "JOB-B")]
+def test_per_job_critical_fires_at_one_cycle_past_its_threshold(stub):
+    """The per-job CRITICAL is PER-OCCURRENCE (§3.1 record leg), not one-shot at exactly the
+    threshold — a job stuck at 21, 22, … consecutive cycles keeps its row every cycle."""
+    stub["jobs"].return_value = [_job("Dead", "JOB-D")] + [
+        _job(f"J{i}", f"JOB-{i}") for i in range(3)
+    ]
+    stub["rollup"].side_effect = [SmartsheetError("500"), ROLLUP_OK, ROLLUP_OK, ROLLUP_OK]
+    stub["ledger"].return_value = {
+        "safety_reports:JOB-D": cnp.JOB_SCAN_CRITICAL_THRESHOLD + 1
+    }
+
+    cnp.poll_once()
+
+    crit = _coded(stub["log"], "compile_now_job_scan_sustained")
+    assert len(crit) == 1
+    assert f"{cnp.JOB_SCAN_CRITICAL_THRESHOLD + 1} consecutive" in crit[0][2]
+
+
+def test_per_job_criticals_are_suppressed_only_when_more_jobs_fail_than_can_be_named(stub):
+    """Bound on the per-job rows: when the pass row could not even NAME the failing jobs
+    (more than SCAN_SUMMARY_SAMPLE of them), a per-job CRITICAL for each is a duplicate storm
+    on top of a CRITICAL that already says 'most jobs'."""
+    n = cnp.SCAN_SUMMARY_SAMPLE + 1
+    stub["jobs"].return_value = [_job(f"J{i}", f"JOB-{i}") for i in range(n)]
     stub["rollup"].side_effect = SmartsheetError("500")
     stub["scan_record"].return_value = cnp.sustained_failure.DEFAULT_CRITICAL_THRESHOLD
     stub["ledger"].return_value = {
-        "safety_reports:JOB-A": cnp.JOB_SCAN_CRITICAL_THRESHOLD,
-        "safety_reports:JOB-B": cnp.JOB_SCAN_CRITICAL_THRESHOLD,
+        f"safety_reports:JOB-{i}": cnp.JOB_SCAN_CRITICAL_THRESHOLD for i in range(n)
     }
 
     cnp.poll_once()
 
     assert _coded(stub["log"], "compile_now_job_scan_sustained") == []
     assert len(_coded(stub["log"], "compile_now_scan_sustained")) == 1
+
+
+def test_a_single_dead_job_on_a_small_deployment_still_gets_its_own_critical(stub):
+    """REGRESSION (review SF2): suppressing on `sustained` ALONE permanently hid the per-job
+    CRITICAL on a small deployment — 1 of 2 jobs failing IS >= the 50% fraction, so ONE
+    renamed job folder fired the 'wait, this self-heals' cycle CRITICAL forever and NEVER the
+    'rename it back' one. Both rows must appear."""
+    stub["jobs"].return_value = [_job("Dead", "JOB-D"), _job("Fine", "JOB-F")]
+    stub["rollup"].side_effect = [SmartsheetError("500"), ROLLUP_OK]
+    stub["scan_record"].return_value = cnp.sustained_failure.DEFAULT_CRITICAL_THRESHOLD
+    stub["ledger"].return_value = {
+        "safety_reports:JOB-D": cnp.JOB_SCAN_CRITICAL_THRESHOLD
+    }
+
+    cnp.poll_once()
+
+    assert len(_coded(stub["log"], "compile_now_scan_sustained")) == 1   # the cycle row
+    per_job = _coded(stub["log"], "compile_now_job_scan_sustained")
+    assert len(per_job) == 1                                            # AND the actionable one
+    assert "[safety_reports] Dead (JOB-D)" in per_job[0][2]
+
+
+def test_a_blind_cycle_leaves_the_per_job_ledger_untouched(stub):
+    """REGRESSION (review SF1): an ITS_Active_Jobs read failure scans NO jobs, so an
+    unconditional ledger write would persist an empty failing set and DROP every per-job
+    count. With a blip every N cycles a permanently-dead week sheet would then never reach
+    JOB_SCAN_CRITICAL_THRESHOLD — the exact escalation this ledger exists to produce."""
+    stub["jobs"].return_value = []
+    stub["jobs_failed"].return_value = True
+
+    out = cnp.poll_once()
+
+    assert out.active_jobs_read_failures == 1
+    stub["ledger"].assert_not_called()
+    # …and the cycle is still reported + counted (the cycle counter covers the outage).
+    stub["scan_record"].assert_called_once()
+    assert len(_coded(stub["log"], "compile_now_poll.scan_failed")) == 1
 
 
 def test_active_jobs_read_failure_is_a_failing_cycle_and_named_in_the_summary(stub):
@@ -487,6 +613,26 @@ def test_active_jobs_read_failure_is_a_failing_cycle_and_named_in_the_summary(st
     assert len(rows) == 1
     assert "ITS_Active_Jobs read FAILED for 1 served workstream(s)" in rows[0][2]
     assert stub["hb_row"].call_args.kwargs["status"] == "DEGRADED"
+    # …and it does NOT open with a meaningless "0/0 scanned jobs" fraction — that clause is
+    # the FIRST thing the runbook tells the operator to read off this row.
+    assert "0/0 scanned jobs" not in rows[0][2]
+    assert rows[0][2].startswith("compile-now trigger scan scanned NO jobs")
+
+
+def test_active_jobs_read_failed_is_asked_per_workstream_config(stub):
+    """The flag is per-SHEET; asking it without the workstream's own ActiveJobsConfig would
+    read safety's outcome while iterating progress's jobs (and vice versa)."""
+    stub["enabled_ws"]["progress_reports"] = True
+
+    cnp.poll_once()
+
+    asked = [c.args[0] for c in stub["jobs_failed"].call_args_list]
+    assert asked == [
+        SAFETY_CFG.active_jobs_config,
+        PROGRESS_CFG.active_jobs_config,
+    ]
+    # the job LIST is read under the same per-workstream config
+    assert [c.args[0] for c in stub["jobs"].call_args_list] == asked
 
 
 def test_active_jobs_read_failure_escalates_when_sustained(stub):
@@ -498,6 +644,24 @@ def test_active_jobs_read_failure_escalates_when_sustained(stub):
 
     crit = _coded(stub["log"], "compile_now_scan_sustained")
     assert len(crit) == 1 and crit[0][0] == cnp.Severity.CRITICAL
+
+
+def test_liveness_surfaces_land_before_the_escalation_egress(stub, mocker):
+    """REGRESSION (review SF6): `_record_scan_outcome` is the only step that performs
+    CRITICAL triple-fire egress. Running it FIRST meant an alerting failure cost the cycle
+    its ITS_Daemon_Health heartbeat AND its Check-C watchdog marker — an alerting outage
+    masquerading as a dead daemon."""
+    mocker.patch.object(
+        cnp, "_record_scan_outcome", side_effect=RuntimeError("Resend exploded")
+    )
+    stub["jobs"].return_value = [_job("A", "JOB-A")]
+
+    with pytest.raises(RuntimeError):
+        cnp._poll_inside_lock((SAFETY_CFG,))  # inside the lock — no @its_error_log swallow
+
+    stub["hb"].assert_called_once()      # liveness file
+    stub["hb_row"].assert_called_once()  # ITS_Daemon_Health row
+    stub["marker"].assert_called_once()  # watchdog Check C marker
 
 
 # ---- The per-job ledger itself --------------------------------------------
@@ -515,6 +679,16 @@ def test_job_ledger_round_trips_resets_on_success_and_sweeps_departed(tmp_path):
     }
     assert led.apply(set()) == {}                                     # A departed / clean
     assert led.apply({"safety_reports:A"}) == {"safety_reports:A": 1}  # the count really went
+
+
+@pytest.mark.parametrize("persisted", [True, -5, "3", 2.0, None])
+def test_job_ledger_rejects_non_count_values(tmp_path, persisted):
+    """`isinstance(True, int)` is True and a negative count is nonsense — either would
+    round-trip into a real consecutive-cycle count (True + 1 == 2)."""
+    path = tmp_path / "l.json"
+    path.write_text(json.dumps({"counts": {"safety_reports:A": persisted}}))
+    led = cnp._JobScanLedger(path, "test.script", "test_ledger_failed")
+    assert led.apply({"safety_reports:A"}) == {"safety_reports:A": 1}  # started over, not 2
 
 
 def test_job_ledger_corrupt_state_reads_as_empty(tmp_path):
