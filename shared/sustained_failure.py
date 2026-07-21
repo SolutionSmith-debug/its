@@ -27,10 +27,17 @@ Posture (mirrors `fieldops_sync._record_pending_fetch_failure` exactly):
 adjacent gap at the OTHER end of the scale: a pre-work Smartsheet read that fails ONCE
 and escapes the pass, which `@its_error_log` then stamps CRITICAL `uncaught_exception`.
 See its class docstring.
+
+`record_circuit_open` / `clear_circuit_open` are the THIRD scale: a whole-fleet outage.
+Once the breaker trips, every fenced read raises circuit-open, which each daemon
+deliberately leaves out of its own counter — so without a shared counter nothing escalated
+at all and the only page left was the 07:00 watchdog. This is one window, one fixed
+`(script, error_code)` pair, one page for the fleet. See the section comment above it.
 """
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from shared import error_log, smartsheet_client, state_io
@@ -44,6 +51,129 @@ DEFAULT_CRITICAL_THRESHOLD = 5
 #: before the page; 3 keeps the same ~45 min ceiling as 5×120s on the fast daemons while
 #: still absorbing an isolated blip (operator decision D2, 2026-07-21).
 SLOW_CADENCE_CRITICAL_THRESHOLD = 3
+
+
+# ---- Fleet-level circuit-open escalation ---------------------------------
+#
+# THE GAP THIS CLOSES (2026-07-21 review finding). `TransientFence` deliberately keeps
+# SmartsheetCircuitOpenError OUT of each daemon's own counter, because one outage would
+# otherwise fire a `*_sustained` CRITICAL from every enrolled daemon on a SEPARATE
+# `alert_dedupe` key — 6-10 pages for one root cause. But during a REAL outage the
+# breaker trips within a cycle or two, after which every fenced read raises exactly
+# SmartsheetCircuitOpenError — so with circuit-open uncounted, nothing escalated at all
+# and the only remaining CRITICAL was watchdog **Check J**, which runs 07:00 DAILY. Net:
+# "Smartsheet is down and approved sends are frozen" could sit unpaged for up to ~24 h.
+#
+# The fix is a SHARED, fleet-level counter instead of a per-daemon one. It is coherent
+# because the breaker's own state is already cross-process: whichever daemon fires next
+# observes the same OPEN breaker. Every observation and every page is keyed on the FIXED
+# pair below, so `shared/alert_dedupe.py` (which dedupes the push legs on
+# `(script, error_code)`) collapses the entire fleet into ONE operator page per window —
+# the storm concern is answered without surrendering detection to a daily job.
+#
+# TIME-BASED, NOT COUNT-BASED, deliberately: a count threshold means a different
+# wall-clock guarantee for a 60 s daemon than for a 15-minute one. The window opens on
+# the first observation; the page fires on the first observation at or after
+# CIRCUIT_OPEN_SUSTAINED_SECONDS.
+#
+# RESULTING WALL-CLOCK TIME-TO-PAGE (state this, don't hand-wave it):
+#   * publish_daemon (120 s cadence) observing → ~10-12 min after the breaker opens.
+#   * only the 15-minute send pollers observing → the second observation lands 15 min
+#     after the first, so ~15 min (worst case ~30 min if the fleet's only live observer
+#     is a single 15-minute poller and its first observation lands just as the breaker
+#     opens). Both are comfortably sub-hour and both are dramatically better than the
+#     up-to-24 h that watchdog Check J alone provided.
+# The alerting path does not depend on Smartsheet being up: `error_log.log(CRITICAL)`
+# triple-fires, and the Resend + Sentry legs are independent of the failing backend.
+#: Fixed script/code pair — the whole POINT is that every daemon pages under ONE
+#: alert_dedupe key. Do NOT parameterize these per daemon.
+CIRCUIT_OPEN_SCRIPT = "shared.smartsheet_client"
+CIRCUIT_OPEN_ERROR_CODE = "smartsheet_circuit_open_sustained"
+
+#: Seconds of continuously-observed circuit-open before the fleet pages. 600 s mirrors
+#: `defaults.CIRCUIT_BREAKER_PROLONGED_OPEN_ALERT_SECONDS` — the SAME definition of
+#: "prolonged" the watchdog uses, just delivered sub-daily instead of at 07:00.
+CIRCUIT_OPEN_SUSTAINED_SECONDS = 600
+
+STATE_DIR = Path.home() / "its" / "state"
+#: Shared across every process that observes circuit-open (module-level so the suite can
+#: redirect it, exactly like `circuit_breaker.STATE_FILE`).
+CIRCUIT_OPEN_STATE_PATH = STATE_DIR / "smartsheet_circuit_open.json"
+
+
+def record_circuit_open(observer: str, detail: str) -> None:
+    """Record one fleet-level circuit-open observation; CRITICAL once it is sustained.
+
+    Called by every `TransientFence` on the circuit-open branch. All access goes through
+    `state_io.with_path_lock` because MULTIPLE daemons genuinely contend here — that is
+    the point of a shared counter, not an accident.
+
+    Best-effort like every other counter in this module: a state error logs a WARN and
+    returns rather than paging off a filesystem glitch.
+    """
+    now = time.time()
+    try:
+        with state_io.with_path_lock(CIRCUIT_OPEN_STATE_PATH):
+            state: dict[str, object] = {}
+            if CIRCUIT_OPEN_STATE_PATH.exists():
+                try:
+                    loaded = json.loads(CIRCUIT_OPEN_STATE_PATH.read_text())
+                    if isinstance(loaded, dict):
+                        state = loaded
+                except (OSError, json.JSONDecodeError, ValueError):
+                    state = {}
+            raw_first = state.get("first_seen_epoch")
+            first_seen = float(raw_first) if isinstance(raw_first, int | float) else now
+            observations = state.get("observations")
+            count = observations + 1 if isinstance(observations, int) else 1
+            state_io.atomic_write_json(
+                CIRCUIT_OPEN_STATE_PATH,
+                {
+                    "first_seen_epoch": first_seen,
+                    "last_seen_epoch": now,
+                    "observations": count,
+                    "last_observer": observer,
+                },
+            )
+    except AssertionError:  # a control firing, not a state glitch — see record()
+        raise
+    except Exception as exc:  # noqa: BLE001 — never page off a state glitch
+        error_log.log(
+            Severity.WARN, CIRCUIT_OPEN_SCRIPT,
+            f"fleet circuit-open counter write failed (observation dropped): {exc!r}",
+            error_code=f"{CIRCUIT_OPEN_ERROR_CODE}_counter_failed",
+        )
+        return
+
+    open_for = now - first_seen
+    if open_for < CIRCUIT_OPEN_SUSTAINED_SECONDS:
+        return
+    error_log.log(
+        Severity.CRITICAL, CIRCUIT_OPEN_SCRIPT,
+        f"Smartsheet circuit breaker has been OPEN for {open_for / 60:.0f} min "
+        f"({count} observations across the daemon fleet, most recently {observer}). "
+        "Every Smartsheet-backed daemon is short-circuiting: approved sends are FROZEN "
+        "and nothing is being filed. This is a SUSTAINED backend outage, not a blip. "
+        f"See docs/runbooks/circuit_breaker.md. Last detail: {detail}",
+        error_code=CIRCUIT_OPEN_ERROR_CODE,
+    )
+
+
+def clear_circuit_open() -> None:
+    """Close the fleet circuit-open window after any daemon's successful Smartsheet read.
+
+    Short-circuits when no state file exists, so a healthy fleet does ZERO state I/O per
+    cycle (one `stat`) — the same posture as `TransientFence.reset`.
+    """
+    if not CIRCUIT_OPEN_STATE_PATH.exists():
+        return
+    try:
+        with state_io.with_path_lock(CIRCUIT_OPEN_STATE_PATH):
+            CIRCUIT_OPEN_STATE_PATH.unlink(missing_ok=True)
+    except AssertionError:  # a control firing, not a state glitch — see record()
+        raise
+    except Exception:  # noqa: BLE001 — best-effort clear (risks one late page, never a missed one)
+        pass
 
 
 class SustainedFailureCounter:
@@ -67,6 +197,15 @@ class SustainedFailureCounter:
                 count += 1
                 state_io.atomic_write_json(self._path, {"count": count})
                 return count
+        except AssertionError:
+            # NOT a state glitch — an assertion is a CONTROL firing, not an I/O failure.
+            # The unit suite's `_forbid_live_state_writes` guard raises AssertionError,
+            # and this broad handler used to swallow it and answer "count = 1": the guard
+            # was defeated AND the escalation ladder silently degraded to a constant 1 in
+            # every daemon-entry test. That is exactly how nine real `~/its/state/*.lock`
+            # files got created on 2026-07-21 while the suite reported clean. Re-raised so
+            # a control that fires is never absorbed into a quiet degraded path.
+            raise
         except Exception as exc:  # noqa: BLE001 — counter is best-effort; never page off a state glitch
             error_log.log(
                 Severity.WARN, self._script,
@@ -81,6 +220,8 @@ class SustainedFailureCounter:
             with state_io.with_path_lock(self._path):
                 if self._path.exists():
                     state_io.atomic_write_json(self._path, {"count": 0})
+        except AssertionError:  # a control firing, not a state glitch — see record()
+            raise
         except Exception:  # noqa: BLE001 — best-effort reset
             pass
 
@@ -112,11 +253,14 @@ class TransientFence:
 
     THREE outcomes in ``handle``:
 
-      1. ``SmartsheetCircuitOpenError`` → halt, WARN, and do NOT count. Folding
-         circuit-open into the counter would make ONE real outage fire the breaker's own
-         prolonged-open CRITICAL *plus* a ``*_sustained`` CRITICAL from each of the 6-10
-         enrolled daemons, on separate ``alert_dedupe`` keys — a page storm for one root
-         cause. The breaker surface owns that page.
+      1. ``SmartsheetCircuitOpenError`` → halt, WARN, and do NOT count in THIS daemon's
+         counter. Folding circuit-open into the per-daemon counter would make ONE real
+         outage fire a ``*_sustained`` CRITICAL from each of the 6-10 enrolled daemons on
+         separate ``alert_dedupe`` keys — a page storm for one root cause. Instead the
+         observation goes to the SHARED fleet counter (``record_circuit_open`` above),
+         which pages ONCE per window under the fixed
+         ``(shared.smartsheet_client, smartsheet_circuit_open_sustained)`` pair. So a real
+         sustained outage still escalates sub-hour; it just does not multiply.
       2. Any other ``SmartsheetTransientError`` → ERROR row + counter; at
          ``n >= threshold`` a CRITICAL instead, fired EVERY cycle past the threshold
          (Op Stds §3.1 — the ITS_Errors record leg is per-occurrence; suppression is the
@@ -165,16 +309,18 @@ class TransientFence:
         return False
 
     def note_transient(self, detail: str, *, count: bool = True) -> None:
-        """Log one transient-halt occurrence. ``count=False`` skips the counter entirely
-        (the circuit-open case — see the class docstring)."""
+        """Log one transient-halt occurrence. ``count=False`` routes the observation to the
+        SHARED fleet circuit-open counter instead of this daemon's own (see the class
+        docstring outcome 1) — it is never simply discarded."""
         if not count:
             error_log.log(
                 Severity.WARN, self._script,
                 f"Smartsheet circuit breaker OPEN — cycle skipped, no work attempted "
-                f"({detail}). Not counted toward {self._sustained_error_code}: the "
-                "breaker's own prolonged-open CRITICAL owns this page.",
+                f"({detail}). Not counted toward {self._sustained_error_code}: a fleet-wide "
+                f"outage escalates ONCE via {CIRCUIT_OPEN_ERROR_CODE}, not once per daemon.",
                 error_code=self._transient_error_code,
             )
+            record_circuit_open(self._script, detail)
             return
         n = self._counter.record()
         where = f" See {self._runbook}." if self._runbook else ""
@@ -196,34 +342,60 @@ class TransientFence:
     def reset(self) -> None:
         """Clear the consecutive count after a successful pre-work read.
 
-        Short-circuits when no state file exists, so a healthy daemon does ZERO state I/O
-        per cycle (and never creates the sidecar lock) — the breaker's same posture.
+        ALSO closes the shared fleet circuit-open window: a read that SUCCEEDED is proof
+        the backend is reachable again, whichever daemon observed it. Both halves
+        short-circuit when their state file is absent, so a healthy daemon does ZERO state
+        I/O per cycle (two `stat`s) — the breaker's same posture.
         """
+        clear_circuit_open()
         if not self._state_path.exists():
             return
         self._counter.reset()
 
     def flush_retry_recovery(self) -> None:
-        """Drain `smartsheet_client.drain_retry_recovery()` → ONE summarized WARN row.
+        """Drain the recovered-retry accumulator for THIS daemon (see the module function).
 
-        Operator decision D3: a retry that SUCCEEDS is otherwise invisible on the
-        dashboard, so a chronically flaky sheet would be silently absorbed. Best-effort —
-        a failure here must never disturb an otherwise-successful pass.
+        Convenience only — a daemon that has no fence calls `flush_retry_recovery(script)`
+        directly; the two must stay behaviourally identical, so this delegates rather than
+        duplicating the body.
         """
-        try:
-            recovered = smartsheet_client.drain_retry_recovery()
-            if not recovered:
-                return
-            detail = ", ".join(
-                f"{call}×{stats['sequences']} ({stats['attempts']} extra attempts)"
-                for call, stats in sorted(recovered.items())
-            )
-            error_log.log(
-                Severity.WARN, self._script,
-                f"Smartsheet transient failures RECOVERED on retry this cycle: {detail}. "
-                "The cycle succeeded; a repeating pattern here means the backend is "
-                "chronically flaky.",
-                error_code="smartsheet_retry_recovered",
-            )
-        except Exception:  # noqa: BLE001 — visibility extra; never disturb a good pass
-            pass
+        flush_retry_recovery(self._script)
+
+
+def flush_retry_recovery(script_name: str) -> None:
+    """Drain `smartsheet_client.drain_retry_recovery()` → ONE summarized WARN row.
+
+    Operator decision D3: a retry that SUCCEEDS is invisible by construction — nothing
+    raises, nothing is logged — so a chronically flaky sheet would be silently absorbed,
+    which is the "never silent" invariant inverted.
+
+    A MODULE FUNCTION, not only a `TransientFence` method, because most interval daemons
+    have no fence: `portal_poll` / `po_poll` / `rfq_poll` / `estimate_poll` /
+    `subcontract_poll` / `fieldops_sync` all issue enrolled Smartsheet reads but classify
+    their own failures. Shipping D3 as a fence method alone gave the summary row to 2
+    daemons out of ~12 — the recoveries of the other ten stayed local-log-only, i.e.
+    invisible on exactly the dashboard surface D3 exists to feed.
+
+    CALL IT AT A PASS EXIT, and only where the accumulator belongs to the pass that just
+    ran: the accumulator is process-global, so an early return that skips the flush simply
+    rolls its recoveries into the next cycle's row (a merge, never a loss).
+
+    Best-effort: a failure here must never disturb an otherwise-successful pass.
+    """
+    try:
+        recovered = smartsheet_client.drain_retry_recovery()
+        if not recovered:
+            return
+        detail = ", ".join(
+            f"{call}×{stats['sequences']} ({stats['attempts']} extra attempts)"
+            for call, stats in sorted(recovered.items())
+        )
+        error_log.log(
+            Severity.WARN, script_name,
+            f"Smartsheet transient failures RECOVERED on retry this cycle: {detail}. "
+            "The cycle succeeded; a repeating pattern here means the backend is "
+            "chronically flaky.",
+            error_code="smartsheet_retry_recovered",
+        )
+    except Exception:  # noqa: BLE001 — visibility extra; never disturb a good pass
+        pass

@@ -1026,13 +1026,15 @@ The shared infrastructure every workstream rides on: launchd, heartbeats + marke
 
 **Resolution class:** Operator-resolvable (solo)
 
-**Signals:** circuit breaker open, prolonged-open
+**Signals:** circuit breaker open, prolonged-open, smartsheet_circuit_open_sustained
 
 **Checks (in order):**
 - Is it a transient storm (auto-recovers after cooldown) or a prolonged open with a real underlying cause?
+- A `smartsheet_circuit_open_sustained` CRITICAL (Script `shared.smartsheet_client`) is the fleet-wide sub-hour page for the SAME condition — one page for the whole fleet, not one per daemon.
 
 **Resolutions (in order):**
 - For a transient storm past cooldown, clearing the local breaker state file is a documented low-class action. If the root cause is high-class (auth, deploy), escalate.
+- The fleet circuit-open window needs no operator action — the first daemon to complete a successful Smartsheet read closes it.
 
 **See also:** runbook `docs/runbooks/circuit_breaker.md` · watchdog `_check_circuit_breaker_prolonged_open`
 

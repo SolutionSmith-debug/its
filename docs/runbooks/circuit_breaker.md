@@ -52,6 +52,31 @@ One of:
   probe-failures rather than resetting each cycle.
 - Smartsheet operations across multiple daemons start failing fast with a
   "circuit breaker OPEN — short-circuiting" message in ITS_Errors.
+- A **CRITICAL page** with `Script` = `shared.smartsheet_client` and `Error` =
+  `smartsheet_circuit_open_sustained`, reading *"Smartsheet circuit breaker has been OPEN
+  for N min … approved sends are FROZEN and nothing is being filed."* Same root cause as
+  the watchdog page above, but it does **not** wait for the 07:00 watchdog run — see the
+  note below.
+
+#### Why there are two pages for one outage, and what each is worth
+
+The watchdog's prolonged-open CRITICAL is real but it only fires when the watchdog runs,
+which is **07:00 daily**. An outage starting at 08:00 would therefore have sat unpaged for
+~23 hours while every approved send stayed frozen. `smartsheet_circuit_open_sustained`
+closes that: any daemon that finds the breaker OPEN records an observation in a **shared,
+fleet-wide** window, and the first observation at or after **10 minutes** pages.
+
+- **Time to page:** ~10–12 min when the 120 s daemons are running; ~15–30 min if the only
+  live observers are the 15-minute send pollers. Either way, minutes, not a day.
+- **You will get ONE page, not one per daemon.** Every daemon records under the same fixed
+  `(shared.smartsheet_client, smartsheet_circuit_open_sustained)` pair, so the alert-dedupe
+  window collapses the whole fleet into a single wake-up. ITS_Errors still records one row
+  per observation — that is the forensic trail, not extra pages.
+- **It clears itself.** The first daemon to complete a successful Smartsheet read closes
+  the window; no operator action is needed to reset it.
+
+Treat it exactly like the `CIRCUIT_OPEN` symptom above — the checks and the escalation
+boundary are identical.
 
 ### What the Successor-Operator checks
 
@@ -221,6 +246,12 @@ the dashboard's ITS_Config editor: `smartsheet.retry.enabled` (workstream `globa
 `false`. That makes reads fail fast again — it does not fix Smartsheet, it just stops
 waiting. Prefer leaving it on.
 
+All three `smartsheet.retry.*` rows are **seeded** by `scripts/seed_its_config.py` and
+registered in the editor, so they appear in the config editor's *Operational gates* /
+*Tuning knobs* groups with their current values. (If a row is genuinely missing on some
+host, the editor refuses the edit with "seed the row before editing" — re-run the seeder;
+do not hand-create the row.)
+
 ### Escalate-to-Seth condition
 
 - Recoveries are constant for **more than a day** (an infrastructure question, not a repair).
@@ -269,8 +300,12 @@ Smartsheet is otherwise healthy, assume the second case.
 3. **Open the sheet that daemon reads** (named in the runbook the CRITICAL points at) in the
    web UI. Does it load?
 4. **Is the breaker OPEN too?** If yes, work the circuit-breaker procedure above first —
-   that is the same root cause, and circuit-open deliberately does *not* count toward these
-   `_sustained` counters.
+   that is the same root cause. Circuit-open deliberately does *not* count toward these
+   per-daemon `_sustained` counters (one outage would otherwise page 6–10 times on
+   separate dedupe keys); it feeds the fleet-wide `smartsheet_circuit_open_sustained`
+   page instead, which fires **once**. So during a real outage expect the fleet page, and
+   expect these per-daemon counters to freeze wherever they were — that is by design, not
+   a stuck counter.
 
 ### The Claude prompt or UI action
 

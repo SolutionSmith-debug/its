@@ -38,10 +38,12 @@ from operator_dashboard.act.validators import (
     v_keychain_key,
     v_reviewer_chain,
     v_schedule,
+    v_seconds_list,
     v_sender_list,
     v_state,
     v_url,
 )
+from shared import defaults
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,14 @@ _ENTRIES: list[ConfigEntry] = [
     _e("safety_reports.compile_now_poll.polling_enabled", "safety_reports", _GATES, v_bool),
     _e("progress_reports.compile_now_poll.polling_enabled", "progress_reports", _GATES, v_bool),
     _e("circuit_breaker.enabled", "global", _GATES, v_bool),
+    _e(
+        "smartsheet.retry.enabled",
+        "global",
+        _GATES,
+        v_bool,
+        note="off = a failed Smartsheet READ is raised to the caller on the first 5xx/timeout "
+             "instead of being re-issued; the §43 escape hatch when retry latency is the problem",
+    ),
     # --- send-poller gates: pause = Class A; false->true activation escalates ---
     _e(
         "safety_reports.weekly_send.polling_enabled",
@@ -256,6 +266,28 @@ _ENTRIES: list[ConfigEntry] = [
     _e("alerting.dedupe_window_minutes", "global", _KNOBS, v_int(1, 1_440)),
     _e("smartsheet.sheet_count_ceiling", "global", _KNOBS, v_int(1, 100_000)),
     _e("smartsheet.sheet_count_margin", "global", _KNOBS, v_int(0, 10_000)),
+    # Bounds mirror shared/defaults.py's hard ceilings — the editor REJECTS out of range,
+    # the client CLAMPS anything that reached the sheet by another path. Both cite one
+    # source so the two surfaces cannot drift.
+    _e(
+        "smartsheet.retry.max_extra_attempts",
+        "global",
+        _KNOBS,
+        v_int(0, defaults.SMARTSHEET_RETRY_MAX_ATTEMPTS_CEILING),
+        note="each extra attempt can re-spend the 30s SDK network timeout on a hang, so this "
+             "multiplies worst-case cycle latency — raise it deliberately",
+    ),
+    _e(
+        "smartsheet.retry.backoff_seconds",
+        "global",
+        _KNOBS,
+        v_seconds_list(
+            defaults.SMARTSHEET_RETRY_MAX_ATTEMPTS_CEILING,
+            defaults.SMARTSHEET_RETRY_MAX_TOTAL_BACKOFF_SECS,
+        ),
+        note="comma-separated wait before each extra attempt (e.g. '2.0,5.0'); the last value "
+             "repeats when there are more attempts than entries",
+    ),
     _e("picklist_sync.size_hard_halt_threshold", "global", _KNOBS, v_int(1, 100_000)),
     _e("picklist_sync.size_warn_threshold", "global", _KNOBS, v_int(1, 100_000)),
     _e("mail_intake.safety.max_idle_hours", "global", _KNOBS, v_int(1, 8_760)),

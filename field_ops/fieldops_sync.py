@@ -85,6 +85,7 @@ from shared import (
     sheet_ids,
     smartsheet_client,
     state_io,
+    sustained_failure,
 )
 from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
@@ -428,7 +429,11 @@ def sync_once() -> int:
                 error_code="sync_lock_held",
             )
             return 0
-        return _sync_inside_lock().mirrored
+        try:
+            return _sync_inside_lock().mirrored
+        finally:
+            # D3 — see portal_poll: one summarized WARN row per pass that recovered on retry.
+            sustained_failure.flush_retry_recovery(SCRIPT_NAME)
 
 
 def _record_pending_fetch_failure() -> int:

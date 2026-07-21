@@ -45,6 +45,7 @@ The conftest fix is the immediate hole-closer. A durable structural fix
 """
 from __future__ import annotations
 
+import builtins
 import os
 import socket
 from pathlib import Path
@@ -83,6 +84,17 @@ _PROTECTED_LIVE_DIRS = (_REAL_STATE_DIR, _REAL_WATCHDOG_DIR)
 _ORIG_WRITE_TEXT = Path.write_text
 _ORIG_WRITE_BYTES = Path.write_bytes
 _ORIG_OS_REPLACE = os.replace
+# The two OPEN idioms, added 2026-07-21. The guard used to hook only the three
+# write helpers above, and `state_io.with_path_lock` acquires its sidecar flock via
+# `lock_path.open("a+")` — which CREATES the sidecar. So every fenced daemon-entry
+# test was silently creating real `~/its/state/*.json.lock` files and the guard could
+# not see it. Hooking open() in write modes closes the whole class rather than the
+# one caller: any future state idiom that goes through open() is caught too.
+_ORIG_PATH_OPEN = Path.open
+_ORIG_BUILTIN_OPEN = builtins.open
+
+# Modes that CREATE or MUTATE a file. 'r' alone is harmless; 'r+' is not.
+_WRITE_MODE_CHARS = ("w", "a", "x", "+")
 
 # --- Live-log + external-network guards -----------------------------------
 # The keychain stub above hands every client a PLACEHOLDER credential, which was
@@ -127,6 +139,13 @@ def _is_under_protected_live_dir(target: object) -> bool:
     except (OSError, ValueError, TypeError):
         return False
     return any(resolved.is_relative_to(d) for d in _PROTECTED_LIVE_DIRS)
+
+
+def _is_write_mode(mode: object) -> bool:
+    """True for any open() mode that can create or mutate the target file."""
+    if not isinstance(mode, str):
+        return False
+    return any(ch in mode for ch in _WRITE_MODE_CHARS)
 
 
 @pytest.fixture(autouse=True)
@@ -190,6 +209,108 @@ def _neutralize_smartsheet_retry(
             source_summary="test-neutralized",
         ),
     )
+
+
+# --- Live-state REDIRECT (the fix; `_forbid_live_state_writes` below is the detector)
+#
+# Daemon state paths are resolved at IMPORT time from `Path.home() / "its" / "state"`, so
+# a unit test that drives a real daemon entry (`poll_once`, `publish_once`, `compile_week`)
+# would create/truncate files in the OPERATOR's state directory — cycle locks, flock
+# sidecars, and the sustained-failure counters that decide whether a real outage pages.
+#
+# The module-level `Path` constants are redirected by a GENERIC sweep rather than a list,
+# because a list of ~30 per-daemon constants is exactly the thing that drifts (there are
+# already 8 in `portal_poll` alone). The two shapes a sweep cannot see are enumerated
+# below: a Path held inside an object, and a Path held on a frozen dataclass.
+_FIRST_PARTY_PACKAGES = (
+    "shared.", "safety_reports.", "progress_reports.", "po_materials.",
+    "subcontracts.", "field_ops.", "operator_dashboard.", "docs_pdf.",
+)
+# Paths held INSIDE an object — invisible to a module-attribute sweep.
+_LIVE_STATE_COUNTERS = (
+    ("po_materials.po_poll", "_FETCH_FAILS"),
+    ("po_materials.rfq_poll", "_FETCH_FAILS"),
+    ("po_materials.estimate_poll", "_FETCH_FAILS"),
+    ("subcontracts.subcontract_poll", "_FETCH_FAILS"),
+)
+# Send-poller entries. `DaemonConfig` is a FROZEN dataclass, so its `lock_path` needs
+# `dataclasses.replace` rather than a setattr. That one field is BOTH the cycle lock and
+# the anchor `send_poll_core` derives its transient-fence state paths from, so a single
+# redirect moves the whole family off live state.
+_LIVE_STATE_SEND_CONFIGS = (
+    "safety_reports.weekly_send_poll",
+    "progress_reports.progress_send_poll",
+    "po_materials.po_send_poll",
+    "po_materials.rfq_send_poll",
+    "subcontracts.subcontract_send_poll",
+)
+
+
+def _live_state_module_paths() -> list[tuple[object, str, Path, Path]]:
+    """First-party module attributes that name a file/subdir INSIDE a protected live dir.
+
+    Returns `(module, attribute, resolved_path, protected_root)`.
+
+    A constant that IS a protected root (`shared.heartbeat.STATE_DIR`,
+    `operator_dashboard.config.STATE_DIR`) is deliberately left alone: those are
+    observation/derivation bases, not write targets, and two of them exist precisely so a
+    drift guard can assert they still agree with each other
+    (`test_config_paths_mirror_live_shared_constants`). Redirecting a root would make that
+    guard compare tmp against tmp — the same trap the LOGS_DIR half already documents.
+    Anything that writes resolves a CHILD, which is what gets redirected here.
+    """
+    import sys
+
+    found: list[tuple[object, str, Path, Path]] = []
+    for mod_name, module in list(sys.modules.items()):
+        if not mod_name.startswith(_FIRST_PARTY_PACKAGES) or module is None:
+            continue
+        for attr, value in list(vars(module).items()):
+            if not isinstance(value, Path):
+                continue
+            resolved = value.resolve()
+            for root in _PROTECTED_LIVE_DIRS:
+                if resolved != root and resolved.is_relative_to(root):
+                    found.append((module, attr, resolved, root))
+                    break
+    return found
+
+
+@pytest.fixture(autouse=True)
+def _redirect_daemon_live_state(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Point every daemon-owned live-state path at `tmp_path` for non-integration tests.
+
+    Redirects are rebased on the path's location RELATIVE to the live dir, so two modules
+    that legitimately share a file (`heartbeat_row_ids.json`, read by every
+    HeartbeatReporter consumer) still share it in tmp — the redirect preserves the
+    production topology instead of flattening it.
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        return
+    import dataclasses
+
+    for module, attr, path, root in _live_state_module_paths():
+        monkeypatch.setattr(module, attr, tmp_path / root.name / path.relative_to(root))
+
+    import sys
+
+    for mod_name, attr in _LIVE_STATE_COUNTERS:
+        module = sys.modules.get(mod_name)
+        if module is None:
+            continue
+        counter = getattr(module, attr)
+        monkeypatch.setattr(counter, "_path", tmp_path / counter._path.name)
+
+    for mod_name in _LIVE_STATE_SEND_CONFIGS:
+        module = sys.modules.get(mod_name)
+        if module is None:
+            continue
+        cfg = module.CONFIG
+        monkeypatch.setattr(
+            module, "CONFIG", dataclasses.replace(cfg, lock_path=tmp_path / cfg.lock_path.name)
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -379,11 +500,21 @@ def _forbid_live_state_writes(
     to tmp). Where a redirect must enumerate every per-daemon STATE_DIR /
     WATCHDOG_MARKER_DIR constant (and silently drifts when a new one lands), this
     guard catches ANY write resolving under a protected live dir at the
-    Path.write_text / write_bytes / os.replace layer — so a missed redirect fails
-    loud here instead of silently mutating host state (forensic class #8 / the
-    #294 watchdog-marker masking). A unit test that trips this must redirect its
-    state-path constant to `tmp_path`; a test that genuinely needs live state must
-    be marked `@pytest.mark.integration` (which opts out, like the other fixtures).
+    Path.write_text / write_bytes / os.replace / open(write-mode) layer — so a
+    missed redirect fails loud here instead of silently mutating host state
+    (forensic class #8 / the #294 watchdog-marker masking). A unit test that trips
+    this must redirect its state-path constant to `tmp_path`; a test that genuinely
+    needs live state must be marked `@pytest.mark.integration` (which opts out,
+    like the other fixtures).
+
+    THE OPEN() HOLE, closed 2026-07-21. The three original hooks missed
+    `state_io.with_path_lock`, which creates its sidecar via `lock_path.open("a+")`
+    — so the transient-fence work silently created nine real `~/its/state/*.lock`
+    files while the suite reported clean. Two compounding reasons it stayed hidden:
+    the `.lock` creation precedes any `os.replace`, and the AssertionError raised by
+    the `os.replace` hook was then SWALLOWED by `SustainedFailureCounter.record()`'s
+    broad `except Exception` (which now re-raises AssertionError for exactly this
+    reason). Hooking open() in write modes catches the class, not the one caller.
     """
     if request.node.get_closest_marker("integration") is not None:
         return
@@ -410,6 +541,21 @@ def _forbid_live_state_writes(
         _guard(dst, "os.replace")
         return _ORIG_OS_REPLACE(src, dst, *args, **kwargs)  # type: ignore[arg-type]
 
+    def _mode_of(args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        return kwargs.get("mode", args[0] if args else "r")
+
+    def _guarded_path_open(self: Path, *args: object, **kwargs: object) -> object:
+        if _is_write_mode(_mode_of(args, kwargs)):
+            _guard(self, "Path.open(write mode)")
+        return _ORIG_PATH_OPEN(self, *args, **kwargs)  # type: ignore[arg-type,call-overload]
+
+    def _guarded_builtin_open(file: object, *args: object, **kwargs: object) -> object:
+        if _is_write_mode(_mode_of(args, kwargs)):
+            _guard(file, "open(write mode)")
+        return _ORIG_BUILTIN_OPEN(file, *args, **kwargs)  # type: ignore[arg-type,call-overload]
+
     monkeypatch.setattr(Path, "write_text", _guarded_write_text)
     monkeypatch.setattr(Path, "write_bytes", _guarded_write_bytes)
     monkeypatch.setattr(os, "replace", _guarded_os_replace)
+    monkeypatch.setattr(Path, "open", _guarded_path_open)
+    monkeypatch.setattr(builtins, "open", _guarded_builtin_open)

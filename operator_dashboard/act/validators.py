@@ -75,6 +75,45 @@ def v_int(lo: int, hi: int) -> Validator:
     return _v
 
 
+def v_seconds_list(max_entries: int, max_total: float) -> Validator:
+    """Comma-separated non-negative seconds, bounded in COUNT and in SUM.
+
+    Backs `smartsheet.retry.backoff_seconds`. Bounding the SUM is the load-bearing half:
+    three individually-plausible 20 s entries are a minute of sleep inside every failing
+    Smartsheet read. The same ceilings are re-applied client-side by
+    `smartsheet_client._clamp_backoff` for a value that reached the sheet by some other
+    path (a hand-edited cell) — the editor rejects, the client clamps.
+    """
+
+    def _v(value: str) -> str:
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        if not parts:
+            raise ConfigValidationError("must list at least one wait, e.g. '2.0,5.0'")
+        if len(parts) > max_entries:
+            raise ConfigValidationError(f"at most {max_entries} waits (got {len(parts)})")
+        out: list[float] = []
+        for part in parts:
+            try:
+                f = float(part)
+            except ValueError:
+                raise ConfigValidationError(
+                    f"each wait must be a number of seconds (got {part!r})"
+                ) from None
+            if f != f or f in (float("inf"), float("-inf")):
+                raise ConfigValidationError(f"each wait must be finite (got {part!r})")
+            if f < 0:
+                raise ConfigValidationError(f"waits cannot be negative (got {part!r})")
+            out.append(f)
+        total = sum(out)
+        if total > max_total:
+            raise ConfigValidationError(
+                f"the waits total {total:g}s; the cap is {max_total:g}s"
+            )
+        return ",".join(repr(f) for f in out)  # canonical, so no-op detection is reliable
+
+    return _v
+
+
 def v_float01(value: str) -> str:
     s = value.strip()
     try:

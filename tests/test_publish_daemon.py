@@ -319,6 +319,54 @@ def test_non_transient_gate_read_still_propagates(stub, fence_state):
         pd.publish_once()
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pd.smartsheet_client.SmartsheetRateLimitError("429"),
+        pd.smartsheet_client.SmartsheetValidationError("400"),
+    ],
+)
+def test_non_transient_base_url_read_is_not_softened_by_the_shared_sentinel(
+    stub, fence_state, exc
+):
+    """`read_base_url`'s transient bucket is BROAD (it swallows 429 and any bodied
+    SmartsheetError) because that is right for the five portal pullers. This daemon's own
+    reader never did — a 429 propagated to CRITICAL — so routing the read through the
+    shared sentinel must not soften it. The re-classification at the call site is what
+    keeps that promise."""
+    stub["creds"].return_value = pd.creds_resolution.TransientUnavailable(
+        reason=f"{type(exc).__name__}: {exc!r}", circuit_open=False, exc=exc
+    )
+
+    with pytest.raises(type(exc)):
+        pd.publish_once()
+
+    stub["pending"].assert_not_called()
+
+
+def test_gate_read_success_clears_the_ladder_even_when_polling_is_disabled(
+    stub, fence_state, tmp_path
+):
+    """Resetting only on the FULL-success path left a stale count behind every
+    `polling_disabled` return: a counter that reached 4 before the operator paused polling
+    would fire CRITICAL on the very first transient after resume."""
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetTransientError("HTTP 500")
+    for _ in range(pd.sustained_failure.DEFAULT_CRITICAL_THRESHOLD - 1):
+        pd.publish_once()
+
+    stub["enabled"].side_effect = None
+    stub["enabled"].return_value = False  # operator pauses polling; the gate read SUCCEEDS
+    assert pd.publish_once().halted == "polling_disabled"
+
+    stub["enabled"].return_value = True
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetTransientError("HTTP 500")
+    pd.publish_once()
+
+    sustained = [c for c in stub["log"].call_args_list
+                 if c.kwargs.get("error_code") == "publish_daemon.config_read_sustained"]
+    assert sustained == []
+
+
 def test_already_leased_row_is_skipped(stub):
     stub["pending"].return_value = [{"id": 6}]
     stub["claim"].return_value = None  # a concurrent run already leased it

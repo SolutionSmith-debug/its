@@ -214,8 +214,15 @@ def _translate(exc: sdk_exc.SmartsheetException) -> SmartsheetError:
             return SmartsheetTransientError(detail)
         return SmartsheetError(detail)
     if isinstance(exc, sdk_exc.HttpError):
-        # Non-JSON error body (gateway/proxy page) — a transport-layer fault.
-        return SmartsheetTransientError(f"HTTP {exc.status_code}: {exc.body!r}")
+        # Non-JSON error body. GATE ON STATUS exactly like the ApiError branch above —
+        # "the body was not JSON" is not by itself evidence of a self-healing fault. A
+        # captive portal / corporate proxy / Cloudflare challenge answers 401/403/407
+        # with an HTML page; retrying that 3× and then softening it to an ERROR would
+        # hide a real, deterministic access problem behind a "blip" label.
+        http_detail = f"HTTP {exc.status_code}: {exc.body!r}"
+        if isinstance(exc.status_code, int) and exc.status_code >= 500:
+            return SmartsheetTransientError(http_detail)
+        return SmartsheetError(http_detail)
     # Fallthrough is dominated by UnexpectedRequestError, which the SDK raises from
     # `_request` for every `requests` exception (ReadTimeout / ConnectionError) BEFORE
     # its retry loop can see it — see SmartsheetTransientError's docstring.
@@ -345,6 +352,50 @@ def _coerce_backoff(raw: str | None, default: tuple[float, ...]) -> tuple[float,
     return parsed or default
 
 
+def _clamp_attempts(value: int) -> int:
+    """Bound ``max_extra_attempts`` to [0, ceiling], WARNing when a row is out of range.
+
+    An unbounded knob is an outage surface: a typo'd ``200`` would hold every daemon on
+    one failing read for ~100 min. The dashboard's ``v_int`` validator rejects
+    out-of-range up front; this clamp covers the value that got in by another path (a
+    hand-edited ITS_Config cell), because the client — not the editor — is where the
+    number actually costs wall-clock.
+    """
+    ceiling = defaults.SMARTSHEET_RETRY_MAX_ATTEMPTS_CEILING
+    clamped = max(0, min(value, ceiling))
+    if clamped != value:
+        _local_warn(
+            f"smartsheet.retry.max_extra_attempts={value} is out of range — "
+            f"CLAMPED to {clamped} (allowed 0-{ceiling}). Fix the ITS_Config row."
+        )
+    return clamped
+
+
+def _clamp_backoff(values: tuple[float, ...]) -> tuple[float, ...]:
+    """Drop negatives and cap the SUMMED backoff of one sequence, WARNing when it bites.
+
+    Capping the total (rather than each entry) is what actually bounds the cost: three
+    entries of 20 s each are individually plausible and collectively a minute of sleep.
+    Entries past the cap are truncated, so the sequence gets shorter, never longer.
+    """
+    cap = defaults.SMARTSHEET_RETRY_MAX_TOTAL_BACKOFF_SECS
+    kept: list[float] = []
+    total = 0.0
+    for value in values:
+        step = max(0.0, value)
+        if total + step > cap:
+            break
+        kept.append(step)
+        total += step
+    out = tuple(kept)
+    if out != values:
+        _local_warn(
+            f"smartsheet.retry.backoff_seconds={values} exceeds the {cap:g}s total cap "
+            f"(or contains a negative) — TRUNCATED to {out}. Fix the ITS_Config row."
+        )
+    return out
+
+
 def _defaults_retry_config() -> RetryConfig:
     return RetryConfig(
         enabled=defaults.SMARTSHEET_RETRY_ENABLED,
@@ -391,11 +442,11 @@ def _load_retry_config() -> RetryConfig:
     )
     cfg = RetryConfig(
         enabled=_coerce_bool(enabled_raw, defaults.SMARTSHEET_RETRY_ENABLED),
-        max_extra_attempts=_coerce_int(
-            attempts_raw, defaults.SMARTSHEET_RETRY_MAX_EXTRA_ATTEMPTS
+        max_extra_attempts=_clamp_attempts(
+            _coerce_int(attempts_raw, defaults.SMARTSHEET_RETRY_MAX_EXTRA_ATTEMPTS)
         ),
-        backoff_seconds=_coerce_backoff(
-            backoff_raw, defaults.SMARTSHEET_RETRY_BACKOFF_SECONDS
+        backoff_seconds=_clamp_backoff(
+            _coerce_backoff(backoff_raw, defaults.SMARTSHEET_RETRY_BACKOFF_SECONDS)
         ),
         source_summary=sources,
     )
@@ -477,11 +528,18 @@ def _transient_retry[F: Callable[..., Any]](fn: F) -> F:
     triple the failure-count rate, tripping the breaker 3× sooner than configured, and
     (b) catch-and-sleep on SmartsheetCircuitOpenError — hammering the very
     short-circuit the breaker exists to provide.
+
+    CONTROL-PLANE READS GET EXACTLY ONE ATTEMPT. A call made under
+    ``circuit_breaker.bypass()`` is the breaker's / error_log's / the heartbeat's own
+    plumbing, not the daemon's work: multiplying it turned a cold config bootstrap on a
+    failing backend into 12 SDK calls and ~21 s of sleeps, on the very path that exists
+    so an OPEN breaker cannot block it. Same shape as the ``_loading_retry_config``
+    short-circuit below, one level out.
     """
 
     @wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        if _loading_retry_config:
+        if _loading_retry_config or circuit_breaker.in_bypass():
             return fn(*args, **kwargs)
         cfg = _load_retry_config()
         if not cfg.enabled or cfg.max_extra_attempts <= 0:
