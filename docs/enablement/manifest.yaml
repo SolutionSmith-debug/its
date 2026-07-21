@@ -132,14 +132,14 @@ docs:
     title: "ITS Daemon Reference"
     version: v1
     source: docs/references/daemon_reference.md
-    sha256: 9e968b2569e000ae56b3aca756dcb216021620d628fb0d90e4a71b436d02febe
+    sha256: 640173c6180c34c7cc7f4521213b9dab7671cc70c8eb4c8abe2793296767d37c
     audience: operator
 
   - key: data_model_reference
     title: "ITS Data Model Reference"
     version: v1
     source: docs/references/data_model_reference.md
-    sha256: 6658c24fdad19c758181a6e7a444b9cef35dc23ddc7d1ebaf6c0b33d31c17bbd
+    sha256: 26e3c0a8eeded049a8e9ef4c5073519d8a2724f08e7e433bc8c49d9cf0c43115
     audience: operator
 
   - key: integration_reference
@@ -167,14 +167,14 @@ docs:
     title: "ITS Glossary"
     version: v1
     source: docs/references/glossary.md
-    sha256: 6d565a4d57647704f1b51a0f498dc8b0594eb7507f2808a72fc3b1254e6c0fac
+    sha256: 18a44abc013d487047be7087c24dc3326bd32dfe33d884a44c7b45aa408b543a
     audience: all
 
   - key: documentation_index
     title: "ITS Documentation Index"
     version: v1
     source: docs/references/documentation_index.md
-    sha256: 9af70c8210c1434e733a0f4e64b369e5d5b1c222d929b3ba620bf282a7000842
+    sha256: c6e008bfe214361143872607e339c047b506398008f109ca38b71a83c10b21e1
     audience: all
 
   # ── Troubleshooting guide (documentation-corpus, Tranche B). GENERATED from

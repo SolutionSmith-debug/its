@@ -24,6 +24,7 @@ from operator_dashboard.sources.base import (
     fmt_timedelta,
     worst_sev,
 )
+from operator_dashboard.system_map import NODE_BY_MARKER
 
 
 class WatchdogChecksSource(DataSource):
@@ -58,16 +59,21 @@ class WatchdogChecksSource(DataSource):
             if sev != SEV_OK:
                 stale += 1
             worst = worst_sev(worst, sev)
-            rows.append(
-                {
-                    "job": clean(job),
-                    "last run (UTC)": clean(last_run),
-                    "age": clean(age),
-                    "window": clean(fmt_timedelta(window)),
-                    "state": clean(state),
-                    "_sev": sev,
-                }
-            )
+            row = {
+                "job": clean(job),
+                "last run (UTC)": clean(last_run),
+                "age": clean(age),
+                "window": clean(fmt_timedelta(window)),
+                "state": clean(state),
+                "_sev": sev,
+            }
+            # Deep-link the marker to its system-map node, like the launchd and
+            # heartbeat panels do. A stale marker is the first thing an operator
+            # sees; the node rail is where the runbook + gate live.
+            node_id = NODE_BY_MARKER.get(job)
+            if node_id:
+                row["_link_job"] = f"/system?focus={node_id}"
+            rows.append(row)
         # The watchdog's own marker is intentionally NOT tracked (a daemon
         # can't detect its own death) — surface it as informational only.
         self_run, self_age, _, self_state = self._read_marker(

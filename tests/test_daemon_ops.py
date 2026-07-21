@@ -97,10 +97,39 @@ def test_label_allowlist_refuses_non_interval_and_non_its(env: dict[str, Any]) -
     assert env["updates"] == [] and env["install_calls"] == []
 
 
-def test_all_nine_interval_daemons_registered() -> None:
-    assert len(daemon_ops.INTERVAL_DAEMONS) == 9
+def test_interval_daemons_match_install_sh_table() -> None:
+    """PARITY TOOTH: INTERVAL_DAEMONS must mirror install.sh's
+    `poll_interval_config_key` table exactly — label AND config key.
+
+    A pinned COUNT (the old `== 9`) does not bite: adding a daemon to install.sh
+    while forgetting the dashboard leaves the interval verb silently unable to
+    retune it — exactly how estimate-poll / rfq-poll / rfq-send drifted.
+    Deriving the expectation from install.sh makes the next omission fail HERE.
+    """
+    import re
+    from pathlib import Path
+
+    install_sh = Path(__file__).resolve().parent.parent / "scripts" / "launchd" / "install.sh"
+    table = dict(
+        re.findall(
+            r"^\s*(org\.solutionsmith\.its\.[\w-]+)\)\s*echo\s+\"([\w.]+\.poll_interval_seconds)\"",
+            install_sh.read_text(),
+            re.MULTILINE,
+        )
+    )
+    assert table, "could not parse install.sh poll_interval_config_key table"
+    assert {lbl: d.config_key for lbl, d in daemon_ops.INTERVAL_DAEMONS.items()} == table, (
+        "operator_dashboard/act/daemon_ops.py _DAEMONS is out of sync with "
+        "scripts/launchd/install.sh — every interval daemon install.sh knows must be "
+        "retunable from the dashboard (registry reconciliation, HOUSE_REFLEXES §1)"
+    )
+    # The workstream must be the config key's first dotted segment: ITS_Config is
+    # read on the (Setting, Workstream) PAIR, so a wrong workstream reads nothing.
+    for lbl, d in daemon_ops.INTERVAL_DAEMONS.items():
+        assert d.config_key.split(".", 1)[0] == d.workstream, lbl
     assert daemon_ops.is_interval_daemon(_PO_POLL)
     assert daemon_ops.is_interval_daemon("org.solutionsmith.its.subcontract-send")  # SC-S4
+    assert daemon_ops.is_interval_daemon("org.solutionsmith.its.rfq-send")  # ADR-0004 R3
     assert not daemon_ops.is_interval_daemon("org.solutionsmith.its.dashboard")
 
 
@@ -151,7 +180,9 @@ def test_reinstall_failure_audits_desync(env: dict[str, Any]) -> None:
 def test_read_interval_state(env: dict[str, Any]) -> None:
     _seed(env, _PO_POLL_KEY, "po_materials", "90", row_id=5)
     state = {d["label"]: d for d in daemon_ops.read_interval_state()}
-    assert len(state) == 9
+    # every registered interval daemon gets a row (no pinned count — the registry
+    # is the expectation, and its parity with install.sh is asserted separately)
+    assert set(state) == set(daemon_ops.INTERVAL_DAEMONS)
     assert state[_PO_POLL]["value"] == "90" and state[_PO_POLL]["present"]
     assert state[_PO_POLL]["slug"] == "org-solutionsmith-its-po-poll"  # CSS-safe htmx id
     assert not state["org.solutionsmith.its.weekly-send"]["present"]  # unseeded → False

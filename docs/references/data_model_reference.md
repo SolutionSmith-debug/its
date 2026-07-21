@@ -85,7 +85,7 @@ share list *is* the set of approvers the F22 send gate verifies.
 
 ### Sheet catalog
 
-<!-- src: shared/sheet_ids.py:102-217 | verified 2026-07-14 -->
+<!-- src: shared/sheet_ids.py:102-222 (static sheet constants, incl. SHEET_ESTIMATE_LOG/SHEET_RFQ_LOG/SHEET_RFQ_PENDING_REVIEW at :204-206) | verified 2026-07-19 -->
 The static, pre-wired sheets ITS reads/writes. IDs are internal identifiers (already committed in
 `shared/sheet_ids.py`), not secrets; prefer the **name** in prose.
 
@@ -112,6 +112,9 @@ The static, pre-wired sheets ITS reads/writes. IDs are internal identifiers (alr
 | **ITS_Vendors** | Purchase Orders / Control | **Sole** vendor system-of-record (bridge key `VEN-######`) | po_materials |
 | **PO_Log** | Purchase Orders / Control | Operator-visible ledger **mirror** of the D1 `purchase_orders` store | po_materials |
 | **PO_Pending_Review** | Purchase Orders / Control | PO review / approve / send surface (WSR schema twin) | po_materials |
+| **Estimate_Log** | Purchase Orders / Control | Vendor-estimate importer ledger — one row per uploaded estimate (ADR-0004) | po_materials |
+| **RFQ_Log** | Purchase Orders / Control | Outbound-RFQ ledger, one row per (rfq, vendor) (ADR-0004) | po_materials |
+| **RFQ_Pending_Review** | Purchase Orders / Control | RFQ review / approve / send surface (PO_Pending_Review schema twin); rows tagged `po_materials_rfq` | po_materials |
 | **ITS_Subcontractors** | Subcontracts / Control | Subcontractor party SoR (bridge key `SUB-######`) | subcontracts |
 | **Subcontract_Log** | Subcontracts / Control | Ledger mirror of the D1 `subcontracts` store | subcontracts |
 | **Subcontract_Pending_Review** | Subcontracts / Control | Subcontract review / approve / send surface | subcontracts |

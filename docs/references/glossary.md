@@ -37,7 +37,7 @@ this file says it means.
 |------|---------|
 | **F22** | The send-approval **attestation** gate. Before any send poller dispatches a row, `verify_approval` re-checks that the driving approval checkbox was genuinely set by an authorized approver and stamps the verified `Approved By` / `Approved At`. **Fail-closed**: an empty approver set blocks all sends. |
 | **§46 authorization-by-workspace-share** | The approver set for a workstream **is** the Smartsheet workspace's share list. To grant someone send-approval authority you share them into the workstream's ITS workspace; to revoke it you unshare them. |
-| **`*_Pending_Review` / `*_human_review`** | The human-in-the-loop approval sheet for a workstream: `WSR_human_review` (safety), `WPR_human_review` (progress), `PO_Pending_Review` (purchase orders), `Subcontract_Pending_Review`. A row carries `Approved for Send` / `Approved By` / `Approved At` / `Sent At` / `Send Status`. |
+| **`*_Pending_Review` / `*_human_review`** | The human-in-the-loop approval sheet for a workstream: `WSR_human_review` (safety), `WPR_human_review` (progress), `PO_Pending_Review` (purchase orders), `RFQ_Pending_Review` (outbound RFQs), `Subcontract_Pending_Review`. A row carries `Approved for Send` / `Approved By` / `Approved At` / `Sent At` / `Send Status`, plus a `Workstream` lane tag (see [Workstream tags](#workstream-tags)). |
 | **Send Now / Approve for Scheduled Send** | The two approval checkboxes on a review row: immediate dispatch vs the batched Monday-morning (or per-workstream) scheduled window. |
 
 ## HELD send states
@@ -142,12 +142,47 @@ repo). Paraphrased operationally here; the blueprint holds the authoritative tex
 
 ## Workstream tags
 
-<!-- src: docs/operations/doc_conventions.md "## Workstream taxonomy" | verified 2026-07-15 -->
+There are **two** closed "workstream" vocabularies in ITS. They are not the same list, and
+conflating them is a real bug class — one governs *documents*, the other governs *send routing*.
 
-The closed set used in doc frontmatter and picklist validation: `safety_reports`,
-`safety_portal`, `progress_reports`, `field_ops`, `po_materials`, `subcontracts`,
-`operator_dashboard`, `box`, `ci`, `security`, `docs`, `infrastructure`, and `null`
-(cross-cutting).
+### 1. The doc-frontmatter taxonomy
+
+<!-- src: scripts/lint_doc_conventions.py:77-92 (CANONICAL_WORKSTREAMS); docs/operations/doc_conventions.md "## Workstream taxonomy"; docs/doctrine_manifest.yaml workstream_tags | verified 2026-07-19 -->
+
+The `workstream:` value in every doc's YAML frontmatter. The closed set is
+`safety_reports`, `safety_portal`, `progress_reports`, `field_ops`, `po_materials`,
+`subcontracts`, `operator_dashboard`, `box`, `ci`, `security`, `docs`, `infrastructure`,
+and `null` (cross-cutting). It lives in **three** copies that must stay in sync —
+`scripts/lint_doc_conventions.py` `CANONICAL_WORKSTREAMS`, the table in
+`docs/operations/doc_conventions.md`, and `docs/doctrine_manifest.yaml` `workstream_tags`.
+`po_materials_rfq` is **not** in this set: the RFQ/estimate lane is a `po_materials`
+sub-lane, so its docs (`rfq_generation_path.md`, `rfq_send.md`,
+`estimate_import_path.md`) carry `workstream: po_materials`.
+
+### 2. The send-lane row tag
+
+<!-- src: safety_reports/weekly_send.py:249,288 (SendConfig.workstream_tag + guard); progress_reports/progress_send.py:111; po_materials/po_send.py:135; po_materials/rfq_send.py:191 (rfq_review.WORKSTREAM_TAG); subcontracts/subcontract_send.py:149; shared/picklist_validation.py:122,133,265,324,441 (the per-review-sheet Workstream value sets) | verified 2026-07-19 -->
+
+The value in a review sheet's **`Workstream` cell**, matched by the shared send engine's
+**contamination guard**: a row whose tag ≠ the dispatching `SendConfig.workstream_tag` is
+HARD-HELD (`held_workstream_mismatch` + CRITICAL) before the write-ahead `SENDING` marker,
+so cross-lane dispatch is structurally impossible. Five values, one per send lane:
+
+| Review sheet | Row tag | Sender |
+|---|---|---|
+| `WSR_human_review` | `safety` | `safety_reports.weekly_send` |
+| `WPR_human_review` | `progress` | `progress_reports.progress_send` |
+| `PO_Pending_Review` | `po_materials` | `po_materials.po_send` |
+| `RFQ_Pending_Review` | `po_materials_rfq` | `po_materials.rfq_send` |
+| `Subcontract_Pending_Review` | `subcontracts` | `subcontracts.subcontract_send` |
+
+Each set is registered per sheet in `shared/picklist_validation.REGISTRY`, which gates every
+`update_rows` write — a wrong tag raises `PicklistViolationError` rather than silently
+routing. Note these are **report-family / lane** names, not the frontmatter taxonomy:
+`safety` and `progress` are row tags with no frontmatter counterpart, and `po_materials_rfq`
+is a row tag only. The RFQ **ledger** (`RFQ_Log`) is the exception that proves the
+distinction — its `Workstream` column takes `po_materials` (it is not a send surface); only
+the `RFQ_Pending_Review` send surface carries `po_materials_rfq`.
 
 ## Related docs
 

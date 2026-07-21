@@ -2071,6 +2071,36 @@ Cost at 20×20 ≈ **$610–$2,410/mo hard ≈ the Smartsheet tier decision** + 
 
 **Revisit when:** the 20-job ramp is scheduled (start with A1's read-only cap verification), or any Tier-A item is picked up for implementation.
 
+
+---
+
+## Watchdog Check U (F22 approver-drift) does not scan the procurement workspaces
+
+**Found:** 2026-07-19, while wiring the RFQ/vendor-estimate lane into the operator dashboard.
+
+`scripts/watchdog.py` `_APPROVER_WORKSPACES` lists only **Safety Portal** and **Progress Reporting**.
+Check U therefore never baselines or diffs the share membership of the **Purchase Orders** or
+**Subcontracts** workspaces — yet those are exactly the §46 workspace-share sets that F22 verifies
+approvals against for `po_send`, `subcontract_send` and (as of ADR-0004 R3) `rfq_send`. An approver
+silently added to the Purchase Orders workspace gains the authority to release a PO, a subcontract
+package, or an RFQ to an external vendor, and no check reports the drift.
+
+The system map previously *claimed* the coverage: `sheet_po_pending_review` and
+`sheet_subcontract_pending_review` carried `watchdog_checks=("U",)`. Those badges were **removed**
+(2026-07-19) rather than propagated to the new `sheet_rfq_pending_review` node — telling the operator
+a control is running when it is not is worse than the gap itself (§55 truthful reporting).
+
+**Fix (small, but a security-control scope change — deserves its own review):** add
+`("Purchase Orders", sheet_ids.WORKSPACE_PURCHASE_ORDERS)` and
+`("Subcontracts", sheet_ids.WORKSPACE_SUBCONTRACTS)` to `_APPROVER_WORKSPACES` (the loop is already
+per-workspace fail-soft), seed the baselines on first run, then restore `watchdog_checks=("U",)` on
+all three review-sheet nodes in `operator_dashboard/system_map.py`.
+
+**Urgency — the trigger is ALREADY met.** This was filed expecting "revisit when a procurement send
+gate goes live". Live-checking `ITS_Config` on 2026-07-19 found `po_materials.po_send`,
+`po_materials.rfq_send` and `subcontracts.subcontract_send` **all `polling_enabled = true`** on the
+mirror host. So all three procurement send lanes are ACTIVE with **no approver-drift detection on the
+workspaces whose share lists authorize their sends**. Treat as an open gap, not backlog.
 ## Converge `fieldops_sync`/`portal_poll` onto the shared `shared/sustained_failure.py` counter [OPEN 2026-07-20]
 
 PR #635 extracted `SustainedFailureCounter` FROM `fieldops_sync`/`portal_poll`'s existing private
