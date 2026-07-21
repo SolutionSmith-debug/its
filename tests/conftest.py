@@ -6,8 +6,14 @@ Two autouse fixtures, both default-applied to every test under `tests/`:
    that returns deterministic test tokens (`f"test-{service}"`).
    Eliminates the macOS-only `security` CLI dependency (which was failing
    on Linux CI runners since PR #68's R3 Session 3 introduced
-   `safety_reports/weekly_send_poll.py`) and prevents accidental live
-   network calls during unit tests.
+   `safety_reports/weekly_send_poll.py`).
+
+   NOTE: this fixture was long described here as preventing "accidental live
+   network calls". It does not, and never did — a placeholder token makes an
+   outbound call FAIL (401), it does not stop the socket from opening. That
+   misreading is why thousands of real 401s/day reached Smartsheet, Resend and
+   Sentry and polluted the live operator log. `_forbid_external_network` below
+   is the control that actually holds that line.
 
 2. `_mock_kill_switch_state` — patches the `get_setting` attribute on
    `shared.kill_switch.smartsheet_client` so the `@require_active`
@@ -39,11 +45,25 @@ The conftest fix is the immediate hole-closer. A durable structural fix
 from __future__ import annotations
 
 import os
+import socket
 from pathlib import Path
 
 import pytest
 
 _KEYCHAIN_OPT_OUT_FILES = frozenset({"test_keychain.py", "test_helpers.py"})
+
+# Tests whose SUBJECT is error_log's egress legs (the ITS_Errors row write, the
+# Resend page, the Sentry capture). They mock those clients themselves and must
+# keep the real functions under test, so `_neutralize_error_log_egress` skips them.
+_EGRESS_OPT_OUT_FILES = frozenset(
+    {
+        "test_error_log.py",
+        "test_error_log_redaction_backstop.py",
+        "test_resend_client.py",
+        "test_sentry_client.py",
+        "test_alert_dedupe.py",
+    }
+)
 
 # --- Live-state write guard (forensic class #8 / #294) --------------------
 # A test that silently refreshed the REAL watchdog marker masked watchdog
@@ -62,6 +82,42 @@ _PROTECTED_LIVE_DIRS = (_REAL_STATE_DIR, _REAL_WATCHDOG_DIR)
 _ORIG_WRITE_TEXT = Path.write_text
 _ORIG_WRITE_BYTES = Path.write_bytes
 _ORIG_OS_REPLACE = os.replace
+
+# --- Live-log + external-network guards -----------------------------------
+# The keychain stub above hands every client a PLACEHOLDER credential, which was
+# long assumed to "prevent live network calls" (this file's own docstring said
+# so). It does not — it only makes them FAIL. A unit test reaching a real client
+# path still opened a real socket to api.smartsheet.com / api.resend.com / Sentry
+# and got a 401 back. 13,850 such lines landed in the LIVE operator log on
+# 2026-07-19 alone (80% of that day's WARN/ERROR/CRITICAL volume), and the same
+# pollution was mis-diagnosed as a Smartsheet outage three separate times.
+#
+# Two compounding reasons that mattered: `error_log.LOG_DIR` is absolute
+# (~/its/logs), so the noise lands in the OPERATOR's log no matter which checkout
+# runs pytest; and a test-emitted CRITICAL genuinely attempts to PAGE the operator
+# through Resend — stopped only by the placeholder key being rejected. A wrong
+# credential was doing a boundary's job.
+#
+# These two fixtures make the boundary structural, mirroring
+# `_forbid_live_state_writes` below: same fail-loud, same `integration` opt-out.
+# Captured ONCE, before any redirect, so the constants-parity drift guard in
+# tests/test_operator_dashboard.py can still compare the GENUINE live locations.
+REAL_LOG_DIR = (Path.home() / "its" / "logs").resolve()
+REAL_STATE_DIR = _REAL_STATE_DIR
+
+# Loopback stays allowed: in-process ASGI clients and any local helper are not
+# the hazard. Only egress OFF the host is.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "", "0.0.0.0"})
+_ORIG_SOCKET_CONNECT = socket.socket.connect
+_ORIG_SOCKET_CONNECT_EX = socket.socket.connect_ex
+
+
+def _is_loopback(address: object) -> bool:
+    """True for AF_UNIX paths and loopback TCP/UDP targets."""
+    if not isinstance(address, tuple) or not address:
+        return True  # AF_UNIX (str path) / anything not host-port shaped
+    host = address[0]
+    return isinstance(host, str) and host in _LOOPBACK_HOSTS
 
 
 def _is_under_protected_live_dir(target: object) -> bool:
@@ -169,6 +225,115 @@ def _mock_kill_switch_state(
     monkeypatch.setattr(
         "shared.kill_switch.check_system_state", lambda: SystemState.ACTIVE
     )
+
+
+@pytest.fixture(autouse=True)
+def _redirect_live_log_dir(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Send `error_log`'s daily file to tmp so tests never write the OPERATOR log.
+
+    `error_log.LOG_DIR` is absolute (~/its/logs) and read at call time, so without
+    this every test that logs — including the many that deliberately exercise
+    WARN/ERROR/CRITICAL paths — appended to the live operator log from whatever
+    checkout ran pytest. That buried real signal (80% of 2026-07-19's alert-level
+    lines were test noise) and got mis-read as a production incident three times.
+
+    Redirect, not forbid: logging is what these tests are testing. They just must
+    not do it in the operator's file. `integration` tests opt out, like every
+    other guard here.
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        return
+    import shared.error_log as _el
+
+    # Only the WRITE side is redirected. `operator_dashboard.config.LOGS_DIR` is
+    # deliberately left pointing at the live directory: the dashboard only READS
+    # it (the log-tail panel), reads are harmless, and repointing it would make
+    # tests/test_operator_dashboard.py's constants drift-guard vacuous — it exists
+    # to catch exactly the case where a root silently stops pointing at ~/its.
+    monkeypatch.setattr(_el, "LOG_DIR", tmp_path / "logs")
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_error_log_egress(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep `error_log` LOCAL in unit tests: no ITS_Errors row, no Resend, no Sentry.
+
+    `error_log.log()` has three egress legs beyond the local file — an ITS_Errors
+    row write, a Resend page and a Sentry capture. A unit test that exercises any
+    daemon path which logs (most of them) fired all three for real; only the
+    placeholder credential made them fail. That is how unit tests came to attempt
+    row writes against the PRODUCTION ITS_Errors sheet and to genuinely try to
+    page the operator.
+
+    Neutralizing the legs — rather than mocking Smartsheet per test — matches what
+    those tests actually intend: they assert on BEHAVIOUR (that a WARN was raised,
+    which error_code, that a fence held), never on the wire. The local file leg is
+    untouched (redirected to tmp above), so log-content assertions still work.
+
+    `_EGRESS_OPT_OUT_FILES` are the tests whose SUBJECT is these legs; they mock
+    the clients themselves and must keep the real functions under test.
+    """
+    if request.node.path.name in _EGRESS_OPT_OUT_FILES:
+        return
+    if request.node.get_closest_marker("integration") is not None:
+        return
+    import shared.error_log as _el
+
+    monkeypatch.setattr(_el, "_smartsheet_log", lambda *a, **k: None)
+    for leg in ("_fire_resend_leg", "_fire_sentry_leg"):
+        if hasattr(_el, leg):
+            monkeypatch.setattr(_el, leg, lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
+def _forbid_external_network(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail loud if a unit test opens a socket to anything off this host.
+
+    The root fix for the pollution described above: the keychain stub only made
+    outbound calls FAIL, it never stopped them. Unit tests were really reaching
+    api.smartsheet.com, api.resend.com and Sentry — thousands of 401s a day from
+    the operator's IP, with a test-emitted CRITICAL genuinely attempting to page
+    through Resend. The placeholder credential was the only thing preventing a
+    real page or a real write to the production ITS_Errors sheet.
+
+    Guarding at `socket.connect` catches every client library at once (requests,
+    urllib3, the Smartsheet SDK, resend, sentry_sdk) rather than needing a mock
+    per SDK — the same drift-proof reasoning as `_forbid_live_state_writes`.
+    Loopback and AF_UNIX stay allowed: in-process ASGI test clients are not the
+    hazard; egress off the host is. A unit test that trips this must mock its
+    client seam; a test that genuinely needs the network must be marked
+    `@pytest.mark.integration` (which opts out).
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        return
+
+    def _fail(address: object) -> None:
+        raise AssertionError(
+            f"test {request.node.nodeid} opened a REAL network connection to {address!r}.\n"
+            "Unit tests must be hermetic: the keychain stub only makes such calls FAIL "
+            "(401), it does not prevent them — that is how thousands of live 401s/day "
+            "reached Smartsheet/Resend/Sentry and polluted the operator log. Mock the "
+            "client seam, or mark the test @pytest.mark.integration if it genuinely "
+            "needs the network."
+        )
+
+    def _guarded_connect(self: socket.socket, address: object) -> object:
+        if not _is_loopback(address):
+            _fail(address)
+        return _ORIG_SOCKET_CONNECT(self, address)  # type: ignore[arg-type]
+
+    def _guarded_connect_ex(self: socket.socket, address: object) -> object:
+        if not _is_loopback(address):
+            _fail(address)
+        return _ORIG_SOCKET_CONNECT_EX(self, address)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(socket.socket, "connect", _guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", _guarded_connect_ex)
 
 
 @pytest.fixture(autouse=True)
