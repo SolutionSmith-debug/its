@@ -13,7 +13,7 @@ tags: [runbook, successor-remediation, watchdog, compile_now_poll, cross-workstr
 > **In the troubleshooting tree** ([printable guide](../troubleshooting/troubleshooting_guide.md) · dashboard `/troubleshoot`). This runbook resolves:
 >   - Safety report — portal submission to sent weekly packet → On-demand "Compile Now" produces a packet without waiting for Friday → “Compile Now was checked but no packet appears and the checkbox stays set.”
 >   - Safety report — portal submission to sent weekly packet → On-demand "Compile Now" produces a packet without waiting for Friday → “A CRITICAL says the compile-now trigger scan is failing for most jobs (or the Active-Jobs read itself failed) several cycles running.”
->   - Safety report — portal submission to sent weekly packet → On-demand "Compile Now" produces a packet without waiting for Friday → “A CRITICAL names ONE job whose compile-now trigger scan has failed for many consecutive cycles while every other job scans fine.”
+>   - Safety report — portal submission to sent weekly packet → On-demand "Compile Now" produces a packet without waiting for Friday → “A CRITICAL names ONE job whose compile-now trigger scan has failed for many consecutive cycles. The row comes in TWO wordings that mean opposite things — read which one you have first.”
 > Daemon(s): `compile-now-poll` — see the [daemon reference](../references/daemon_reference.md).
 <!-- END TREE-XREF -->
 
@@ -118,6 +118,15 @@ this row on its own is **not** proof of a broad outage. Read the `cause(s):` cla
 list before deciding. Normal-severity single-pass blips are the ERROR row
 `compile_now_poll.scan_failed` — one row per cycle, not one per job — and need no action.
 
+**How often it re-pages.** The CRITICAL is **not** written every cycle. It fires on the cycle that
+crosses the threshold and then only at **double the previous count** — 5, 10, 20, 40, 80 …
+consecutive failing cycles. In between, the daemon still writes one row per cycle, at ERROR
+`compile_now_poll.scan_failed`, and past the threshold that row says `SUSTAINED … ALREADY escalated
+CRITICAL … next CRITICAL at N consecutive failing cycle(s)`. So **"no new CRITICAL for a while" is
+NOT proof the outage ended** — see the repair step for what is. (Why: an open CRITICAL can never be
+auto-cleared from `ITS_Errors`, and one per 90 s cycle is thousands of unreclaimable rows a day; the
+sheet has a hard row cap that has locked the system out before.)
+
 **Check (read-only).** (1) Read the CRITICAL message: how many of how many jobs, and does it name
 `ITS_Active_Jobs read FAILED`? (2) Read the **`cause(s):`** clause — it is the deciding signal.
 `SmartsheetError` / HTTP 5xx / timeout = a platform incident (the self-healing case). Anything that
@@ -128,17 +137,26 @@ open `ITS_Active_Jobs` and a week sheet in the browser? A broad Smartsheet incid
 cause. (4) Are OTHER daemons also erroring in `ITS_Errors` in the same window (→ platform-wide, not
 this daemon)? (5) `ITS_Daemon_Health` row `safety_reports.compile_now_poll` — `Last Cycle
 Status=DEGRADED` and `Last Cycle At` still advancing means the daemon is alive and retrying.
-(6) **If only a FEW jobs are named, or the SAME jobs are named cycle after cycle, work Fault E's
-checks below before doing anything else** — a renamed folder or moved week sheet on one or two jobs
-produces this exact CRITICAL on a small deployment, and that never self-heals. (7) If the message
+(6) **Is there a Fault E `compile_now_job_scan_sustained` row in the same window?** If there is,
+**read its wording — that row, not the count of jobs, is what routes you.** If it says *"while other
+jobs scan fine"*, at least one job DID scan successfully, so this is a per-job fault (a renamed
+folder or moved week sheet) wearing a Fault D costume on a small deployment — **work Fault E's
+checks below before doing anything else, it never self-heals.** If it says *"as did EVERY other
+scanned job (N/N) … BROAD scan outage"*, then nothing scanned successfully and this really is a
+platform incident — stay on Fault D and do **not** rename anything. (Job COUNT is not the test: on a
+three-job deployment a total Smartsheet outage names three jobs, which is both "a few" and
+"everything".) (7) If the message
 ends `…and N more`, the row names only the first five; the COMPLETE failing set, with each job's
 consecutive-cycle count, is on the ITS host in `~/its/state/compile_now_job_scan_failures.json` —
 hand Claude: *"read `~/its/state/compile_now_job_scan_failures.json` and list every failing job."*
 
 **Repair (Tier-2, low-class).** **When the cause is a Smartsheet error and most jobs are named:
 wait and watch — that case self-heals.** When Smartsheet recovers, the next clean cycle resets the
-counter and the CRITICAL stops; any checked Compile Now compiles on its own. Mark the CRITICAL
-resolved from the dashboard once new ones stop appearing. **If the cause clause names a code error,
+counter and the rows stop; any checked Compile Now compiles on its own. **Recovery is proven by the
+absence of NEW `compile_now_poll.scan_failed` ERROR rows, not by the absence of new CRITICALs** (the
+CRITICAL re-pages on a doubling interval, so it goes quiet mid-outage by design). Once ERROR rows
+have stopped for a few minutes, mark the CRITICAL resolved from the dashboard. **If the cause clause
+names a code error,
 or Fault E's checks turn up a renamed/moved sheet, this is NOT the wait-and-watch case** — do Fault
 E's repair (rename it back), or escalate the code error to Seth; waiting only delays the fix. If it
 is still firing after **~30 minutes** with Smartsheet otherwise reachable in the browser, hand
@@ -148,31 +166,50 @@ retries).
 
 ## Fault E — "one job's scan has failed N consecutive cycles" CRITICAL
 
-**Symptom.** A **CRITICAL** `ITS_Errors` row `Error=compile_now_job_scan_sustained` naming ONE job:
-`[safety_reports] Coker Yard (JOB-0007) compile-now trigger scan has failed 20 consecutive cycles
-(week 2026-07-18) while other jobs scan fine — this job's week sheet is unreachable…`.
+**Symptom.** A **CRITICAL** `ITS_Errors` row `Error=compile_now_job_scan_sustained` naming ONE job.
+**The row comes in TWO wordings and they mean opposite things — read which one you have before
+touching anything:**
 
-**Meaning.** **That one job** has been failing for ~30 minutes of continuous cycles while the others
-scan fine, so this is a fault on that job, not a Smartsheet outage. Its week sheet cannot be read or created, so
+- **Isolated fault (the Fault-E case):** `[safety_reports] Coker Yard (JOB-0007) compile-now trigger
+  scan has failed 20 consecutive cycles (week 2026-07-18) **while other jobs scan fine** — this
+  job's week sheet is unreachable…`. Other jobs really did scan successfully this cycle. Work the
+  checks below.
+- **Broad outage (NOT the Fault-E case):** `… has failed 20 consecutive cycles (week 2026-07-18)
+  **as did EVERY other scanned job (3/3) — this is a BROAD scan outage, NOT a per-job fault**; work
+  the compile_now_scan_sustained row first and do not rename anything.` Nothing scanned. **Stop
+  here and go to Fault D.** On a small deployment a total Smartsheet outage makes every job "dead
+  for 20 cycles", so this row appears for each of them — renaming folders would be repairing a fault
+  that does not exist.
+
+Between escalations the same fault also writes an **ERROR** row `compile_now_poll.job_scan_failed`
+with the same wording plus `ALREADY escalated CRITICAL … next CRITICAL at N consecutive cycle(s)` —
+the CRITICAL re-pages at 20, 40, 80 … cycles, not every cycle (same reason as Fault D). **Recovery
+is proven by those ERROR rows stopping, not by the CRITICAL going quiet.**
+
+**Meaning** (isolated-fault wording only). **That one job** has been failing for ~30 minutes of
+continuous cycles while the others scan fine, so this is a fault on that job, not a Smartsheet
+outage. Its week sheet cannot be read or created, so
 **Compile Now for that job will never run** and its Friday packet is at risk too. Common causes: the
 week sheet was renamed, moved out of its job folder, or deleted; ITS lost sharing access to that
 job's folder; the job's `Project Name` in `ITS_Active_Jobs` was edited and no longer matches its
 Smartsheet folder.
 
-**Check (read-only).** (1) The row names the workstream, project, job ID and week — open the
+**Check (read-only).** (0) **Confirm you have the isolated-fault wording** (`while other jobs scan
+fine`). If the row says `EVERY other scanned job`, none of the checks below apply — go to Fault D.
+(1) The row names the workstream, project, job ID and week — open the
 matching workspace ("ITS — Safety Reports" or "ITS — Progress Reporting"), find that project's Jobs
 folder, and confirm the week sheet for that Saturday exists. (2) Compare the project name in
 `ITS_Active_Jobs` (or `ITS_Active_Jobs_Progress`) against the folder name — a rename is the usual
-cause. (3) Count the OTHER jobs erroring in the same window. A **Fault D**
-`compile_now_scan_sustained` CRITICAL alongside this one does **not** mean you are in a broad
-outage: on a small deployment one broken job is already half the scanned jobs, so both rows fire
-for the SAME single fault. **This row is the more specific one — work it first**, and treat the
-Fault D row as resolved once this one stops. Only when MANY jobs are named in the Fault D row is it
-a genuine platform incident.
+cause. (3) A **Fault D** `compile_now_scan_sustained` CRITICAL alongside an isolated-fault row does
+**not** mean you are in a broad outage: on a small deployment one broken job is already half the
+scanned jobs, so both rows fire for the SAME single fault. **The isolated-fault row is the more
+specific one — work it first**, and treat the Fault D row as resolved once this one stops. (Do not
+decide this by counting named jobs — the wording is the test.)
 
-**Repair (Tier-2 for a rename; escalates otherwise).** If a folder/sheet was **renamed**, rename it back to match
+**Repair (Tier-2 for a rename; escalates otherwise).** *Isolated-fault wording only.* If a
+folder/sheet was **renamed**, rename it back to match
 `ITS_Active_Jobs`; if the job row's Project Name was edited by mistake, restore it. Wait one cycle
-(~90 s) — the CRITICAL stops on the next successful scan. If the week sheet is **missing or
+(~90 s) — the rows stop on the next successful scan. If the week sheet is **missing or
 deleted**, or sharing/permissions look wrong, **escalate to Seth** (re-creating or re-sharing a
 week sheet is not a Tier-2 repair). Never "fix" this by setting the job Inactive — that silently
 stops its reports.
@@ -187,9 +224,11 @@ here is exactly: flip a `<workstream>.compile_now_poll.polling_enabled` value, u
 `system.state`, or ask Claude to re-run a failed/idempotent compile. Anything that requires killing a
 process, clearing the lock file, or touching code escalates. For the two scan CRITICALs:
 `compile_now_scan_sustained` is wait-and-watch (escalate only if it is still firing after ~30 min
-with Smartsheet reachable in the browser); `compile_now_job_scan_sustained` is Tier-2 only when the
-fix is a **rename back** to match `ITS_Active_Jobs` — a missing/deleted week sheet, or anything that
-looks like sharing/permissions, escalates.
+with Smartsheet reachable in the browser); `compile_now_job_scan_sustained` is Tier-2 only when it
+carries the **isolated-fault** wording (`while other jobs scan fine`) *and* the fix is a **rename
+back** to match `ITS_Active_Jobs` — a missing/deleted week sheet, or anything that looks like
+sharing/permissions, escalates, and the `EVERY other scanned job … BROAD scan outage` wording is a
+Fault D platform incident that must not be repaired as a rename.
 
 ## Owner
 

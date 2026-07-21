@@ -11,6 +11,7 @@ below read exactly as they did pre-generalization; the cross-workstream tests fl
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -401,6 +402,51 @@ def test_cause_clause_lists_every_distinct_type_and_bounds_the_messages(stub):
     assert f"(+{n - cnp.SCAN_CAUSE_SAMPLE} more distinct message(s))" in message
 
 
+def test_cause_sample_quotes_the_dominant_cause_not_the_alphabetical_first(stub):
+    """REGRESSION (re-review new_defect 3). The sample used to be `sorted(details)[:2]`, and
+    every detail is `trigger scan failed: {exc!r}` — so alphabetical-by-message is really
+    alphabetical-by-TYPE-NAME, and the cause behind 3 of the 5 failures gets dropped entirely
+    in favour of two singleton types that happen to sort earlier. Selection is now one
+    representative per distinct type, most-common type FIRST."""
+    stub["jobs"].return_value = [_job(f"J{i}", f"JOB-{i}") for i in range(5)]
+    stub["rollup"].side_effect = [
+        SmartsheetError("zz-dominant-500-a"),   # 3 of 5 failures, but sorts LAST by type name
+        SmartsheetError("zz-dominant-500-b"),
+        SmartsheetError("zz-dominant-500-c"),
+        AttributeError("aa-minor-attr"),
+        KeyError("kk-minor-key"),
+    ]
+
+    cnp.poll_once()
+
+    message = _coded(stub["log"], "compile_now_poll.scan_failed")[0][2]
+    assert "AttributeError, KeyError, SmartsheetError" in message   # all types, always
+    assert "zz-dominant-500-a" in message      # the majority cause — DROPPED when alphabetical
+    assert "aa-minor-attr" in message
+    assert message.index("zz-dominant-500-a") < message.index("aa-minor-attr")
+    assert "kk-minor-key" not in message       # crowded out by the dominant cause, correctly
+    assert "(+3 more distinct message(s))" in message
+
+
+def test_cause_sample_never_spends_both_slots_on_one_type(stub):
+    """The other half: two spellings of the SAME cause must not crowd out the only quote of a
+    different type — under alphabetical-by-message they did, whenever the crowding type's
+    name sorted first."""
+    stub["jobs"].return_value = [_job(f"J{i}", f"JOB-{i}") for i in range(3)]
+    stub["rollup"].side_effect = [
+        AttributeError("aa-crowder-one"),   # same type, 2 distinct messages, sorts FIRST
+        AttributeError("aa-crowder-two"),
+        SmartsheetError("ss-other-type"),
+    ]
+
+    cnp.poll_once()
+
+    message = _coded(stub["log"], "compile_now_poll.scan_failed")[0][2]
+    assert "ss-other-type" in message                    # the other type survived
+    assert message.count("aa-crowder") == 1              # only ONE AttributeError quote
+    assert "(+1 more distinct message(s))" in message
+
+
 def test_a_long_cause_is_truncated(stub):
     stub["jobs"].return_value = [_job("A", "JOB-A")]
     stub["rollup"].side_effect = SmartsheetError("x" * 4000)
@@ -525,9 +571,10 @@ def test_per_job_critical_stays_quiet_below_its_threshold(stub):
     assert _coded(stub["log"], "compile_now_job_scan_sustained") == []
 
 
-def test_per_job_critical_fires_at_one_cycle_past_its_threshold(stub):
-    """The per-job CRITICAL is PER-OCCURRENCE (§3.1 record leg), not one-shot at exactly the
-    threshold — a job stuck at 21, 22, … consecutive cycles keeps its row every cycle."""
+def test_per_job_row_is_per_occurrence_but_terminal_between_ladder_rungs(stub):
+    """§3.1's per-occurrence RECORD mandate is met at EVERY cycle past the threshold — the
+    ladder only decides the row's SEVERITY. At THRESHOLD+1 (not a rung) the row is an ERROR,
+    so `errors_rotation` can reclaim it; an open CRITICAL is never terminal at any floor."""
     stub["jobs"].return_value = [_job("Dead", "JOB-D")] + [
         _job(f"J{i}", f"JOB-{i}") for i in range(3)
     ]
@@ -538,9 +585,124 @@ def test_per_job_critical_fires_at_one_cycle_past_its_threshold(stub):
 
     cnp.poll_once()
 
+    assert _coded(stub["log"], "compile_now_job_scan_sustained") == []   # not a rung
+    rows = _coded(stub["log"], "compile_now_poll.job_scan_failed")
+    assert len(rows) == 1                                                # …but a row DID land
+    assert rows[0][0] == cnp.Severity.ERROR
+    assert f"{cnp.JOB_SCAN_CRITICAL_THRESHOLD + 1} consecutive" in rows[0][2]
+    assert f"next CRITICAL at {cnp.JOB_SCAN_CRITICAL_THRESHOLD * 2} consecutive" in rows[0][2]
+
+
+def _streak_counts(rows: list[tuple[object, str | None, str]], suffix: str) -> list[int]:
+    """The `N consecutive …` count each row reports, in the order the rows were written."""
+    out = []
+    for row in rows:
+        found = re.search(rf"(\d+) consecutive {suffix}", str(row[2]))
+        assert found is not None, row[2]
+        out.append(int(found.group(1)))
+    return out
+
+
+def test_per_job_ladder_bounds_the_criticals_over_a_long_outage(stub):
+    """THE ROW-VOLUME BOUND. A per-cycle CRITICAL on a 90 s daemon is ~960 unreclaimable rows
+    a day per failing job — `errors_rotation` never treats an open CRITICAL as terminal, so
+    neither watchdog Check O nor the dashboard clear verb can reclaim them at ANY floor, and
+    ITS_Errors hit 19,975 of its 20,000-row hard cap on 2026-07-13 and locked out twice.
+    Across 50 consecutive failing cycles the job pages on the CROSSING cycle and then only at
+    2×/4× — every other cycle still records its row, at ERROR."""
+    stub["jobs"].return_value = [_job("Dead", "JOB-D")] + [
+        _job(f"J{i}", f"JOB-{i}") for i in range(3)
+    ]
+    stub["rollup"].side_effect = (
+        [SmartsheetError("500"), ROLLUP_OK, ROLLUP_OK, ROLLUP_OK] * 50
+    )
+    stub["ledger"].side_effect = [{"safety_reports:JOB-D": n} for n in range(1, 51)]
+
+    for _ in range(50):
+        cnp.poll_once()
+
+    crit = _coded(stub["log"], "compile_now_job_scan_sustained")
+    err = _coded(stub["log"], "compile_now_poll.job_scan_failed")
+    assert _streak_counts(crit, "cycles") == [20, 40]      # crossing, then 2× — nothing else
+    assert all(r[0] == cnp.Severity.CRITICAL for r in crit)
+    # every past-threshold cycle still wrote exactly one row (§3.1), the rest at ERROR
+    assert len(crit) + len(err) == 50 - cnp.JOB_SCAN_CRITICAL_THRESHOLD + 1
+    assert all(r[0] == cnp.Severity.ERROR for r in err)
+    assert _streak_counts(err, "cycles") == [
+        n for n in range(cnp.JOB_SCAN_CRITICAL_THRESHOLD, 51) if n not in (20, 40)
+    ]
+
+
+def test_cycle_ladder_bounds_the_criticals_over_a_long_outage(stub):
+    """Same bound on the CYCLE escalation: 50 straight majority-failing cycles page at 5
+    (the crossing), 10, 20, 40 — four CRITICALs, not fifty — and record ERROR in between."""
+    stub["jobs"].return_value = [_job("A", "JOB-A"), _job("B", "JOB-B")]
+    stub["rollup"].side_effect = SmartsheetError("HTTP 503")
+    stub["scan_record"].side_effect = list(range(1, 51))
+
+    for _ in range(50):
+        cnp.poll_once()
+
+    crit = _coded(stub["log"], "compile_now_scan_sustained")
+    err = _coded(stub["log"], "compile_now_poll.scan_failed")
+    assert _streak_counts(crit, r"failing cycle\(s\)") == [5, 10, 20, 40]
+    assert all(r[0] == cnp.Severity.CRITICAL for r in crit)
+    assert len(crit) + len(err) == 50            # every cycle still records (§3.1)
+    assert all(r[0] == cnp.Severity.ERROR for r in err)
+    # the intermediate past-threshold rows say so, and say when it pages again
+    past = [r[2] for r in err if "ALREADY escalated" in r[2]]
+    assert len(past) == 50 - cnp.sustained_failure.DEFAULT_CRITICAL_THRESHOLD + 1 - len(crit)
+    assert "next CRITICAL at 10 consecutive failing cycle(s)" in past[0]
+
+
+def test_escalation_ladder_rungs():
+    """Unit-level pin on the rung predicate itself."""
+    assert [n for n in range(1, 101) if cnp._is_escalation_cycle(n, 5)] == [5, 10, 20, 40, 80]
+    assert [n for n in range(1, 101) if cnp._is_escalation_cycle(n, 20)] == [20, 40, 80]
+    assert cnp._is_escalation_cycle(4, 5) is False        # below the threshold never fires
+    assert cnp._next_escalation_cycle(5, 5) == 10
+    assert cnp._next_escalation_cycle(6, 5) == 10
+    assert cnp._next_escalation_cycle(0, 5) == 5
+
+
+def test_per_job_message_does_not_claim_other_jobs_are_fine_during_a_broad_outage(stub):
+    """REGRESSION (re-review new_defect 1). Narrowing the suppression made this row reachable
+    when EVERY scanned job is failing — a broad Smartsheet outage on a small deployment. The
+    'while other jobs scan fine' premise is FALSE there, and it is what the operator routes
+    on: it sends them to Fault E's rename-back repair for a platform incident."""
+    stub["jobs"].return_value = [_job("A", "JOB-A"), _job("B", "JOB-B"), _job("C", "JOB-C")]
+    stub["rollup"].side_effect = SmartsheetError("HTTP 500")   # EVERY job fails
+    stub["scan_record"].return_value = cnp.sustained_failure.DEFAULT_CRITICAL_THRESHOLD
+    stub["ledger"].return_value = {
+        f"safety_reports:JOB-{j}": cnp.JOB_SCAN_CRITICAL_THRESHOLD for j in "ABC"
+    }
+
+    cnp.poll_once()
+
+    crit = _coded(stub["log"], "compile_now_job_scan_sustained")
+    assert len(crit) == 3
+    for row in crit:
+        assert "while other jobs scan fine" not in row[2]
+        assert "EVERY other scanned job (3/3)" in row[2]
+        assert "BROAD scan outage, NOT a per-job fault" in row[2]
+        assert "do not rename anything" in row[2]
+
+
+def test_per_job_message_keeps_the_isolated_premise_when_others_do_scan_fine(stub):
+    """The other half of the same branch: with a live job alongside it the isolated-fault
+    premise is TRUE and must survive — that is the row's whole diagnostic value."""
+    stub["jobs"].return_value = [_job("Dead", "JOB-D"), _job("Fine", "JOB-F")]
+    stub["rollup"].side_effect = [SmartsheetError("500"), ROLLUP_OK]
+    stub["ledger"].return_value = {
+        "safety_reports:JOB-D": cnp.JOB_SCAN_CRITICAL_THRESHOLD
+    }
+
+    cnp.poll_once()
+
     crit = _coded(stub["log"], "compile_now_job_scan_sustained")
     assert len(crit) == 1
-    assert f"{cnp.JOB_SCAN_CRITICAL_THRESHOLD + 1} consecutive" in crit[0][2]
+    assert "while other jobs scan fine" in crit[0][2]
+    assert "BROAD scan outage" not in crit[0][2]
 
 
 def test_per_job_criticals_are_suppressed_only_when_more_jobs_fail_than_can_be_named(stub):
