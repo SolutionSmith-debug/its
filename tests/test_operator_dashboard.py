@@ -398,7 +398,13 @@ def test_daemon_uptime_column(monkeypatch: pytest.MonkeyPatch) -> None:
     assert by["up2"]["uptime"] == "12m 34s"
     assert by["idle"]["uptime"] == "—"
     assert by["gone"]["uptime"] == "—"
-    assert len(seen) == 1 and seen[0][0] == "ps" and seen[0][-1] == "101,102"
+    # ONE call is the load-bearing claim (a per-row implementation makes two).
+    # Assert the pid SET, not its order — sorting or de-duplicating the pid list
+    # would be a legitimate implementation choice, and pinning the literal
+    # "101,102" would RED-light on it for no real reason.
+    assert len(seen) == 1
+    assert seen[0][0] == "ps"
+    assert set(seen[0][-1].split(",")) == {"101", "102"}
 
 
 def test_daemon_uptime_unparseable_and_empty_and_failsoft(
@@ -429,6 +435,52 @@ def test_daemon_uptime_unparseable_and_empty_and_failsoft(
     _patch_ps(monkeypatch, dmod, _boom)
     by = {r["daemon"]: r for r in src.fetch().rows}
     assert by["up"]["uptime"] == "—" and by["up"]["state"] == "running"
+
+
+def test_daemon_uptime_guard_is_narrow_not_blanket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The subprocess guard is deliberately a NARROW tuple — (OSError,
+    # SubprocessError, UnicodeDecodeError), the three real `ps` boundary
+    # failures. Widening it to a blanket `except Exception` would silently
+    # swallow a PROGRAMMING bug at the call site (a bad argv type, a wrong
+    # keyword) into a permanent, traceless "—" on a panel whose whole job is
+    # "never silent". Pin that here: an exception OUTSIDE the tuple must
+    # propagate and surface as a visibly unavailable panel via
+    # DataSource.fetch()'s fail-soft wrapper.
+    from operator_dashboard.sources import daemons as dmod
+
+    src = dmod.DaemonStatusSource()
+    monkeypatch.setattr(src, "_plist_labels", lambda: [])
+    monkeypatch.setattr(src, "_launchctl_table", lambda: {
+        "org.solutionsmith.its.up": ("101", "0"),
+    })
+
+    def _bad_call(*args: object, **kwargs: object) -> object:
+        raise ValueError("embedded null byte in argv")
+
+    _patch_ps(monkeypatch, dmod, _bad_call)
+    result = src.fetch()
+    assert result.available is False
+    assert "ValueError" in (result.unavailable_reason or "")
+
+    # And the converse, so the tuple is pinned from BOTH sides: each member of
+    # the narrow tuple really is absorbed (panel keeps its real content).
+    for exc in (
+        OSError("ps missing"),
+        subprocess.SubprocessError("ps blew up"),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+    ):
+
+        def _raise(*args: object, _e: BaseException = exc, **kwargs: object) -> object:
+            raise _e
+
+        _patch_ps(monkeypatch, dmod, _raise)
+        absorbed = src.fetch()
+        assert absorbed.available is True, exc
+        by = {r["daemon"]: r for r in absorbed.rows}
+        assert by["up"]["uptime"] == "—"
+        assert by["up"]["state"] == "running"
 
 
 def test_daemon_uptime_parse_bug_is_visible_not_silent(
@@ -510,6 +562,35 @@ def test_daemon_panel_renders_last_exit_tooltip(
     assert 'title="raw launchctl last-exit -15' in resp.text
     assert "signal (SIGTERM)" in resp.text
     assert "2h 5m" in resp.text
+
+
+def test_daemon_detail_view_renders_last_exit_tooltip(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The '_title_<column>' expression is DUPLICATED in two templates — the
+    # panel card (_panel.html) and the full-page drill-down (view.html). The
+    # card path is covered above; cover the drill-down too, or an edit that
+    # touches only one copy ships a half-working convention with a green suite.
+    from operator_dashboard.sources import PANELS_BY_ID
+    from operator_dashboard.sources.daemons import DaemonStatusSource
+
+    src = PANELS_BY_ID["daemons"]
+    assert isinstance(src, DaemonStatusSource)
+    monkeypatch.setattr(src, "_plist_labels", lambda: [])
+    monkeypatch.setattr(src, "_launchctl_table", lambda: {
+        "org.solutionsmith.its.dashboard": ("55622", "-15"),
+    })
+    monkeypatch.setattr(src, "_uptime_by_pid", lambda pids: {"55622": "2h 5m"})
+
+    resp = client.get("/view/daemons")
+    assert resp.status_code == 200
+    assert 'title="raw launchctl last-exit -15' in resp.text
+    assert "signal (SIGTERM)" in resp.text
+    assert "2h 5m" in resp.text
+    # The sibling '_link_<column>' convention shares the same duplicated
+    # expression — assert the drill-down still emits a deep link, so a future
+    # edit to view.html cannot drop one branch while keeping the other.
+    assert 'class="cell-link"' in resp.text
 
 
 def test_audit_trail_source_filters_to_config_editor(monkeypatch: pytest.MonkeyPatch) -> None:
