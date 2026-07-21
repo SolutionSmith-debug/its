@@ -255,11 +255,17 @@ class ReviewQueueDepthSource(DataSource):
 # NEVER approves / resends / mutates — the send lane stays human-in-loop at the
 # review sheet + the two-process send daemons (D13: the send gate is never a
 # dashboard action; any mutating send-lane verb is a parked Seth decision).
+#
+# tests/test_system_map.py::test_send_queue_panel_covers_every_review_sheet_feeding_a_send_node
+# holds this list to the map: every review sheet with a `human approval` edge into
+# a send node must appear here, or that lane's backlog is invisible while the
+# panel still reads "all clear".
 _SEND_QUEUE_SHEETS = [
     ("safety", "SHEET_WSR_HUMAN_REVIEW"),
     ("progress", "SHEET_WPR_HUMAN_REVIEW"),
     ("po", "SHEET_PO_PENDING_REVIEW"),
     ("subcontracts", "SHEET_SUBCONTRACT_PENDING_REVIEW"),
+    ("rfq", "SHEET_RFQ_PENDING_REVIEW"),  # ADR-0004 R3 — the RFQ send lane (dark)
 ]
 _SEND_STATUS_COL = "Send Status"
 
@@ -285,7 +291,11 @@ class SendQueueSource(DataSource):
         per: list[dict[str, Any]] = []
         for ws, attr in _SEND_QUEUE_SHEETS:
             sheet_id = getattr(sid, attr, None)
-            if sheet_id is None:
+            if not sheet_id:
+                # Absent attr OR the `0` unseeded-sheet placeholder. Surface it
+                # rather than silently dropping the lane — a send lane missing
+                # from this panel must never read as "all clear".
+                per.append({"ws": ws, "unavailable": True, "counts": {}})
                 continue
             try:
                 rows = ss.get_rows(sheet_id)

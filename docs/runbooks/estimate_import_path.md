@@ -3,7 +3,7 @@ type: operations
 date: 2026-07-19
 status: active
 related_prs: []
-workstream: null
+workstream: po_materials
 tags: [runbook, successor-remediation, purchase_orders, estimate_poll, vendor-estimate, importer, hmac, tier-2, tier-3]
 ---
 

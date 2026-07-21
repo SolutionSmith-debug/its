@@ -49,7 +49,7 @@ BANDS: tuple[tuple[str, str], ...] = (
     ("safety", "Safety reports"),
     ("progress", "Progress reports"),
     ("fieldops", "Field ops"),
-    ("po", "Purchase orders"),
+    ("po", "Procurement — POs · vendor estimates · RFQs"),
     ("subcontracts", "Subcontracts"),
     ("machine", "Machine plane"),
 )
@@ -283,6 +283,14 @@ NODES: tuple[MapNode, ...] = (
         error_scripts=("po_materials.estimate_poll",),
         launchd_label="org.solutionsmith.its.estimate-poll", heartbeat_stem="estimate_poll",
         config_gate="po_materials.estimate_poll.polling_enabled",
+        # The extraction ladder (E4-E6). Surfaced so the operator can SEE these are
+        # off; they are Class-E READ-ONLY on the config page (dark + unvalidated —
+        # no model qualified yet), deliberately not editable from the console.
+        extra_gates=(
+            "po_materials.estimate_extract.tier1_enabled",
+            "po_materials.estimate_extract.tier2_enabled",
+            "po_materials.estimate_extract.ocr_enabled",
+        ),
         watchdog_checks=("C",), script_path="po_materials/estimate_poll.py",
         runbook="docs/runbooks/estimate_import_path.md", send_half="generation", marker="estimate_poll",
     ),
@@ -312,8 +320,35 @@ NODES: tuple[MapNode, ...] = (
     MapNode(
         id="sheet_po_pending_review", label="PO_Pending_Review", kind="sheet", lane="records", band="po",
         blurb="The PO approval queue — human approval here releases a PO to its vendor.",
-        sheet_id=1816168087113604, watchdog_checks=("U",),
+        # NOT watchdog_checks=("U",): Check U's _APPROVER_WORKSPACES covers only the
+        # Safety Portal + Progress Reporting workspaces, so approver drift on the
+        # Purchase Orders workspace is UNWATCHED. Claiming the eye chip here would
+        # tell the operator a control is running that is not (docs/tech_debt.md).
+        sheet_id=1816168087113604,
         runbook="docs/runbooks/po_send.md",
+    ),
+    MapNode(
+        id="sheet_estimate_log", label="Estimate_Log", kind="sheet", lane="records", band="po",
+        blurb="The vendor-estimate ledger (ADR-0004 E2) — one row per uploaded quote/estimate "
+              "document, carrying its screening disposition and the Box link to the filed original.",
+        sheet_id=7639780559900548, runbook="docs/runbooks/estimate_import_path.md",
+    ),
+    MapNode(
+        id="sheet_rfq_log", label="RFQ_Log", kind="sheet", lane="records", band="po",
+        blurb="The outbound-RFQ ledger (ADR-0004 R2) — one row per (RFQ, vendor), mirroring each "
+              "price-free RFQ PDF filed to Box.",
+        sheet_id=5176650638512004, runbook="docs/runbooks/rfq_generation_path.md",
+    ),
+    MapNode(
+        id="sheet_rfq_pending_review", label="RFQ_Pending_Review", kind="sheet",
+        lane="records", band="po",
+        blurb="The RFQ approval queue — one row per (RFQ, vendor). A PO_Pending_Review schema twin "
+              "tagged po_materials_rfq, so the PO and subcontract send daemons can never dispatch "
+              "an RFQ row. Human approval here is what releases an RFQ to its vendor.",
+        # No ("U",) — see sheet_po_pending_review: RFQ approvals are verified against
+        # the Purchase Orders workspace, which Check U does not scan.
+        sheet_id=3555996805844868,
+        runbook="docs/runbooks/rfq_send.md",
     ),
     MapNode(
         id="po_send", label="po send", kind="daemon", lane="send", band="po",
@@ -331,7 +366,7 @@ NODES: tuple[MapNode, ...] = (
               "request-for-quote to its vendor with TWO attachments — the price-free RFQ PDF "
               "plus the fillable xlsx quote form — through the shared AI-free send engine. "
               "Tagged po_materials_rfq so po-send / subcontract-send can never dispatch it. "
-              "Ships dark; go-live is a FIXED External-Send-Gate operator flip.",
+              "Turning its gate ON is a FIXED External-Send-Gate decision; the live gate state is the badge above, not this text.",
         error_scripts=("po_materials.rfq_send_poll", "po_materials.rfq_send"),
         launchd_label="org.solutionsmith.its.rfq-send", heartbeat_stem="rfq_send",
         config_gate="po_materials.rfq_send.polling_enabled",
@@ -368,7 +403,9 @@ NODES: tuple[MapNode, ...] = (
         id="sheet_subcontract_pending_review", label="Subcontract_Pending_Review", kind="sheet",
         lane="records", band="subcontracts",
         blurb="The subcontract approval queue — human approval here releases the package.",
-        sheet_id=7950433787006852, watchdog_checks=("U",),
+        # No ("U",) — see sheet_po_pending_review: Check U does not scan the
+        # Subcontracts workspace either.
+        sheet_id=7950433787006852,
         runbook="docs/runbooks/subcontract_send.md",
     ),
     MapNode(
@@ -478,7 +515,9 @@ NODES: tuple[MapNode, ...] = (
     MapNode(
         id="registry_sheets", label="registry sheets", kind="sheet", lane="records", band="machine",
         blurb="The supporting registries: ITS_Quarantine, ITS_Time_Off, Picklist_Sync_Config, "
-              "ITS_Project_Routing.",
+              "ITS_Project_Routing, the Forms Catalog, and the master DBs picklist_sync reads "
+              "from (Vendor, Subcontractor, Equipment). Aggregated deliberately — each is a "
+              "lookup table, not a lane surface.",
         watchdog_checks=("D",),
     ),
     MapNode(
@@ -507,6 +546,9 @@ NODE_BY_LAUNCHD_LABEL: dict[str, str] = {
 NODE_BY_HEARTBEAT_STEM: dict[str, str] = {
     n.heartbeat_stem: n.id for n in NODES if n.heartbeat_stem
 }
+
+# watchdog TRACKED_JOBS Check-C marker slug -> node id (marker panel join).
+NODE_BY_MARKER: dict[str, str] = {n.marker: n.id for n in NODES if n.marker}
 
 
 EDGES: tuple[MapEdge, ...] = (
@@ -551,10 +593,14 @@ EDGES: tuple[MapEdge, ...] = (
     MapEdge("worker", "estimate_poll", "pull uploaded estimates — est:v1 HMAC + digest re-verify", "pull",
             port="HMAC"),
     MapEdge("estimate_poll", "box", "file CLEAN screened quote docs", "write"),
+    MapEdge("estimate_poll", "sheet_estimate_log", "ledger row per uploaded estimate", "write"),
     MapEdge("estimate_poll", "sheet_review_queue", "doc-type / §34 refusals + low-confidence disposition", "write"),
     MapEdge("worker", "rfq_poll", "pull composed RFQs — rfq:v1 HMAC re-verify", "pull",
             port="HMAC"),
-    MapEdge("rfq_poll", "box", "file PRICE-FREE RFQ PDFs (per vendor)", "write"),
+    MapEdge("sheet_its_vendors", "rfq_poll", "vendor snapshot per RFQ copy — READ-ONLY", "read"),
+    MapEdge("rfq_poll", "box", "file PRICE-FREE RFQ PDFs + xlsx quote forms (per vendor)", "write"),
+    MapEdge("rfq_poll", "sheet_rfq_log", "ledger row per (rfq, vendor)", "write"),
+    MapEdge("rfq_poll", "sheet_rfq_pending_review", "stage review row (PENDING)", "write"),
     MapEdge("rfq_poll", "sheet_review_queue", "unknown-vendor fences + bad-HMAC refusals", "write"),
     MapEdge("po_poll", "sheet_po_log", "ledger row + per-job mirror", "write"),
     MapEdge("po_poll", "sheet_po_pending_review", "stage review row (PENDING)", "write"),
@@ -563,7 +609,10 @@ EDGES: tuple[MapEdge, ...] = (
     MapEdge("sheet_po_pending_review", "po_send", "APPROVED rows only — F22", "read",
             port="human approval"),
     MapEdge("po_send", "graph", "send_mail (from procurement@)", "send"),
+    MapEdge("sheet_rfq_pending_review", "rfq_send", "APPROVED rows only — F22 approver verify", "read",
+            port="human approval"),
     MapEdge("sheet_its_vendors", "rfq_send", "recipient by Vendor Key", "read"),
+    MapEdge("box", "rfq_send", "RFQ PDF + xlsx quote form attachments", "read"),
     MapEdge("rfq_send", "graph", "send_mail — RFQ PDF + xlsx form (from procurement@)", "send"),
     # subcontracts
     MapEdge("worker", "subcontract_poll", "pull drafts — sub:v1 HMAC", "pull", port="HMAC"),

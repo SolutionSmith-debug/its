@@ -15,7 +15,7 @@ what it covers, who it is for, and which tier it belongs to. This file renders a
 (the front of the distributable manual set) and seeds the `ITS_Documentation_Index` Smartsheet
 rows. When you do not know which document answers your question, start here.
 
-<!-- src: docs/enablement/manifest.yaml (the build set + per-doc sha256); scripts/build_docs_pdfs.py | verified 2026-07-15 -->
+<!-- src: docs/enablement/manifest.yaml (the build set + per-doc sha256); scripts/build_docs_pdfs.py | verified 2026-07-19 -->
 The authoritative registration of what gets rendered is `docs/enablement/manifest.yaml` — one
 entry per doc, each carrying a `sha256` of its source that is the **doc-currency baseline**.
 `python -m scripts.build_docs_pdfs --check` re-hashes every source and flags drift; that check
@@ -23,7 +23,7 @@ is the CI teeth behind "the PDF matches the source."
 
 ## The three tiers
 
-<!-- src: docs/enablement/README.md; docs/runbooks/README.md; docs/references/ | verified 2026-07-15 -->
+<!-- src: docs/enablement/README.md; docs/runbooks/README.md; docs/references/ | verified 2026-07-19 -->
 
 | Tier | What it is | Audience |
 |------|-----------|----------|
@@ -35,7 +35,7 @@ Related audiences overlap: the operator reads all three; an end-user rarely leav
 
 ## Tier 1 — System references
 
-<!-- src: docs/references/*.md (this session's Tier-1 corpus) | verified 2026-07-15 -->
+<!-- src: docs/references/*.md (this session's Tier-1 corpus) | verified 2026-07-19 -->
 
 | Doc | Audience | Scope / one-line purpose |
 |-----|----------|--------------------------|
@@ -50,7 +50,7 @@ Related audiences overlap: the operator reads all three; an end-user rarely leav
 
 ## Tier 2 — Enablement guides
 
-<!-- src: docs/enablement/manifest.yaml (registered build set) | verified 2026-07-15 -->
+<!-- src: docs/enablement/manifest.yaml (registered build set) | verified 2026-07-19 -->
 
 The registered enablement set (see `docs/enablement/manifest.yaml` for the authoritative
 titles + sha256s). Audience is drawn from each guide's intended reader.
@@ -73,17 +73,18 @@ titles + sha256s). Audience is drawn from each guide's intended reader.
 
 ## Tier 3 — Successor-remediation runbooks
 
-<!-- src: docs/runbooks/ (36 §43 runbooks + README) | verified 2026-07-15 -->
+<!-- src: docs/runbooks/*.md — 41 files = 40 §43 runbooks + README.md | verified 2026-07-19 -->
 
-The §43 successor-remediation runbooks live in [`docs/runbooks/`](../runbooks/README.md) — one
-per capability with a Tier-2-reachable failure mode, each written as *symptom → low-class repair
-steps → explicit escalate-to-Seth boundary*. They are the resolution targets the
+The §43 successor-remediation runbooks live in [`docs/runbooks/`](../runbooks/README.md) — **40**
+of them today, plus the README index — one per capability with a Tier-2-reachable failure mode,
+each written as *symptom → low-class repair steps → explicit escalate-to-Seth boundary*. They
+are the resolution targets the
 [escalation_matrix.md](escalation_matrix.md) and (in a later tranche) the interactive
 troubleshooting tree link into. See the runbooks README for the full, auto-indexed list.
 
 ## How the corpus is built and kept current
 
-<!-- src: scripts/build_docs_pdfs.py (render / --check / --upload) | verified 2026-07-15 -->
+<!-- src: scripts/build_docs_pdfs.py (render / --check / --upload) | verified 2026-07-19 -->
 
 - **Render:** `python -m scripts.build_docs_pdfs --all` renders every manifest doc to a branded
   PDF under `docs/_build_pdf/` (the repo never commits the rendered binaries).

@@ -409,14 +409,84 @@ def test_enrolled_subcontract_gate_activation_escalates_pause_applies(fake_smart
 
 
 def test_unknown_key_never_in_registry_refused_no_write(fake_smartsheet: dict[str, Any]) -> None:
-    # a key that is in NO tier (not Class A/B, not a secret, not display) is refused.
-    assert not registry.is_editable("subcontracts.subcontract_send.polling_enabled", "subcontracts")
-    out = apply_edit("subcontracts.subcontract_send.polling_enabled", "subcontracts", "true", "op")
+    # A key that is in NO tier (not Class A/B, not a secret, not display) is refused.
+    # `*.poll_interval_seconds` is the PRINCIPLED example: it is install-time (baked
+    # into the plist, no hot-reload), so it stays out of the config registry forever
+    # and is retuned only through the Class-B interval verb (daemon_ops.edit_interval).
+    # This previously used subcontracts.subcontract_send.polling_enabled — a key that
+    # merely happened to be unregistered before the SC-S4 send lane shipped, never a
+    # policy statement; it is now a registered send gate.
+    assert not registry.is_editable("safety_reports.weekly_send.poll_interval_seconds", "safety_reports")
+    out = apply_edit("safety_reports.weekly_send.poll_interval_seconds", "safety_reports", "120", "op")
     assert out.kind == config_write.NOT_EDITABLE
     assert fake_smartsheet["updates"] == []
 
 
 # ------------------------------------- self-documenting purpose wiring (D1-4) ----
+def test_no_registry_note_asserts_a_live_gate_state() -> None:
+    """A static note must never claim what a gate is CURRENTLY set to.
+
+    The editor renders each row's live value right beside its note, so a
+    hardcoded "currently dark" is redundant on the day it is written and a lie
+    afterwards. It became one: po_send, subcontract_poll and the whole ADR-0004
+    lane all read 'true' on the mirror host on 2026-07-19 while their notes still
+    said "currently dark" / "ships dark". Notes describe SEMANTICS (what pausing
+    and activating mean); the value column describes state (§55).
+    """
+    banned = ("currently dark", "ships dark", "currently on", "currently off", "currently live")
+    offenders = [
+        f"{e.setting} [{e.workstream}]: {phrase!r}"
+        for e in registry.REGISTRY.values()
+        for phrase in banned
+        if phrase in e.note.lower()
+    ]
+    assert not offenders, (
+        "config-editor notes assert a live gate state, which goes stale: "
+        f"{offenders} — describe what the edit MEANS; the value column shows the state"
+    )
+
+
+def test_display_state_carries_description_and_reads_the_sheet_once(
+    fake_smartsheet: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Class-E rows must surface the ITS_Config DESCRIPTION, on ONE fetch.
+
+    The Description cell is where a dark gate's go-live PRECONDITION lives, and
+    it is the text an operator needs most for a gate the console refuses to edit.
+    The single-fetch half matters because this list grew from 2 to 5 rows when the
+    extraction-ladder gates were surfaced: a per-row fetch would make every
+    /config render N full-sheet reads.
+    """
+    import shared.smartsheet_client as ss
+
+    calls: list[int] = []
+    real_get_rows = ss.get_rows
+
+    def counting_get_rows(sheet_id: int, **kw: Any) -> list[dict[str, Any]]:
+        calls.append(sheet_id)
+        return real_get_rows(sheet_id, **kw)
+
+    monkeypatch.setattr(ss, "get_rows", counting_get_rows)
+    _seed(
+        fake_smartsheet,
+        "po_materials.estimate_extract.tier1_enabled",
+        "po_materials",
+        "false",
+        row_id=41,
+    )
+    fake_smartsheet["rows"][("po_materials.estimate_extract.tier1_enabled", "po_materials")][
+        "Description"
+    ] = "Do NOT set true until the ladder eval qualifies a model."
+
+    rows = {(r["setting"], r["workstream"]): r for r in config_write.read_display_state()}
+    row = rows[("po_materials.estimate_extract.tier1_enabled", "po_materials")]
+    assert row["value"] == "false"
+    assert "Do NOT set true" in row["description"]
+    # a row with no live ITS_Config row degrades visibly, never silently
+    assert rows[("safety_reports.external_send_gate", "safety_reports")]["value"] == "(unavailable)"
+    assert len(calls) == 1, f"expected ONE ITS_Config fetch for all Class-E rows, got {len(calls)}"
+
+
 def test_purpose_map_reads_config_defaults() -> None:
     # the generated data dictionary supplies human 'purpose' prose per key.
     pm = config_write._purpose_map()
