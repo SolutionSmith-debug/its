@@ -114,6 +114,56 @@ def is_escalation_cycle(
     return remainder == 0 and quotient & (quotient - 1) == 0
 
 
+def next_escalation_cycle(
+    count: int, threshold: int, *, max_multiplier: int = LADDER_MAX_MULTIPLIER
+) -> int:
+    """The next count STRICTLY above ``count`` on which `is_escalation_cycle` fires.
+
+    EXISTS FOR THE OPERATOR, not the control flow. A caller with a three-way decision
+    (below threshold / on a rung / between rungs) writes the between-rungs row at ERROR,
+    and that row must say WHEN the next page lands — otherwise "no new CRITICAL for a
+    while" reads as "the outage ended", which is exactly the misread the ladder introduces
+    by going quiet on purpose (`docs/runbooks/compile_now_poll.md` Fault D).
+
+    DERIVED BY SEARCHING THE LADDER, not by re-implementing its arithmetic. A second copy
+    of "threshold × 2ⁿ, capped at threshold × max_multiplier" is the drift this module
+    exists to prevent: the quoted next-rung and the rung actually fired MUST agree, and the
+    only way to guarantee that is to ask the same predicate. The walk is bounded by the
+    cap (at most ``threshold × max_multiplier`` steps of integer arithmetic, on an
+    error-handling path that already writes a Smartsheet row), so the cost is irrelevant
+    next to the guarantee.
+
+    TOTAL, like `is_escalation_cycle`: a degenerate threshold makes every cycle a rung, so
+    the answer is simply the next cycle rather than a hang or a raise.
+    """
+    n = max(count, 0) + 1
+    while not is_escalation_cycle(n, threshold, max_multiplier=max_multiplier):
+        n += 1
+    return n
+
+
+def has_crossed_threshold(
+    count: int, threshold: int, *, max_multiplier: int = LADDER_MAX_MULTIPLIER
+) -> bool:
+    """Has this streak reached the ladder's FIRST rung — i.e. has it EVER escalated?
+
+    SEPARATE FROM `is_escalation_cycle` because a caller can have THREE outcomes, not two:
+    below the threshold a routine ERROR summary, ON a rung the CRITICAL page, and BETWEEN
+    rungs an ERROR that says "already escalated, next page at N". Only the first split
+    needs this predicate; collapsing it back into a raw ``count >= threshold`` compare is
+    what `tests/test_transient_fence.py::test_no_daemon_hand_rolls_the_threshold_compare_again`
+    forbids, because that shape is one careless edit away from becoming the escalation
+    decision itself and minting a CRITICAL every cycle.
+
+    ANSWERED FROM THE LADDER (the first rung is ``next_escalation_cycle(0, …)``), so all
+    three predicates agree by construction under the same ``max_multiplier``: a count this
+    returns True for is always a count at or past a rung that has already fired.
+    """
+    if count < 1:
+        return False
+    return count >= next_escalation_cycle(0, threshold, max_multiplier=max_multiplier)
+
+
 # ---- Fleet-level circuit-open escalation ---------------------------------
 #
 # THE GAP THIS CLOSES (2026-07-21 review finding). `TransientFence` deliberately keeps

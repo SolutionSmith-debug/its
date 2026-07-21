@@ -119,8 +119,10 @@ list before deciding. Normal-severity single-pass blips are the ERROR row
 `compile_now_poll.scan_failed` — one row per cycle, not one per job — and need no action.
 
 **How often it re-pages.** The CRITICAL is **not** written every cycle. It fires on the cycle that
-crosses the threshold and then only at **double the previous count** — 5, 10, 20, 40, 80 …
-consecutive failing cycles. In between, the daemon still writes one row per cycle, at ERROR
+crosses the threshold, then at **double the previous count until the gap stops widening** — 5, 10,
+20, 40, 80, and from there **every 40** consecutive failing cycles (120, 160, 200 …), roughly once
+an hour at the 90 s cadence, for as long as the outage lasts. In between, the daemon still writes
+one row per cycle, at ERROR
 `compile_now_poll.scan_failed`, and past the threshold that row says `SUSTAINED … ALREADY escalated
 CRITICAL … next CRITICAL at N consecutive failing cycle(s)`. So **"no new CRITICAL for a while" is
 NOT proof the outage ended** — see the repair step for what is. (Why: an open CRITICAL can never be
@@ -154,7 +156,7 @@ hand Claude: *"read `~/its/state/compile_now_job_scan_failures.json` and list ev
 wait and watch — that case self-heals.** When Smartsheet recovers, the next clean cycle resets the
 counter and the rows stop; any checked Compile Now compiles on its own. **Recovery is proven by the
 absence of NEW `compile_now_poll.scan_failed` ERROR rows, not by the absence of new CRITICALs** (the
-CRITICAL re-pages on a doubling interval, so it goes quiet mid-outage by design). Once ERROR rows
+CRITICAL re-pages on a widening-then-fixed interval, so it goes quiet mid-outage by design). Once ERROR rows
 have stopped for a few minutes, mark the CRITICAL resolved from the dashboard. **If the cause clause
 names a code error,
 or Fault E's checks turn up a renamed/moved sheet, this is NOT the wait-and-watch case** — do Fault
@@ -183,7 +185,8 @@ touching anything:**
 
 Between escalations the same fault also writes an **ERROR** row `compile_now_poll.job_scan_failed`
 with the same wording plus `ALREADY escalated CRITICAL … next CRITICAL at N consecutive cycle(s)` —
-the CRITICAL re-pages at 20, 40, 80 … cycles, not every cycle (same reason as Fault D). **Recovery
+the CRITICAL re-pages at 20, 40, 80, 160 and then **every 160** cycles (320, 480 …), not every
+cycle (same reason as Fault D). **Recovery
 is proven by those ERROR rows stopping, not by the CRITICAL going quiet.**
 
 **Meaning** (isolated-fault wording only). **That one job** has been failing for ~30 minutes of
