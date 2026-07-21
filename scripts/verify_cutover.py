@@ -276,6 +276,19 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     ConfigRow("progress_reports.progress_send.polling_enabled", "progress_reports", "true"),
     ConfigRow("progress_reports.intake_enabled", "safety_reports", "true"),
     ConfigRow("field_ops.fieldops_sync.sync_enabled", "field_ops", "true"),
+    # The four per-stream sub-gates the master gate fans out to. Only the master was
+    # enrolled, so a cutover could pass VC-03 with every field-capture stream silently
+    # unseeded. `non_empty`, never forced 'true': materials_enabled carries a §51 rider
+    # precondition in its Description and is not ours to assert ON.
+    ConfigRow("field_ops.fieldops_sync.hours_enabled", "field_ops", "non_empty"),
+    ConfigRow("field_ops.fieldops_sync.equipment_enabled", "field_ops", "non_empty"),
+    ConfigRow("field_ops.fieldops_sync.materials_enabled", "field_ops", "non_empty"),
+    ConfigRow("field_ops.fieldops_sync.incidents_enabled", "field_ops", "non_empty"),
+    # The §50 config actuator and the form-publish daemon: both LOADED, both gate-ON,
+    # and neither runtime gate was enrolled — the privileged code-actuation rail could
+    # arrive at a new host with no switch present. `non_empty` (dark-ship reflex).
+    ConfigRow("po_materials.config_actuator.polling_enabled", "po_materials", "non_empty"),
+    ConfigRow("safety_reports.publish_daemon.polling_enabled", "safety_reports", "non_empty"),
     # system.operator_email (CO-3): the last-resort Resend page recipient
     # (shared/resend_client.py) resolved when ITS_Config can't be read. Must be a
     # production address at cutover, so sandbox-scanned — a mirror residue
@@ -288,6 +301,12 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     # PRESENT (non_empty, NOT forced 'true' — dark-ship reflex: a missing gate row leaves
     # no switch to flip; seed_subcontracts_config.py must have run). The gates ship false;
     # activation is a later operator cell-flip once the SC-S3c live smoke passes.
+    # The po_poll gate trio — the exact structural mirror of the subcontract trio below,
+    # and unlike it currently LIVE. It was never enrolled, so the PO generation lane
+    # could arrive at a new host unseeded while the (dark) subcontract lane was checked.
+    ConfigRow("po_materials.po_poll.polling_enabled", "po_materials", "non_empty"),
+    ConfigRow("po_materials.po_poll.vendors_sync_enabled", "po_materials", "non_empty"),
+    ConfigRow("po_materials.po_poll.status_sync_enabled", "po_materials", "non_empty"),
     ConfigRow("subcontracts.subcontract_poll.polling_enabled", "subcontracts", "non_empty"),
     ConfigRow("subcontracts.subcontract_poll.subcontractors_sync_enabled", "subcontracts", "non_empty"),
     ConfigRow("subcontracts.subcontract_poll.status_sync_enabled", "subcontracts", "non_empty"),
