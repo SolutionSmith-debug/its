@@ -118,6 +118,22 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
     const scCancelGen = await seedSc("sc-cancel-gen", "canceled", NOW - 100 * DAY, "2026.001.9.0.0"); // GENERATED-then-canceled → KEEP
     const scQueuedOld = await seedSc("sc-queued-old", "queued", NOW - 100 * DAY, "2026.001.8.0.0"); // ON-PATH → never pruned
     const scDraftRecent = await seedSc("sc-draft-recent", "draft", NOW - 10 * DAY);
+    // ADR-0004 R2: the RFQ lane is the structural twin of purchase_orders but had NO
+    // prune stage at all — drafts, cancels, their line items and up to 12 vendor rows
+    // each accumulated in D1 forever with no automatic OR manual removal path.
+    const seedRfq = async (uuid: string, status: string, updatedAt: number, rfqNumber: string | null = null) => {
+      await env.DB
+        .prepare("INSERT INTO rfqs (rfq_uuid, job_no, created_by, status, updated_at, rfq_number) VALUES (?,?,?,?,?,?)")
+        .bind(uuid, "2026.001", "admin", status, updatedAt, rfqNumber)
+        .run();
+      const id = (await env.DB.prepare("SELECT id FROM rfqs WHERE rfq_uuid=?").bind(uuid).first<{ id: number }>())!.id;
+      await env.DB.prepare("INSERT INTO rfq_line_items (rfq_id, position, description) VALUES (?,1,'Panels')").bind(id).run();
+      await env.DB.prepare("INSERT INTO rfq_vendors (rfq_id, vendor_key) VALUES (?, 'V-1')").bind(id).run();
+      return id;
+    };
+    const rfqDraftOld = await seedRfq("rfq-draft-old", "draft", NOW - 100 * DAY);
+    const rfqCancelGen = await seedRfq("rfq-cancel-gen", "canceled", NOW - 100 * DAY, "RFQ-2026.001-001"); // GENERATED → KEEP
+    const rfqDraftRecent = await seedRfq("rfq-draft-recent", "draft", NOW - 10 * DAY); // inside window → KEEP
     const poDraftOld = await seedPo("po-draft-old", "draft", NOW - 100 * DAY);
     const poCancelGen = await seedPo("po-cancel-gen", "canceled", NOW - 100 * DAY, "2026.001.9.0.0"); // GENERATED-then-canceled → KEEP
     const poQueuedOld = await seedPo("po-queued-old", "queued", NOW - 100 * DAY, "2026.001.8.0.0"); // ON-PATH → never pruned
@@ -126,6 +142,15 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
 
     expect(res.subcontractDrafts).toBe(2); // draftOld + cancelOld (queued/recent/generated-canceled excluded)
     expect(res.poDrafts).toBe(1); // poDraftOld only
+    expect(res.rfqDrafts).toBe(1); // rfqDraftOld only — generated-canceled + in-window kept
+    const rfqKids = async (id: number) =>
+      (await env.DB.prepare("SELECT (SELECT COUNT(*) FROM rfq_line_items WHERE rfq_id=?1) + (SELECT COUNT(*) FROM rfq_vendors WHERE rfq_id=?1) AS n").bind(id).first<{ n: number }>())!.n;
+    expect(await env.DB.prepare("SELECT id FROM rfqs WHERE id=?").bind(rfqDraftOld).first()).toBeNull();
+    expect(await rfqKids(rfqDraftOld)).toBe(0); // children cascaded, no orphans left
+    // The numbering-reuse guard: a GENERATED-then-canceled RFQ is kept forever so its
+    // number can never be recycled, exactly like its PO twin.
+    expect(await env.DB.prepare("SELECT id FROM rfqs WHERE id=?").bind(rfqCancelGen).first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM rfqs WHERE id=?").bind(rfqDraftRecent).first()).not.toBeNull();
     const gone = async (tbl: string, id: number) => (await env.DB.prepare(`SELECT id FROM ${tbl} WHERE id=?`).bind(id).first()) === null;
     const scLines = async (id: number) => (await env.DB.prepare("SELECT COUNT(*) n FROM sov_lines WHERE subcontract_id=?").bind(id).first<{ n: number }>())!.n;
     const poLines = async (id: number) => (await env.DB.prepare("SELECT COUNT(*) n FROM po_line_items WHERE po_id=?").bind(id).first<{ n: number }>())!.n;
@@ -674,6 +699,7 @@ function syntheticResult(overrides: Partial<PruneResult> = {}): PruneResult {
     jobs: 8,
     subcontractDrafts: 9,
     poDrafts: 10,
+    rfqDrafts: 0,
     estimateArtifacts: 11,
     dbSizeBytes: 4096,
     sizeWarn: false,
@@ -703,7 +729,7 @@ describe("writePruneMeta — GS2 heartbeat record", () => {
     expect(JSON.parse(rows[0].counters_json)).toEqual({
       submissions: 1, stripped: 2, rejected: 3, audit: 4,
       pdfRequests: 5, pdfChunks: 6, publishRequests: 7, itemPhotos: 9,
-      dailyPhotos: 10, jobs: 8, subcontractDrafts: 9, poDrafts: 10,
+      dailyPhotos: 10, jobs: 8, subcontractDrafts: 9, poDrafts: 10, rfqDrafts: 0,
       estimateArtifacts: 11,
     });
     expect(JSON.parse(rows[0].failed_stages_json)).toEqual(["audit"]);

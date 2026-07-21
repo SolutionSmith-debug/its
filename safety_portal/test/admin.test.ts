@@ -447,8 +447,15 @@ describe("audit_log", () => {
     expect(actions).toContain("user_create");
     expect(actions).toContain("role_change");
     expect(actions).toContain("user_delete");
-    // Every row records the acting admin.
-    expect(results.every((r) => r.actor_username === "admin.one")).toBe(true);
+    // Every IN-APP row records the acting admin. The `operator-cli` rows come from the
+    // bearer-gated /api/internal/admin/* provisioning this fixture uses to seed the two
+    // admins: that surface now leaves its OWN trail under distinct `operator_user_*`
+    // actions, so the two privilege paths stay tellable apart in the stream (an account
+    // minted by the operator token must not read like one minted by a logged-in admin).
+    // Filter it out rather than asserting across both, and assert it is really there.
+    const inApp = results.filter((r) => r.actor_username !== "operator-cli");
+    expect(inApp.every((r) => r.actor_username === "admin.one")).toBe(true);
+    expect(actions).toContain("operator_user_create");
     const roleRow = results.find((r) => r.action === "role_change");
     expect(JSON.parse(roleRow!.detail)).toMatchObject({ from: "admin", to: "submitter" });
   });

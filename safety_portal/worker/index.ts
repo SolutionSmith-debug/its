@@ -2275,10 +2275,15 @@ async function setUserDisabled(
   }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
   if (!username) return c.json({ error: "invalid_username" }, 400);
-  const res = await c.env.DB
-    .prepare("UPDATE users SET disabled=? WHERE username=?")
-    .bind(value, username)
-    .run();
+  // W4 atomicity: the mutation and its audit row land in ONE batch, the audit
+  // conditional on changes()=1 — so a 404 (no such user) never writes a lying audit
+  // row, and a successful privilege change can never be missing one.
+  const [res] = await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE users SET disabled=? WHERE username=?").bind(value, username),
+    auditStmtIfChanged(c, "operator-cli", value === 1 ? "operator_user_disable" : "operator_user_enable", username, {
+      disabled: value,
+    }),
+  ]);
   if ((res.meta?.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
   return c.json({ ok: true, username, disabled: value });
 }
@@ -2312,10 +2317,15 @@ app.post("/api/internal/admin/users", requireAdminToken, async (c) => {
   if (exists) return c.json({ error: "exists" }, 409);
   const password_hash = await hashPassword(password); // plaintext never stored/logged
   try {
-    await c.env.DB
-      .prepare("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)")
-      .bind(username, password_hash, role)
-      .run();
+    // W4 atomicity — creating an account (at ANY role, including admin) is the
+    // highest-privilege mutation on this bearer, so its audit row must be
+    // inseparable from it. changes()=1 holds for a successful INSERT.
+    await c.env.DB.batch([
+      c.env.DB
+        .prepare("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)")
+        .bind(username, password_hash, role),
+      auditStmtIfChanged(c, "operator-cli", "operator_user_create", username, { role }),
+    ]);
   } catch (e) {
     // Race backstop (audit #5): concurrent create → UNIQUE violation → 409, not 500.
     if (isUniqueViolation(e)) return c.json({ error: "exists" }, 409);
@@ -2345,10 +2355,11 @@ app.post("/api/internal/admin/users/role", requireAdminToken, async (c) => {
   const role = parseRole(body.role, "submitter");
   if (!username) return c.json({ error: "invalid_username" }, 400);
   if (body.role === undefined || role === null) return c.json({ error: "invalid_role" }, 400);
-  const res = await c.env.DB
-    .prepare("UPDATE users SET role=? WHERE username=?")
-    .bind(role, username)
-    .run();
+  // W4 atomicity — a role change is a privilege grant/revoke; audit rides the batch.
+  const [res] = await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE users SET role=? WHERE username=?").bind(role, username),
+    auditStmtIfChanged(c, "operator-cli", "operator_user_role_change", username, { role }),
+  ]);
   if ((res.meta?.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
   return c.json({ ok: true, username, role });
 });
@@ -2374,10 +2385,15 @@ app.post("/api/internal/admin/users/reset", requireAdminToken, async (c) => {
   const password_hash = await hashPassword(password); // plaintext never stored/logged
   // Slice 8a (audit #7): a password change BUMPS session_epoch in the SAME UPDATE, so
   // every outstanding cookie for this user is revoked on its next request.
-  const res = await c.env.DB
-    .prepare("UPDATE users SET password_hash=?, session_epoch = session_epoch + 1 WHERE username=?")
-    .bind(password_hash, username)
-    .run();
+  // W4 atomicity — a password reset also revokes every outstanding session
+  // (session_epoch bump), so it must leave a record. NOTE: the detail payload names
+  // only the username; the plaintext and the hash never enter the audit row.
+  const [res] = await c.env.DB.batch([
+    c.env.DB
+      .prepare("UPDATE users SET password_hash=?, session_epoch = session_epoch + 1 WHERE username=?")
+      .bind(password_hash, username),
+    auditStmtIfChanged(c, "operator-cli", "operator_user_password_reset", username, null),
+  ]);
   if ((res.meta?.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
   return c.json({ ok: true, username });
 });
@@ -2418,8 +2434,14 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
   // job_id is always parameterized, never concatenated — and there is no string-built query for
   // CodeQL's injection sink to flag. The cascade deletes children (filed_pdfs, pdf_requests via
   // the submissions subquery; the job-keyed per-job content tables job_daily_requirements +
-  // job_expected_materials — Slice 1, R3-F4, mirroring their prune.ts guard-union entries)
-  // BEFORE the parents (submissions, then jobs).
+  // job_expected_materials — Slice 1, R3-F4, mirroring their prune.ts guard-union entries;
+  // and the five field-ops job-context tables prune.ts guards a job on — checklist_item_states,
+  // checklist_instances, time_entries, task_assignments, inspections, equipment_location)
+  // BEFORE the parents (submissions, then jobs). The cascade must cover EXACTLY prune.ts's
+  // job-context guard union: prune refuses to delete a job holding any of those rows and
+  // names this route as the operator path that clears them, so anything guarded there and
+  // missing here is a row that can never be removed by any path — and, worse, one this route
+  // silently orphans behind a deleted job while reporting ok:true.
   const results = await c.env.DB.batch([
     c.env.DB
       .prepare("DELETE FROM filed_pdfs WHERE submission_uuid IN (SELECT submission_uuid FROM submissions WHERE job_id = ?)")
@@ -2429,6 +2451,22 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
       .bind(job_id),
     c.env.DB.prepare("DELETE FROM job_daily_requirements WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM job_expected_materials WHERE job_id = ?").bind(job_id),
+    // The field-ops job-context tables prune.ts already guards a job on. Its guard
+    // comment named purge-job as "the explicit operator cleanup path (cascades both)"
+    // — it did not: these five were never deleted, so purging a job returned ok:true
+    // and a tidy count while payroll/billing-grade time_entries, task_assignments and
+    // inspections, plus the checklist and equipment-location trails, were orphaned
+    // invisibly behind a now-absent job. Children before parents:
+    // checklist_item_states → checklist_instances, and time_entries (whose task_id
+    // references task_assignments) → task_assignments.
+    c.env.DB
+      .prepare("DELETE FROM checklist_item_states WHERE instance_id IN (SELECT id FROM checklist_instances WHERE job_id = ?)")
+      .bind(job_id),
+    c.env.DB.prepare("DELETE FROM checklist_instances WHERE job_id = ?").bind(job_id),
+    c.env.DB.prepare("DELETE FROM time_entries WHERE job_id = ?").bind(job_id),
+    c.env.DB.prepare("DELETE FROM task_assignments WHERE job_id = ?").bind(job_id),
+    c.env.DB.prepare("DELETE FROM inspections WHERE job_id = ?").bind(job_id),
+    c.env.DB.prepare("DELETE FROM equipment_location WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM submissions WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM jobs WHERE job_id = ?").bind(job_id),
     c.env.DB
@@ -2439,11 +2477,21 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
   const pdfRequests = results[1]?.meta?.changes ?? 0;
   const requirements = results[2]?.meta?.changes ?? 0;
   const expectedMaterials = results[3]?.meta?.changes ?? 0;
-  const submissions = results[4]?.meta?.changes ?? 0;
-  const job = results[5]?.meta?.changes ?? 0;
+  const checklistItemStates = results[4]?.meta?.changes ?? 0;
+  const checklistInstances = results[5]?.meta?.changes ?? 0;
+  const timeEntries = results[6]?.meta?.changes ?? 0;
+  const taskAssignments = results[7]?.meta?.changes ?? 0;
+  const inspections = results[8]?.meta?.changes ?? 0;
+  const equipmentLocation = results[9]?.meta?.changes ?? 0;
+  const submissions = results[10]?.meta?.changes ?? 0;
+  const job = results[11]?.meta?.changes ?? 0;
   return c.json({
     ok: true, found: job > 0, job_id, job_deleted: job, submissions, pdfChunks, pdfRequests,
     requirements, expectedMaterials,
+    // Reported per-table so the operator SEES the payroll/billing-grade rows this
+    // removed — a silent count is how the old omission stayed invisible.
+    checklistItemStates, checklistInstances, timeEntries, taskAssignments, inspections,
+    equipmentLocation,
   });
 });
 

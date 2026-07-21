@@ -294,6 +294,22 @@ TRACKED_JOBS: list[str] = [
     # marker (intentional dark state, the External Send Gate). Register + activate
     # together at R3 go-live (a FIXED high-class operator action).
     "rfq_send_poll",
+    # §50 privileged config actuator (po_materials.config_actuator). Writes a
+    # config_actuator.last_run marker at the end of each cycle that actually reached the
+    # pull+claim work. This is the HIGHEST-consequence entry in this list: it is the SOLE
+    # privileged code-actuator (commit → CI → merge → deploy), and a silent death looks
+    # exactly like "nothing is queued" — config edits simply stop reaching the live Worker
+    # with no other signal. Like po_poll it WARNs until the operator both LOADS the plist
+    # (`install.sh load org.solutionsmith.its.config-actuator`) AND flips
+    # po_materials.config_actuator.polling_enabled true — a loaded daemon with the gate
+    # false returns before the marker write (intentional dark state, not a fault).
+    "config_actuator",
+    # Form-publish actuator (safety_reports.publish_daemon), the same privileged
+    # commit → CI → deploy rail against the publish_requests queue. Writes a
+    # publish_daemon.last_run marker each completed cycle; same load-AND-flip caveat
+    # (`install.sh load org.solutionsmith.its.publish-daemon` +
+    # safety_reports.publish_daemon.polling_enabled true).
+    "publish_daemon",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -366,6 +382,19 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # po_send_poll / subcontract_send_poll / weekly_send_poll (an approval poller, not a
     # fast puller; a single missed cycle tolerated, two consecutive fire).
     "rfq_send_poll": timedelta(minutes=30),
+    # config_actuator / publish_daemon both run every 120s (plist StartInterval), but they
+    # do NOT get the 10-min high-frequency-poller window their cadence would suggest. They
+    # are the two privileged ACTUATORS, and one cycle can legitimately block for a very long
+    # time: per claimed request it waits out CI (CI_TIMEOUT_S = 900s) then deploys, serially
+    # for every request it claimed — and the Check-C marker is written only once, at the END
+    # of the cycle. A 10-min window would fire CRITICAL on a perfectly healthy multi-request
+    # publish. 90 min sits above each daemon's own STALE_RECLAIM_S ceiling (config 3300s /
+    # publish 2700s — the point past which even THEY call an in-flight request dead), so it
+    # cannot false-positive on legitimate work. Nothing is lost by the wider window: Check C
+    # is evaluated by the once-daily 07:00 watchdog, so a genuinely dead actuator surfaces at
+    # the same sweep either way.
+    "config_actuator": timedelta(minutes=90),
+    "publish_daemon": timedelta(minutes=90),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 

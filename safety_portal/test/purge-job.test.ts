@@ -23,12 +23,22 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM pdf_requests"),
     env.DB.prepare("DELETE FROM job_daily_requirements"),
     env.DB.prepare("DELETE FROM job_expected_materials"),
+    env.DB.prepare("DELETE FROM time_entries"),
+    env.DB.prepare("DELETE FROM task_assignments"),
+    env.DB.prepare("DELETE FROM inspections"),
+    env.DB.prepare("DELETE FROM checklist_instances"),
+    env.DB.prepare("DELETE FROM equipment_location"),
     env.DB.prepare("DELETE FROM jobs"),
     env.DB.prepare("DELETE FROM audit_log"),
   ]);
 });
 
 async function seedJobWithData(job: string, uuid: string): Promise<void> {
+  // equipment_location.equipment_id is a REAL foreign key (FKs are enforced in this
+  // harness), so the referenced equipment row must exist first.
+  await env.DB
+    .prepare("INSERT OR IGNORE INTO equipment (id, name) VALUES (1, 'Crane 1')")
+    .run();
   await env.DB.batch([
     env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES (?,?,1)").bind(job, "P"),
     env.DB
@@ -53,6 +63,25 @@ async function seedJobWithData(job: string, uuid: string): Promise<void> {
     env.DB
       .prepare("INSERT INTO job_expected_materials (job_id, description, seq) VALUES (?, 'Panels pallet', 10)")
       .bind(job),
+    // The five job-context tables prune.ts guards a job on. purge-job's own comment
+    // claimed it was "the explicit operator cleanup path (cascades both)" — it did
+    // not touch any of them, so an operator purge returned ok:true while orphaning
+    // payroll/billing-grade rows behind a now-absent job.
+    env.DB
+      .prepare("INSERT INTO time_entries (uuid, job_id, actor_username, hours) VALUES (?,?, 'pm', 8)")
+      .bind(`te-${job}`, job),
+    env.DB
+      .prepare("INSERT INTO task_assignments (job_id, description) VALUES (?, 'Set panels')")
+      .bind(job),
+    env.DB
+      .prepare(
+        "INSERT INTO inspections (uuid, job_id, form_code, version, payload_json, actor_username) VALUES (?,?, 'insp-v1', 1, '{}', 'pm')",
+      )
+      .bind(`insp-${job}`, job),
+    env.DB
+      .prepare("INSERT INTO checklist_instances (kind, job_id, instance_date) VALUES ('daily', ?, '2026-01-01')")
+      .bind(job),
+    env.DB.prepare("INSERT INTO equipment_location (equipment_id, job_id) VALUES (1, ?)").bind(job),
   ]);
 }
 
@@ -66,6 +95,11 @@ async function counts(job: string, uuid: string) {
     reqs: await q("SELECT COUNT(*) n FROM pdf_requests WHERE submission_uuid=?", uuid),
     dailyReqs: await q("SELECT COUNT(*) n FROM job_daily_requirements WHERE job_id=?", job),
     materials: await q("SELECT COUNT(*) n FROM job_expected_materials WHERE job_id=?", job),
+    timeEntries: await q("SELECT COUNT(*) n FROM time_entries WHERE job_id=?", job),
+    tasks: await q("SELECT COUNT(*) n FROM task_assignments WHERE job_id=?", job),
+    inspections: await q("SELECT COUNT(*) n FROM inspections WHERE job_id=?", job),
+    checklists: await q("SELECT COUNT(*) n FROM checklist_instances WHERE job_id=?", job),
+    equipLoc: await q("SELECT COUNT(*) n FROM equipment_location WHERE job_id=?", job),
   };
 }
 
@@ -87,9 +121,12 @@ describe("POST /api/internal/admin/purge-job", () => {
 
     expect(await counts("JOB-PURGE", "u-purge")).toEqual({
       jobs: 0, subs: 0, pdfs: 0, reqs: 0, dailyReqs: 0, materials: 0,
+      timeEntries: 0, tasks: 0, inspections: 0, checklists: 0, equipLoc: 0,
     });
+    // The OTHER job keeps every one of them — the cascade is job-scoped, not a sweep.
     expect(await counts("JOB-KEEP", "u-keep")).toEqual({
       jobs: 1, subs: 1, pdfs: 1, reqs: 1, dailyReqs: 2, materials: 1,
+      timeEntries: 1, tasks: 1, inspections: 1, checklists: 1, equipLoc: 1,
     });
     const audit = await env.DB
       .prepare("SELECT action, target_username FROM audit_log WHERE action='purge-job'")
