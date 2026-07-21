@@ -125,6 +125,19 @@ that. Loaded via `@import` from `CLAUDE.md`'s START-HERE block.
   Seed the gate row (value `false`) in the same change that adds the gated code, so activation is a visible
   cell-flip, not a phantom. (Bit the 2026-07-05 equipment/materials activation: `equipment_enabled`/
   `materials_enabled` had no row → the operator couldn't find one to flip → the rows had to be CREATED.)
+- **Static text must never assert a LIVE gate state — say what the switch MEANS, not what it is set to.**
+  A doc, a table row, a code comment or a config-editor note that says "ships dark" / "currently off" is
+  redundant the day it is written (the value is one read away) and wrong the day someone flips it. It went
+  wrong at scale: on 2026-07-21 **every** procurement send gate read `true` — `po_send`, `rfq_send`,
+  `subcontract_send`, `estimate_poll`, `rfq_poll`, `subcontract_poll` — while CLAUDE.md's "What's stubbed
+  vs. real" table, the troubleshooting tree, the auto-memory and the config-editor notes all still said
+  "ships dark", and the `rfq_send` ITS_Config row's own Description still listed unmet go-live
+  preconditions beside a `true` value. A Tier-2 operator following any of them hunts for a switch that is
+  already thrown. Write the SEMANTICS ("pause anytime; turning ON escalates") and point at ITS_Config as
+  the single source of live state; if you must date-stamp an observation, mark it as an observation.
+  `tests/test_config_editor.py::test_no_registry_note_asserts_a_live_gate_state` enforces this for the
+  editor's own notes — docs have no such guard, so they need the discipline.
+
 - **Read a gate row's full Description BEFORE flipping it — a doctrine-divergent gate flip is a doctrine
   action (§44 high-class), not an autonomous one.** A gate's `ITS_Config` Description cell can carry an
   explicit precondition ("Do NOT set true until the §51 rider is merged"). A verbal go-ahead resolves the
