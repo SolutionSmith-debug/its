@@ -52,6 +52,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -60,12 +61,14 @@ import jsonschema
 from safety_reports.publish_manifest import PublishApplyError, apply_publish
 from shared import (
     circuit_breaker,
+    creds_resolution,
     error_log,
     form_category,
     keychain,
     portal_client,
     smartsheet_client,
 )
+from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
@@ -111,6 +114,14 @@ _heartbeat_reporter = HeartbeatReporter(
     source_id=_REGISTRATION_SOURCE_ID,
     row_state_path=HEARTBEAT_ROW_STATE_PATH,  # shared file — make the contract explicit
 )
+
+# Watchdog Check-C liveness marker (scripts/watchdog.py TRACKED_JOBS). The heartbeat row
+# above is a PUSH surface this daemon writes about itself; Check C is the independent
+# staleness floor that notices when the daemon stops writing anything at all. Without it a
+# silently dead publish actuator is invisible — approved form definitions simply stop
+# reaching the live portal and the queue just looks empty.
+WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
+WATCHDOG_JOB_SLUG = "publish_daemon"
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CATALOG_PATH = _ROOT / "safety_portal" / "catalog.json"
@@ -191,9 +202,24 @@ def _polling_enabled() -> bool:
     return _read_str_setting(CFG_POLLING_ENABLED, "false").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _resolve_creds() -> _Creds | None:
-    """Fail-closed: a missing bearer or base URL HALTS the cycle (no silent no-op)."""
-    base_url = _read_str_setting(CFG_WORKER_BASE_URL, "").strip()
+def _resolve_creds() -> _Creds | TransientUnavailable | None:
+    """Resolve (base_url, bearer) fail-CLOSED, three ways.
+
+    `TransientUnavailable` means the base-URL row could not be READ this cycle
+    (Smartsheet blip / circuit open) — self-heals, so the caller WARNs and skips.
+    `None` means a credential is genuinely absent — a misconfig that halts loudly.
+
+    The base-URL read deliberately does NOT go through `_read_str_setting`: that helper
+    swallows both circuit-open and transient errors into its fallback, so a one-cycle
+    Smartsheet blip arrived here as `""` and was indistinguishable from an unset row —
+    which is exactly how a network hiccup produced an alert blaming publish-daemon
+    *credentials* that were never missing (the live po_poll bug, 2026-07-20 04:42Z).
+    Mirrors po_poll._resolve_credentials.
+    """
+    resolved = creds_resolution.read_base_url(CFG_WORKER_BASE_URL, WORKSTREAM)
+    if isinstance(resolved, TransientUnavailable):
+        return resolved
+    base_url = (resolved or "").strip()
     if not base_url:
         return None
     try:
@@ -231,6 +257,20 @@ def _write_heartbeat_row(
         correlation_id=correlation_id,
         notes=notes,
     )
+
+
+def _write_watchdog_marker() -> None:
+    """Touch the Check C freshness marker for this run (mirror po_poll / fieldops_sync)."""
+    try:
+        WATCHDOG_MARKER_DIR.mkdir(parents=True, exist_ok=True)
+        marker = WATCHDOG_MARKER_DIR / f"{WATCHDOG_JOB_SLUG}.last_run"
+        marker.write_text(datetime.now(UTC).isoformat())
+    except OSError as exc:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"watchdog marker write failed: {exc!r}",
+            error_code="watchdog_marker_failed",
+        )
 
 
 def _load_catalog() -> dict:
@@ -660,6 +700,24 @@ def publish_once() -> PublishStats:
         stats.halted = "unstrand_failed"
         return stats
     creds = _resolve_creds()
+    if isinstance(creds, TransientUnavailable):
+        # Smartsheet was TEMPORARILY unreachable when reading the Worker base URL — NOT a
+        # misconfig, and it self-heals next cycle. WARN + skip; do NOT report unresolved
+        # CREDENTIALS (that aims the §43 repair at re-provisioning secrets — a
+        # high-capability-class action — for a condition needing none). Skip the watchdog
+        # freshness marker exactly like the no-creds path, so a SUSTAINED outage still
+        # surfaces via the Check-C staleness floor, just without per-cycle alert spam.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"publish Worker base URL temporarily unreadable ({creds.reason}) — skipping "
+            f"this cycle; will retry next interval (transient, self-heals)",
+            error_code="publish_daemon.creds_transient",
+        )
+        _write_heartbeat()
+        _write_heartbeat_row(status="WARN", items_processed=0,
+                             error_summary=f"base URL unreadable ({creds.reason}) — transient")
+        stats.halted = "creds_transient"
+        return stats
     if creds is None:
         # Fail-closed + loud: a missing bearer/URL must not silently drop publishes.
         error_log.log(
@@ -769,6 +827,11 @@ def publish_once() -> PublishStats:
             f"heartbeat write outer-catch tripped: {exc!r}",
             error_code="daemon_health_write_failed",
         )
+    # Check-C liveness: written ONLY here, at the end of a cycle that actually reached the
+    # pull+claim work. Every `halted` early-return above (gate off, stranded tree, transient
+    # / absent creds, migration gate) deliberately leaves the marker untouched — a cycle that
+    # never polled must let Check C go stale rather than fake freshness (po_poll's semantics).
+    _write_watchdog_marker()
     return stats
 
 

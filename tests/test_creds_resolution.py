@@ -74,15 +74,22 @@ def test_missing_row_is_a_misconfig_not_transient(monkeypatch: pytest.MonkeyPatc
 def test_every_puller_actually_adopts_the_shared_classifier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """PARITY TOOTH: each puller's real `_resolve_credentials` must classify a
-    failed read as transient.
+    """PARITY TOOTH: every Worker-pulling daemon's real credential resolver must
+    classify a failed read as transient.
 
-    The per-daemon tests all MOCK `_resolve_credentials` to hand their caller a
-    sentinel, so they verify the caller branch but would happily pass for a daemon
-    that never adopted the shared classifier at all — the exact drift that left
-    five pullers paging falsely after portal_poll had already fixed it. This drives
-    the REAL resolver with a failing `get_setting`, so a puller that reverts to
-    swallowing the error into "" fails HERE.
+    The per-daemon tests all MOCK the resolver to hand their caller a sentinel, so
+    they verify the caller branch but would happily pass for a daemon that never
+    adopted the shared classifier at all — the exact drift that left five pullers
+    paging falsely after portal_poll had already fixed it. This drives the REAL
+    resolver with a failing `get_setting`, so a puller that reverts to swallowing
+    the error into "" fails HERE.
+
+    Covers the six intake/sync pullers PLUS the two privileged actuators
+    (config_actuator, publish_daemon), which pull the same way from the same Worker
+    and had the same swallow-into-"" bug. Those two name their resolver
+    `_resolve_creds` rather than `_resolve_credentials`, so the tooth resolves
+    EITHER name — renaming a live daemon's function to satisfy a test would be the
+    tail wagging the dog, and a resolver under either name must obey the contract.
 
     Keychain is never reached: every resolver returns at the transient early-out
     before touching it.
@@ -96,6 +103,11 @@ def test_every_puller_actually_adopts_the_shared_classifier(
         "po_materials.estimate_poll",
         "subcontracts.subcontract_poll",
         "field_ops.fieldops_sync",
+        # The two privileged actuators (§50 config actuation / form publish). A silent
+        # false "credentials missing" here misdirects the §43 repair at re-provisioning
+        # the config + internal bearers — a high-capability-class action.
+        "po_materials.config_actuator",
+        "safety_reports.publish_daemon",
     ]
 
     def boom(setting: str, workstream: str | None = None) -> object:
@@ -105,7 +117,8 @@ def test_every_puller_actually_adopts_the_shared_classifier(
     offenders: list[str] = []
     for name in modules:
         mod = importlib.import_module(name)
-        got = mod._resolve_credentials()
+        resolver = getattr(mod, "_resolve_credentials", None) or mod._resolve_creds
+        got = resolver()
         if not isinstance(got, creds_resolution.TransientUnavailable):
             offenders.append(f"{name} -> {got!r}")
     assert not offenders, (

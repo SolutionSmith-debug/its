@@ -278,6 +278,62 @@ def test_po_poll_marker_slug_matches_writer_and_window():
     )
 
 
+def test_privileged_actuator_marker_slugs_match_writers_and_windows():
+    """Same Check-C consistency guard for the TWO privileged actuators.
+
+    These are the highest-consequence entries in TRACKED_JOBS: config_actuator is the §50
+    SOLE privileged code-actuator (commit → CI → merge → deploy) and publish_daemon runs the
+    same rail for form definitions. Before enrollment NOTHING reported their death — a dead
+    actuator is indistinguishable from an empty queue, so privileged actuation just silently
+    stops. This asserts each writer's slug is the slug the watchdog tracks (a mismatch means
+    Check C watches a marker nothing writes — permanent false WARN — or misses a dead daemon).
+
+    The 90-min window is deliberately NOT the 10-min high-frequency window their 120s
+    StartInterval would imply: one cycle can legitimately block for CI (CI_TIMEOUT_S=900s)
+    plus deploy, serially per claimed request, and the marker lands only at cycle end. 90 min
+    clears each daemon's own STALE_RECLAIM_S ceiling, and costs nothing — Check C is evaluated
+    by the once-daily 07:00 watchdog either way.
+    """
+    from po_materials import config_actuator
+    from safety_reports import publish_daemon
+
+    assert config_actuator.WATCHDOG_JOB_SLUG == "config_actuator"
+    assert config_actuator.WATCHDOG_JOB_SLUG in watchdog.TRACKED_JOBS
+    assert watchdog.TRACKED_JOB_WINDOWS[config_actuator.WATCHDOG_JOB_SLUG] == timedelta(
+        minutes=90
+    )
+    assert publish_daemon.WATCHDOG_JOB_SLUG == "publish_daemon"
+    assert publish_daemon.WATCHDOG_JOB_SLUG in watchdog.TRACKED_JOBS
+    assert watchdog.TRACKED_JOB_WINDOWS[publish_daemon.WATCHDOG_JOB_SLUG] == timedelta(
+        minutes=90
+    )
+    # The window must exceed the daemon's own in-flight staleness ceiling, or a healthy
+    # long actuation false-positives. Derived from the daemons, not hardcoded.
+    for mod in (config_actuator, publish_daemon):
+        window = watchdog.TRACKED_JOB_WINDOWS[mod.WATCHDOG_JOB_SLUG]
+        assert window.total_seconds() > mod.STALE_RECLAIM_S, (
+            f"{mod.WATCHDOG_JOB_SLUG}: Check-C window {window} is tighter than its own "
+            f"STALE_RECLAIM_S ({mod.STALE_RECLAIM_S}s) — a legitimately in-flight "
+            "actuation would fire a false CRITICAL"
+        )
+
+
+def test_privileged_actuator_markers_round_trip(tmp_path, monkeypatch):
+    """Each actuator's marker writer produces a parseable ISO timestamp at <slug>.last_run —
+    the exact filename Check C stats. The OSError fence is silent, so 'no exception' does not
+    prove the write happened; assert the file."""
+    from po_materials import config_actuator
+    from safety_reports import publish_daemon
+
+    for mod in (config_actuator, publish_daemon):
+        d = tmp_path / mod.WATCHDOG_JOB_SLUG
+        monkeypatch.setattr(mod, "WATCHDOG_MARKER_DIR", d)
+        mod._write_watchdog_marker()
+        marker = d / f"{mod.WATCHDOG_JOB_SLUG}.last_run"
+        assert marker.exists(), f"{mod.WATCHDOG_JOB_SLUG} wrote no marker"
+        datetime.fromisoformat(marker.read_text().strip())  # raises if not valid ISO
+
+
 def test_run_picklist_sync_write_marker_round_trips(monkeypatch, tmp_path):
     """C4: run_picklist_sync writes a parseable ISO timestamp to its marker
     (fail-soft path mirrors audit_picklist_drift's, proven elsewhere)."""
