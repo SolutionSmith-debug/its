@@ -2180,7 +2180,7 @@ last duplicated copies of this pattern. Trigger: next touch to either daemon, or
 observability-consolidation pass. See `docs/session_logs/2026-07-20_po-hub-tab-fold.md`;
 `shared/sustained_failure.py` CLAUDE.md row already documents the gap.
 
-## Converge `compile_now_poll._is_escalation_cycle` onto the shared escalation ladder [OPEN 2026-07-21]
+## Converge `compile_now_poll._is_escalation_cycle` onto the shared escalation ladder [RESOLVED 2026-07-21]
 
 `safety_reports/compile_now_poll.py` carries a PRIVATE geometric re-notify ladder
 (`_is_escalation_cycle` / `_next_escalation_cycle`, `ESCALATION_LADDER_FACTOR`): past its threshold a
@@ -2195,6 +2195,18 @@ private pair and bind the shared one** — the semantics were written to match e
 threshold-crossing cycle, then 2×/4×/8×, all threshold-relative). Same convergence bucket as the
 `fieldops_sync`/`portal_poll` entry above.
 
+**RESOLVED 2026-07-21 (PR #647, `28b0eaa`):** verified against live HEAD — `grep` for
+`_is_escalation_cycle`/`_next_escalation_cycle`/`ESCALATION_LADDER_FACTOR` in
+`safety_reports/compile_now_poll.py` returns zero hits; both the per-cycle escalation (line ~646) and the
+per-job `_JobScanLedger` escalation (line ~729) now call `sustained_failure.is_escalation_cycle` /
+`next_escalation_cycle` directly, with the private ladder rungs deleted onto the shared, capped one
+(5/10/20/40/80-then-every-40 cycle; 20/40/80/160-then-every-160 per-job — see CLAUDE.md `shared/sustained_failure.py`
+row). `_JobScanLedger` itself (the per-job COUNTER, as opposed to the ladder cadence function) stays a
+deliberate private sibling per that same row — not a residual instance of this gap. The sibling
+`fieldops_sync`/`portal_poll` entry above is a **different, still-open** gap (their private *counters*
+`_record_pending_fetch_failure`/`_record_fetch_failure` remain unconverged even though both now also call
+the shared `is_escalation_cycle` for cadence) — do not conflate the two when closing this one.
+
 ## Legacy jobs missing structured `job_no`/address after migration 0057 — per-job manual backfill only [OPEN 2026-07-20]
 
 Migration 0057 (PR #634) added `jobs.job_no` (the Evergreen `YYYY.NNN` number) and structured
@@ -2205,4 +2217,42 @@ or builder feature that assumes `job_no`/address is populated fleet-wide will se
 unedited job. Trigger: before any feature that reads `job_no`/address across ALL jobs (not just the
 per-job dropdown autofill, which already degrades gracefully to a name-prefix fallback); or a dedicated
 data-entry pass by the office.
+
+## Watchdog Check W (`shared/log_rotation.py`) ships archive-only — the delete stage is deferred pending an off-host-copy decision [OPEN 2026-07-21]
+
+PR #651 shipped Check W's `run_log_rotation` as **v1: gzip-in-place, never delete** — daily `logs/<date>.log`
+files older than 14 local days become verified `.gz` siblings (original removed only after a streamed
+sha256+length round-trip confirms the archive), and `logs/launchd/<daemon>.out.log` gets a copy→verified-`.gz`
+→`os.truncate(path, 0)` in place (inode preserved for the daemon's held fd). Nothing is ever unlinked once
+archived; `.gz` files accumulate under `~/its/logs/` bounded only by disk (1.1 TiB free as of this session, so
+not urgent). The PR explicitly scoped the delete stage out: **"The only irreversible op ships separately,
+after an off-host copy exists."** Per Op Stds §44, "off-host copy of the forensic record" is a **FIXED
+high-capability-class decision** (secrets/infra scope, not a Tier-2 repair) — and it isn't a free choice:
+`shared/redact.py` / the §54 backstop doctrine rules out Box as the destination (it's an Evergreen customer
+system of record, not an ITS operational archive target), so the real decision is which off-host mechanism
+(a dedicated cloud bucket, an encrypted external volume synced on a schedule, something else) Seth wants
+before any deletion is safe to build. **Trigger:** when Seth picks an off-host-copy mechanism, or when `.gz`
+accumulation is large enough to matter (watch via `du -sh ~/its/logs` — no automated size-of-archive alarm
+exists yet, only the existing per-run 1 GiB single-file size-cap skip). **Tag:** `watchdog`, `log_rotation`,
+`observability`, `high-severity` (decision-gated, not urgent).
+
+## Watchdog Check W dropped the brief's per-file mtime incident-skip guard — Option B (size-ceiling override) is a possible future restore, not built [OPEN 2026-07-21]
+
+The brief that spec'd Check W (#651) pinned a per-file *"skip any launchd file whose `st_mtime` is within N
+minutes"* guard, meant to avoid truncating a file mid-incident. The implementation deliberately dropped it —
+flagged explicitly in the PR body rather than silently kept — because it fatally exempted exactly the files
+that most need truncating: `portal_poll`'s `.out.log` (the largest target, ~36 MB) writes every 60s, so its
+mtime is *always* "recent," meaning the guard would have made it **never eligible for truncation**, defeating
+the check's purpose on its biggest offender. Seth ratified the deviation as-is this session (walked through
+danger/purpose/doctrine; see `project_cutover-builders-and-logs-growth-2026-07-21.md` auto-memory and
+blueprint memory-archive §G73) — the real incident guard that remains is the open-CRITICAL whole-lane hold
+(Check W records but does not page during an open incident), and copy-gz-truncate archives content to a
+verified `.gz` *before* truncating, so `tail -f` and the archived record both survive. **Possible future
+refinement, NOT currently built:** "Option B" — restore a per-file mtime skip but gate it with a size
+ceiling (e.g. ~5 MB) so small, recently-written files keep the mid-tail courtesy while large busy files
+(like `portal_poll`'s) still truncate regardless of mtime. Only worth building if the operator later wants
+the courtesy back for some smaller daemon's `.out.log`; no known daemon exhibits the "truncated mid-tail"
+symptom this would guard against as of this session. **Trigger:** Seth requests the mtime courtesy back, or
+a smaller daemon's log is observed truncated at an inconvenient moment during a live incident. **Tag:**
+`watchdog`, `log_rotation`, `low-severity`, `deferred-refinement`.
 
