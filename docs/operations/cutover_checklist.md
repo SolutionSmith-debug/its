@@ -146,6 +146,11 @@ through Phase C go/no-go BEFORE this list starts),
   `evergreenmirror` residue in any Value cell**.
   Verify: `python -m scripts.verify_cutover --only config` (NO
   `--allow-sandbox`) → PASS. (VC-03)
+  *Phase-gated cutovers* (a leg deliberately staying mirror, e.g. Phase-1's
+  portal-stays-on-mirror week) run `--profile <name>` instead — the profile
+  exempts exactly its named rows from the sandbox scan and everything else
+  stays production-scanned; `--allow-sandbox` is never a phase verdict
+  (`scripts/verify_cutover.py` `PROFILES`).
 - [ ] **CL-13 — gate-flip discipline.** Before flipping ANY `*_enabled` row,
   read its full Description cell — an in-cell precondition ("do NOT set true
   until …") is doctrine (§44 high-class), not a suggestion.

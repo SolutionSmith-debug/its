@@ -40,7 +40,8 @@ VC-03  config         load-bearing ITS_Config rows present + non-default
                       (worker_base_url, from_mailbox rows, scheduled_send_local,
                       the polling/sync/intake gates, ``system.operator_email``,
                       the subcontract-poll gate rows) and — unless
-                      ``--allow-sandbox`` — free of the mirror domain
+                      ``--allow-sandbox`` or a named ``--profile`` exemption —
+                      free of the mirror domain
 VC-04  daemon-health  every Enabled ITS_Daemon_Health row has a heartbeat fresher
                       than 2 x its Interval Seconds (the schema's documented
                       staleness threshold)
@@ -115,6 +116,13 @@ Usage::
     python -m scripts.verify_cutover --only keychain,launchd
     python -m scripts.verify_cutover --skip d1-migrations
     python -m scripts.verify_cutover --allow-sandbox # mirror dress-rehearsal mode
+    python -m scripts.verify_cutover --profile phase1-hybrid  # phase gate (see PROFILES)
+
+Profiles vs ``--allow-sandbox``: a profile exempts a NAMED, phase-specific row set
+from the VC-03 sandbox scan while everything else keeps the full production scan —
+a profile run IS the cutover verdict for that phase. ``--allow-sandbox`` waives the
+scan wholesale and is never a shippable verdict (§52/§53 narration); the two flags
+are mutually exclusive so a profile gate can't be silently degraded.
 """
 
 from __future__ import annotations
@@ -155,6 +163,26 @@ DARK_UNLOADED_LABELS = frozenset({
 # after cutover means a daemon is pointed at the sandbox (§53 sandbox-masks-
 # production). `--allow-sandbox` relaxes this for mirror dress rehearsals.
 SANDBOX_DOMAIN_MARKER = "evergreenmirror"
+
+# Cutover PROFILES — each names a phase-specific set of (key, workstream) rows whose
+# VC-03 sandbox scan is EXEMPTED. Deliberately data, not a code path: if a cutover
+# leg slips (e.g. the M365 E5 ask lands late and the two from_mailbox rows must
+# temporarily stay mirror), the exemption is a reviewed two-line addition here, never
+# an --allow-sandbox run. Rows NOT listed keep the full production scan, and the
+# exempted rows are still presence/non_empty-checked — only the domain scan is waived.
+#
+# phase1-hybrid (Evergreen Phase-1, week of 2026-07-21): Smartsheet + Box + M365 move
+# to the production tenants while the portal deliberately STAYS on the mirror Worker
+# (safety.evergreenmirror.com — the checklist's "portal doesn't move"), so exactly the
+# three physical worker_base_url rows (one Setting name under three Workstream cells)
+# are EXPECTED to carry the mirror domain at the Friday gate.
+PROFILES: dict[str, frozenset[tuple[str, str]]] = {
+    "phase1-hybrid": frozenset({
+        ("safety_reports.portal.worker_base_url", "safety_reports"),
+        ("safety_reports.portal.worker_base_url", "progress_reports"),
+        ("safety_reports.portal.worker_base_url", "po_materials"),
+    }),
+}
 
 # safety_portal/wrangler.jsonc `database_name` — wrangler keys `--local`/`--remote`
 # migration state off the name, not the id.
@@ -415,6 +443,10 @@ class Options:
     """Cross-check options resolved from the CLI."""
 
     allow_sandbox: bool = False
+    # Active profile name (banner/observability) + its exemption set. Empty set =
+    # no exemptions (the default full-production gate).
+    profile: str | None = None
+    sandbox_exempt: frozenset[tuple[str, str]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -526,6 +558,7 @@ def _check_launchd(opts: Options) -> CheckOutcome:
 def _check_config(opts: Options) -> CheckOutcome:
     """Load-bearing ITS_Config rows present + non-default (+ sandbox-free)."""
     problems: list[str] = []
+    exempted: list[str] = []  # profile-exempted rows that actually carried the mirror value
     for row in CONFIG_ROWS:
         try:
             value = smartsheet_client.get_setting(row.key, workstream=row.workstream)
@@ -544,6 +577,11 @@ def _check_config(opts: Options) -> CheckOutcome:
             and not opts.allow_sandbox
             and SANDBOX_DOMAIN_MARKER in text.lower()
         ):
+            if (row.key, row.workstream) in opts.sandbox_exempt:
+                # Profile-sanctioned mirror value — allowed, but named in the
+                # summary so the exemption is never silent.
+                exempted.append(f"{row.key} [{row.workstream}]")
+                continue
             problems.append(
                 f"{row.key} [{row.workstream}]: still points at the sandbox "
                 f"({SANDBOX_DOMAIN_MARKER!r} in value)"
@@ -555,6 +593,12 @@ def _check_config(opts: Options) -> CheckOutcome:
             details="; ".join(problems),
         )
     suffix = " (sandbox values allowed)" if opts.allow_sandbox else ""
+    if exempted:
+        suffix += (
+            f" ({len(exempted)} mirror row(s) exempted by --profile {opts.profile}: "
+            + ", ".join(exempted)
+            + ")"
+        )
     return CheckOutcome(
         passed=True,
         summary=f"all {len(CONFIG_ROWS)} load-bearing ITS_Config rows present + non-default{suffix}.",
@@ -845,10 +889,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", help="comma-separated check slugs/ids to run (default: all)")
     parser.add_argument("--skip", help="comma-separated check slugs/ids to skip")
     parser.add_argument("--list", action="store_true", help="list checks and exit")
-    parser.add_argument(
+    # --allow-sandbox and --profile are mutually exclusive: a profile is a precise,
+    # reviewed exemption set and must never be silently widened to a blanket waiver.
+    sandbox_group = parser.add_mutually_exclusive_group()
+    sandbox_group.add_argument(
         "--allow-sandbox",
         action="store_true",
-        help="permit evergreenmirror.com values in VC-03 (mirror dress-rehearsal mode)",
+        help="permit evergreenmirror.com values in VC-03 (mirror dress-rehearsal mode; "
+        "NOT a cutover verdict)",
+    )
+    sandbox_group.add_argument(
+        "--profile",
+        choices=sorted(PROFILES),
+        help="phase gate: exempt exactly the named profile's row set from the VC-03 "
+        "sandbox scan; all other rows stay production-scanned (a profile run IS the "
+        "phase's cutover verdict)",
     )
     args = parser.parse_args(argv)
 
@@ -866,12 +921,21 @@ def main(argv: list[str] | None = None) -> int:
         print("error: selection resolves to zero checks", file=sys.stderr)
         return 2
 
-    opts = Options(allow_sandbox=bool(args.allow_sandbox))
+    opts = Options(
+        allow_sandbox=bool(args.allow_sandbox),
+        profile=args.profile,
+        sandbox_exempt=PROFILES[args.profile] if args.profile else frozenset(),
+    )
     partial = len(selected) != len(CHECKS)
     if partial:
         print("== PARTIAL RUN — not a cutover verdict (some checks not selected) ==")
     if opts.allow_sandbox:
         print("== --allow-sandbox — mirror values permitted; NOT a production verdict ==")
+    if opts.profile:
+        print(
+            f"== --profile {opts.profile} — {len(opts.sandbox_exempt)} named row(s) "
+            "exempt from the sandbox scan; everything else production-scanned =="
+        )
 
     failures = 0
     for spec in selected:
