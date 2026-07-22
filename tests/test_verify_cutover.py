@@ -346,6 +346,83 @@ def test_po_from_mailbox_mirror_value_fails_unless_allowed(monkeypatch):
     assert vc._check_config(vc.Options(allow_sandbox=True)).passed
 
 
+# ---- --profile phase1-hybrid (cutover checklist §3.5) ----------------------
+
+
+def _phase1_opts() -> vc.Options:
+    return vc.Options(
+        profile="phase1-hybrid", sandbox_exempt=vc.PROFILES["phase1-hybrid"]
+    )
+
+
+def test_phase1_hybrid_profile_names_exactly_the_three_worker_base_url_rows():
+    """The exemption set is data (checklist §3.5): exactly the three physical
+    worker_base_url rows — the portal deliberately stays on the mirror Worker this
+    phase. Nothing else (in particular no from_mailbox row) is exempted."""
+    assert vc.PROFILES["phase1-hybrid"] == frozenset({
+        ("safety_reports.portal.worker_base_url", "safety_reports"),
+        ("safety_reports.portal.worker_base_url", "progress_reports"),
+        ("safety_reports.portal.worker_base_url", "po_materials"),
+    })
+
+
+def test_phase1_hybrid_allows_mirror_worker_base_url_and_names_the_exemption(monkeypatch):
+    """Under the profile, mirror worker_base_url values pass — and the PASS summary
+    names each exempted row (the exemption is observable, never silent)."""
+    monkeypatch.setattr(
+        vc.smartsheet_client,
+        "get_setting",
+        _config_values(
+            {"safety_reports.portal.worker_base_url": "https://safety.evergreenmirror.com"}
+        ),
+    )
+    assert not vc._check_config(OPTS).passed  # no profile → still the hard gate
+    outcome = vc._check_config(_phase1_opts())
+    assert outcome.passed
+    assert "phase1-hybrid" in outcome.summary
+    assert "worker_base_url" in outcome.summary
+
+
+def test_phase1_hybrid_still_scans_everything_else(monkeypatch):
+    """The profile's teeth: a mirror residue on any NON-exempted row (here the safety
+    from_mailbox) still fails the profile gate — a profile is not --allow-sandbox."""
+    monkeypatch.setattr(
+        vc.smartsheet_client,
+        "get_setting",
+        _config_values(
+            {
+                "safety_reports.portal.worker_base_url": "https://safety.evergreenmirror.com",
+                "safety_reports.weekly_send.from_mailbox": "safety@evergreenmirror.com",
+            }
+        ),
+    )
+    outcome = vc._check_config(_phase1_opts())
+    assert not outcome.passed
+    assert "from_mailbox" in outcome.details
+    assert "worker_base_url" not in outcome.details
+
+
+def test_profile_and_allow_sandbox_mutually_exclusive():
+    """A profile gate must never be silently degraded to the blanket waiver."""
+    with pytest.raises(SystemExit) as excinfo:
+        vc.main(["--profile", "phase1-hybrid", "--allow-sandbox"])
+    assert excinfo.value.code == 2
+
+
+def test_unknown_profile_rejected():
+    with pytest.raises(SystemExit) as excinfo:
+        vc.main(["--profile", "phase99-nope"])
+    assert excinfo.value.code == 2
+
+
+def test_profile_banner_printed(monkeypatch, capsys):
+    monkeypatch.setattr(vc, "CHECKS", (_spec("VC-01", "alpha", PASS),))
+    assert vc.main(["--profile", "phase1-hybrid"]) == 0
+    out = capsys.readouterr().out
+    assert "--profile phase1-hybrid" in out
+    assert "3 named row(s)" in out
+
+
 # ---- VC-04 daemon-health --------------------------------------------------
 
 
