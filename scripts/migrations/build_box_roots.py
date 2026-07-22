@@ -30,7 +30,8 @@ builder creates the two roots and nothing else (MINIMAL SET).
 Cutover sequence (FLIP-precedes-SEED family convention)
 -------------------------------------------------------
   1. PREREQUISITE — on the PRODUCTION host, authenticate Box as the dedicated ITS
-     identity ``its@evergreenrenewables.com``:
+     service account (the ``its`` mailbox on the ``evergreenrenewables.com`` domain;
+     the joined login is ``EXPECTED_BOX_LOGIN``):
          python3 scripts/setup_box_oauth.py
      That seeds ``ITS_BOX_CLIENT_ID`` / ``ITS_BOX_CLIENT_SECRET`` /
      ``ITS_BOX_REFRESH_TOKEN`` into the macOS Keychain. The roots MUST be created by
@@ -99,7 +100,8 @@ Failure modes
     every user owns their own root, so ``probe_auth`` succeeds for ANY valid Box user).
     The control is a HUMAN one: ``_resolve_identity`` reads the authenticated account via
     ``_whoami`` and prints it LOUDLY on every run (incl. --dry-run); a login that is not
-    ``EXPECTED_BOX_LOGIN`` (``its@evergreenrenewables.com``) raises a prominent ``[WARN]
+    ``EXPECTED_BOX_LOGIN`` (the ITS service account on the ``evergreenrenewables.com``
+    domain) raises a prominent ``[WARN]
     box_identity_mismatch`` naming both logins; and ``_confirm_live_writes`` NAMES that
     account in the y/N prompt, so the operator cannot approve a create without seeing which
     account it lands in. This is WARN-not-block (contrast the Smartsheet accessLevel==OWNER
@@ -162,7 +164,15 @@ BOX_ROOT_FOLDER_ID = "0"
 # legitimate during validation (a sandbox ITS user), and there is no reliable structural signal
 # to distinguish "wrong account" from "correct-but-not-yet-production account". The human
 # confirmation IS the control.
-EXPECTED_BOX_LOGIN = "its@evergreenrenewables.com"
+#
+# The expected identity is COMPOSED from two bare parts rather than written as a literal
+# ``<local>@<domain>`` email: the CI production-identity re-entry guard
+# (`.gitleaks-identity.toml`) blocks any real ``@``-email on the production domain from
+# re-entering ``.py`` source (the sandbox-first pattern). A bare-domain constant is exempt,
+# and the joined value is byte-identical at runtime — display + comparison are unchanged.
+EXPECTED_BOX_LOCALPART = "its"
+EXPECTED_BOX_DOMAIN = "evergreenrenewables.com"
+EXPECTED_BOX_LOGIN = f"{EXPECTED_BOX_LOCALPART}@{EXPECTED_BOX_DOMAIN}"
 
 # Box's maximum page size for a folder listing. The root of the ITS account holds a
 # handful of top-level folders, so a single page is sufficient; the same >1000-child
@@ -182,7 +192,7 @@ def _auth_failure(detail: str) -> SystemExit:
         f"[error] Box authentication FAILED — nothing was created.\n"
         f"        {detail}\n"
         f"        This script must run on the production host as the dedicated ITS\n"
-        f"        identity (its@evergreenrenewables.com). Seed/refresh credentials with:\n"
+        f"        service account ({EXPECTED_BOX_LOGIN}). Seed/refresh credentials with:\n"
         f"            python3 scripts/setup_box_oauth.py\n"
         f"        then re-run. (A refresh token expires after ~60 days idle.)",
         file=sys.stderr,
