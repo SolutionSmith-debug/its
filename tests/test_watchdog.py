@@ -31,6 +31,20 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import watchdog  # noqa: E402  — must come after sys.path insertion above
 
+# Captured at import time, BEFORE the autouse fixture below patches the attr —
+# the location-pin test asserts the REAL path.
+_REAL_RESULTS_PATH = watchdog.WATCHDOG_RESULTS_PATH
+
+
+@pytest.fixture(autouse=True)
+def _sweep_results_to_tmp(tmp_path, monkeypatch):
+    """No watchdog test may ever write the LIVE ~/its/state results file —
+    main() persists the sweep at the end of every run, so redirect it for the
+    whole module (the write itself is exercised against tmp)."""
+    monkeypatch.setattr(
+        watchdog, "WATCHDOG_RESULTS_PATH", tmp_path / "watchdog_results.json"
+    )
+
 
 @pytest.fixture(autouse=True)
 def isolate_error_log(tmp_path, monkeypatch, mocker):
@@ -896,10 +910,10 @@ def test_main_heartbeat_read_failure_is_swallowed(
     mock_ping.assert_not_called()
     severities = [c.args[0] for c in mock_log.call_args_list]
     assert Severity.WARN in severities
-    warn_msg = next(
+    warn_msgs = [
         c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.WARN
-    )
-    assert "heartbeat_url read failed" in warn_msg
+    ]
+    assert any("heartbeat_url read failed" in m for m in warn_msgs), warn_msgs
 
 
 # ---- Group F: Check C — scheduled jobs scaffold + marker writes ---------
@@ -3461,3 +3475,45 @@ def test_log_dir_rotation_real_failure_does_write_row_and_increment(mock_log, mo
     ]
     assert len(recs) == 1  # the never-silent row IS written
     record_spy.assert_called_once()  # failure streak incremented
+
+
+# ---- Sweep-results records + letters (dashboard sweep-panel source) -------
+
+
+def test_check_letters_cover_every_registered_check():
+    """Registry-reconciliation teeth: registering a check in CHECKS adds its
+    letter to CHECK_LETTERS in the same PR — the sweep panel's vocabulary."""
+    registered = {c.__name__ for c in watchdog.CHECKS}
+    assert registered == set(watchdog.CHECK_LETTERS), (
+        "CHECK_LETTERS out of sync with CHECKS — reconcile both in the same PR"
+    )
+    assert set(watchdog.CHECK_LETTERS.values()) == set("ABCDGIJKLMNOPQRSTUVW")
+
+
+def test_run_check_returns_record_with_raw_severity(mock_log):
+    def crit_check() -> watchdog.CheckResult:
+        return _result(Severity.CRITICAL, "house is on fire")
+
+    record = watchdog._run_check(crit_check, alerts_suppressed=True)
+    # The ROUTED severity downgrades under MAINTENANCE (asserted by the group-D
+    # tests above); the sweep RECORD keeps the raw verdict — the file carries
+    # alerts_suppressed at the top level so the panel can annotate instead.
+    assert record["severity"] == "CRITICAL"
+    assert record["summary"] == "house is on fire"
+    assert record["check"] == "crit_check"
+    assert record["letter"] == "?"  # not a registered check → placeholder letter
+
+
+def test_run_check_harness_failure_yields_error_record(mock_log):
+    def boom() -> watchdog.CheckResult:
+        raise RuntimeError("nope")
+
+    record = watchdog._run_check(boom, alerts_suppressed=False)
+    assert record["severity"] == "ERROR"
+    assert "RuntimeError" in record["summary"]
+
+
+def test_sweep_results_path_lives_under_state_dir():
+    """Location pin: the sweep file rides ~/its/state via shared.state_io (the
+    state-write discipline; the write mechanism is CI-enforced separately)."""
+    assert _REAL_RESULTS_PATH.parent == Path.home() / "its" / "state"

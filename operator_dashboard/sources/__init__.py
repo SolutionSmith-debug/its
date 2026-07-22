@@ -21,10 +21,14 @@ from operator_dashboard.sources.smartsheet_panels import (
     ReviewQueueDepthSource,
     SendQueueSource,
 )
-from operator_dashboard.sources.watchdog_checks import WatchdogChecksSource
+from operator_dashboard.sources.watchdog_checks import (
+    WatchdogChecksSource,
+    WatchdogSweepSource,
+)
 
 PANELS: list[DataSource] = [
     DaemonStatusSource(),
+    WatchdogSweepSource(),
     WatchdogChecksSource(),
     CircuitBreakerSource(),
     HeartbeatsSource(),
