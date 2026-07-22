@@ -1341,7 +1341,7 @@ def _run_check(
     check_fn: Callable[..., CheckResult],
     *,
     alerts_suppressed: bool,
-) -> None:
+) -> dict[str, str]:
     """Run one check with own try/except + marker line on failure.
 
     Per Op Stds v9 §27. `alerts_suppressed=True` (MAINTENANCE) downgrades
@@ -1356,7 +1356,14 @@ def _run_check(
     result computation, not via `log()` later), so it needs to know
     `alerts_suppressed` BEFORE running. Detected via signature inspection
     so heterogeneous check signatures coexist without a typed protocol.
+
+    Returns the sweep RECORD for this check — the RAW result severity (pre
+    MAINTENANCE-downgrade; the sweep file carries `alerts_suppressed` at the
+    top level), consumed by main()'s results-file write for the operator
+    dashboard's sweep panel.
     """
+    name = check_fn.__name__
+    letter = CHECK_LETTERS.get(name, "?")
     try:
         sig = inspect.signature(check_fn)
         if "alerts_suppressed" in sig.parameters:
@@ -1367,9 +1374,14 @@ def _run_check(
         log(
             Severity.ERROR,
             _SCRIPT,
-            f"[watchdog-check-failed:{check_fn.__name__}] {e!r}",
+            f"[watchdog-check-failed:{name}] {e!r}",
         )
-        return
+        return {
+            "check": name,
+            "letter": letter,
+            "severity": "ERROR",
+            "summary": f"check raised {type(e).__name__} (harness-isolated)",
+        }
 
     severity = result.severity
     if alerts_suppressed and severity in (Severity.WARN, Severity.CRITICAL):
@@ -1380,6 +1392,12 @@ def _run_check(
         message = f"{result.summary} | {result.details}"
 
     log(severity, _SCRIPT, message)
+    return {
+        "check": name,
+        "letter": letter,
+        "severity": result.severity.name,
+        "summary": result.summary,
+    }
 
 
 def _check_token_write_capability() -> CheckResult:
@@ -2857,6 +2875,42 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # pre-flight finding.
 ]
 
+# Check letter per registered check fn — the sweep-results vocabulary the
+# operator dashboard's sweep panel displays (and the system map badges by).
+# Registry-reconciliation contract (HOUSE_REFLEXES §1): registering a new
+# check in CHECKS adds its letter HERE in the same PR;
+# tests/test_watchdog.py::test_check_letters_cover_every_registered_check
+# enforces the parity. Check I appears twice deliberately (safety + progress
+# catch-up wrappers share the letter).
+CHECK_LETTERS: dict[str, str] = {
+    "_check_stale_review_queue": "A",
+    "_check_open_criticals": "B",
+    "_check_scheduled_jobs": "C",
+    "_check_reviewer_chain_forward": "D",
+    "_check_alert_dedupe_summaries": "G",
+    "_check_weekly_generate_catchup": "I",
+    "_check_progress_generate_catchup": "I",
+    "_check_circuit_breaker_prolonged_open": "J",
+    "_check_alert_rate_cap_window": "K",
+    "_check_token_write_capability": "L",
+    "_check_blueprint_guard_symlinks": "M",
+    "_check_stuck_wsr_send": "N",
+    "_check_row_cap_rotation": "O",
+    "_check_box_token_freshness": "P",
+    "_check_portal_poll_fetch_outage": "Q",
+    "_check_portal_poll_pending_backlog": "R",
+    "_check_main_branch_ci_green": "S",
+    "_check_stale_held_rows": "T",
+    "_check_approver_drift": "U",
+    "_check_portal_prune_health": "V",
+    "_check_log_dir_rotation": "W",
+}
+
+# Per-sweep results file (operator-dashboard sweep panel's read-only source).
+# Written once per run via shared.state_io (atomic; single writer, whole-file
+# readers — no lock needed).
+WATCHDOG_RESULTS_PATH = Path.home() / "its" / "state" / "watchdog_results.json"
+
 
 @its_error_log(_SCRIPT)
 def main() -> None:
@@ -2878,8 +2932,26 @@ def main() -> None:
     # the equivalent gate.
     resolve_and_log(_SCRIPT, REQUIRED_CONFIG)
 
+    sweep_records: list[dict[str, str]] = []
     for check in CHECKS:
-        _run_check(check, alerts_suppressed=alerts_suppressed)
+        sweep_records.append(_run_check(check, alerts_suppressed=alerts_suppressed))
+
+    # Persist the sweep's per-check outcomes for the operator dashboard's
+    # "watchdog sweep" panel — the "did last night's sweep run, which letters
+    # passed" surface (previously only inferable from ITS_Errors rows).
+    # Best-effort: a write failure WARNs and must never block the retry
+    # summary, the liveness marker, or the heartbeat beacon below.
+    try:
+        state_io.atomic_write_json(
+            WATCHDOG_RESULTS_PATH,
+            {
+                "run_at": datetime.now(UTC).isoformat(),
+                "alerts_suppressed": alerts_suppressed,
+                "results": sweep_records,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — deliberate best-effort isolation
+        log(Severity.WARN, _SCRIPT, f"watchdog_results write failed: {exc!r}")
 
     # D3: summarize any Smartsheet retries that SUCCEEDED across this run into ONE WARN
     # row. The watchdog issues more enrolled reads in a single pass than any daemon (20

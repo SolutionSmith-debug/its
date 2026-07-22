@@ -71,8 +71,8 @@ even though their consumers ship dark — same "provision-even-while-dark" ratio
 bearer) and ``ITS_PORTAL_SUB_TOKEN`` (the ``subcontract_poll`` daemon bearer) both back
 LOADED-but-runtime-gated daemons, so their tokens must be present at cutover for the
 activation cell-flip to work. ``ITS_OPERATOR_PIN`` gates the operator dashboard
-(``operator_dashboard/auth.py``, manual-start, no plist yet); it is enrolled so the
-operator ACT surface is usable at cutover. VC-03 additionally now scans
+(``operator_dashboard/auth.py``; launchd-managed, ``org.solutionsmith.its.dashboard``);
+it is enrolled so the operator ACT surface is usable at cutover. VC-03 additionally now scans
 ``system.operator_email`` (the last-resort Resend page recipient, must be off the mirror
 domain — CO-3) and asserts the three ``subcontracts.subcontract_poll.*`` gate rows are
 seeded present (``non_empty``, NOT forced ``true`` — the dark-ship reflex: a missing gate

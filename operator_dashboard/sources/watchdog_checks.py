@@ -8,6 +8,7 @@ checks. A failed import degrades only this panel (fail-soft base wrapper).
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 
 from operator_dashboard.config import ITS_HOME
 from operator_dashboard.sources.base import (
+    SEV_ERROR,
     SEV_INFO,
     SEV_OK,
     SEV_WARN,
@@ -117,3 +119,108 @@ class WatchdogChecksSource(DataSource):
         if age > window:
             return ts.isoformat(), fmt_timedelta(age), SEV_WARN, "stale"
         return ts.isoformat(), fmt_timedelta(age), SEV_OK, "fresh"
+
+
+class WatchdogSweepSource(DataSource):
+    """Panel: the LAST SWEEP's per-check results (letters + verdicts).
+
+    Reads the results file the watchdog writes at the end of every run
+    (`wd.WATCHDOG_RESULTS_PATH`, owned by scripts/watchdog.py so the path can
+    never drift). Before this panel, "did last night's sweep run, and which
+    checks passed" was only inferable from ITS_Errors rows — a green sweep was
+    invisible by construction.
+    """
+
+    panel_id = "watchdog_sweep"
+    title = "Watchdog sweep (per-check results)"
+
+    # A daily sweep older than this is itself a warning (24h cadence + slack).
+    STALE_AFTER = timedelta(hours=26)
+
+    # Check-result severity (shared.error_log Severity names) -> panel severity.
+    # INFO is a PASSING check (the watchdog logs INFO on healthy), so it renders ok.
+    _SEV_MAP = {"INFO": SEV_OK, "WARN": SEV_WARN, "CRITICAL": SEV_ERROR, "ERROR": SEV_ERROR}
+
+    def _fetch(self, detail: bool = False) -> PanelResult:
+        its_home = str(ITS_HOME)
+        if its_home not in sys.path:
+            sys.path.insert(0, its_home)
+        wd: Any = importlib.import_module("scripts.watchdog")
+        # getattr fallback: the observed LIVE tree may briefly predate the
+        # constant (deploy window); the fallback IS the same canonical path.
+        results_path: Path = getattr(
+            wd, "WATCHDOG_RESULTS_PATH", ITS_HOME / "state" / "watchdog_results.json"
+        )
+
+        try:
+            payload = json.loads(results_path.read_text())
+        except FileNotFoundError:
+            return PanelResult(
+                panel_id=self.panel_id,
+                title=self.title,
+                summary="no sweep results recorded yet — the file appears after the next daily run",
+                severity=SEV_INFO,
+                columns=["check", "result", "summary"],
+                rows=[],
+            )
+        except (OSError, ValueError) as exc:
+            return PanelResult(
+                panel_id=self.panel_id,
+                title=self.title,
+                summary=f"results file unreadable ({type(exc).__name__})",
+                severity=SEV_WARN,
+                columns=["check", "result", "summary"],
+                rows=[],
+            )
+
+        now = datetime.now(UTC)
+        run_at_raw = str(payload.get("run_at") or "")
+        run_age = "unknown age"
+        run_sev = SEV_WARN
+        try:
+            run_at = datetime.fromisoformat(run_at_raw)
+            if run_at.tzinfo is None:
+                run_at = run_at.replace(tzinfo=UTC)
+            age = now - run_at
+            run_age = f"{fmt_timedelta(age)} ago"
+            run_sev = SEV_WARN if age > self.STALE_AFTER else SEV_OK
+        except ValueError:
+            pass
+
+        rows: list[dict[str, str]] = []
+        worst = run_sev
+        n_warn = 0
+        n_crit = 0
+        for rec in payload.get("results") or []:
+            severity = str(rec.get("severity") or "?")
+            sev = self._SEV_MAP.get(severity, SEV_WARN)
+            if severity == "WARN":
+                n_warn += 1
+            elif severity in ("CRITICAL", "ERROR"):
+                n_crit += 1
+            worst = worst_sev(worst, sev)
+            name = str(rec.get("check") or "").removeprefix("_check_")
+            rows.append(
+                {
+                    "check": clean(f"{rec.get('letter', '?')} · {name}"),
+                    "result": clean("ok" if severity == "INFO" else severity),
+                    "summary": clean(str(rec.get("summary") or "")),
+                    "_sev": sev,
+                }
+            )
+
+        maintenance = " · MAINTENANCE sweep (alerts were suppressed)" if payload.get(
+            "alerts_suppressed"
+        ) else ""
+        summary = (
+            f"ran {run_age} · {len(rows)} checks · {n_warn} WARN · "
+            f"{n_crit} CRITICAL/ERROR{maintenance}"
+        )
+        return PanelResult(
+            panel_id=self.panel_id,
+            title=self.title,
+            summary=summary,
+            severity=worst,
+            columns=["check", "result", "summary"],
+            rows=rows,
+        )

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -672,3 +673,73 @@ def test_asset_urls_are_content_versioned_and_html_is_no_cache() -> None:
     r = client.get(f"/static/app.css?v={ASSET_VERSION}")
     assert r.status_code == 200
     assert r.headers.get("cache-control") != "no-cache"
+
+
+def test_watchdog_sweep_panel_reads_results_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The sweep panel renders the per-check verdicts from the watchdog's
+    results file: INFO renders ok, WARN colors the row + panel, and the
+    summary counts the sweep."""
+    import importlib
+
+    from operator_dashboard.sources.watchdog_checks import WatchdogSweepSource
+
+    wd = importlib.import_module("scripts.watchdog")
+
+    payload = {
+        "run_at": datetime.now(UTC).isoformat(),
+        "alerts_suppressed": False,
+        "results": [
+            {"check": "_check_open_criticals", "letter": "B", "severity": "INFO",
+             "summary": "0 open CRITICALs"},
+            {"check": "_check_stale_held_rows", "letter": "T", "severity": "WARN",
+             "summary": "1 stale HELD row"},
+        ],
+    }
+    results_file = tmp_path / "watchdog_results.json"
+    results_file.write_text(json.dumps(payload))
+    monkeypatch.setattr(wd, "WATCHDOG_RESULTS_PATH", results_file, raising=False)
+
+    result = WatchdogSweepSource().fetch()
+    assert result.available, result.unavailable_reason
+    assert result.severity == "warn"
+    rows = {r["check"]: r for r in result.rows}
+    assert rows["B · open_criticals"]["result"] == "ok"
+    assert rows["T · stale_held_rows"]["result"] == "WARN"
+    assert "2 checks" in result.summary
+    assert "1 WARN" in result.summary
+
+
+def test_watchdog_sweep_panel_missing_and_stale_degrade_softly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import importlib
+
+    from operator_dashboard.sources.watchdog_checks import WatchdogSweepSource
+
+    wd = importlib.import_module("scripts.watchdog")
+
+    # Missing file → informational (first run hasn't happened), never an error.
+    monkeypatch.setattr(wd, "WATCHDOG_RESULTS_PATH", tmp_path / "absent.json", raising=False)
+    result = WatchdogSweepSource().fetch()
+    assert result.available
+    assert result.severity == "info"
+    assert "no sweep results" in result.summary
+
+    # A sweep older than the daily cadence (+slack) is itself a warning even
+    # when every check passed — "green but ancient" must not read as green.
+    stale = {
+        "run_at": (datetime.now(UTC) - timedelta(hours=30)).isoformat(),
+        "alerts_suppressed": True,
+        "results": [
+            {"check": "_check_open_criticals", "letter": "B", "severity": "INFO",
+             "summary": "0 open"},
+        ],
+    }
+    results_file = tmp_path / "watchdog_results.json"
+    results_file.write_text(json.dumps(stale))
+    monkeypatch.setattr(wd, "WATCHDOG_RESULTS_PATH", results_file, raising=False)
+    result = WatchdogSweepSource().fetch()
+    assert result.severity == "warn"
+    assert "MAINTENANCE sweep" in result.summary
