@@ -18,8 +18,9 @@ rationale lives in `scripts/migrations/build_its_active_jobs_sheet.py` /
 
 ## Purpose
 
-The Safety Portal reads exactly two Smartsheet sheets, both in **ITS —
-Operations / Safety Portal**:
+The Safety Portal reads exactly two Smartsheet sheets, both in the **ITS ––
+Safety Portal** workspace (moved there 2026-06-05; ITS_Active_Jobs lives in the
+**00_Safety Portal** folder, ITS_Forms_Catalog in **00_Form Catalog**):
 
 - **ITS_Active_Jobs** — the office-PM-maintained list of jobs the portal offers
   (home screen) and the Address that auto-fills each form's Work Location. Only
@@ -28,8 +29,7 @@ Operations / Safety Portal**:
   rows are offered; **Form Code** must match the code form directory exactly.
 
 This runbook covers the low-class faults a Successor-Operator can resolve and the
-boundary where it escalates to Seth (Tier 3). Until the portal is built (Phase 4)
-nothing reads these sheets, so most faults are non-urgent.
+boundary where it escalates to Seth (Tier 3).
 
 ## Procedure
 
@@ -38,8 +38,9 @@ nothing reads these sheets, so most faults are non-urgent.
 **Symptom.** A build/seed migration errored, or a sheet exists with missing
 columns / missing job or form rows.
 
-**Check.** Open ITS — Operations / Safety Portal. Confirm both sheets exist with
-their columns; open each and confirm the rows (6 jobs / 4 forms).
+**Check.** Open the ITS –– Safety Portal workspace (00_Safety Portal +
+00_Form Catalog folders). Confirm both sheets exist with their columns; open
+each and confirm the expected job / form rows.
 
 **Action (Tier-2, low-class).** Re-run the idempotent migration — it skips what
 already exists and only adds what's missing:

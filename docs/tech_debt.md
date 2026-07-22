@@ -678,13 +678,13 @@ From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
   versioned+gated editing (see the Subcontracts — PO/SC Configuration section below for the full PR-B2
   scope). **Tag:** `subcontracts`, `config-editor`, `deferred`, `low-severity`.
 
-## [CUTOVER-BLOCKING] Aug-7 cutover readiness — deferred code follow-ups [OPEN 2026-07-10]
+## Aug-7 cutover readiness — deferred code follow-ups [OPEN 2026-07-10 — CO-1/CO-3/CO-4 RESOLVED; CO-2 code landed, operator-run pending]
 
 Surfaced during the cutover-readiness drive (PR #525); each is a real code follow-up not blocking
 the merged work, tracked so it isn't lost. The operator-gated cutover items live in
 `docs/operations/cutover_operator_punchlist.md`, not here.
 
-- **CO-1 (LOW, belt-and-suspenders) — `po_send_poll.py:77 DEFAULT_POLLING_ENABLED = True` diverges from
+- **CO-1 — RESOLVED 2026-07-14 (PR #585, `45fe4df`):** `DEFAULT_POLLING_ENABLED = False` landed with the CO-1 comment in place (verified at HEAD 2026-07-22); this entry was stale. Original text: **(LOW, belt-and-suspenders) — `po_send_poll.py:77 DEFAULT_POLLING_ENABLED = True` diverges from
   HOUSE_REFLEXES §5 (dark-ship default-False).** PO send ships dark via a seeded
   `po_materials.po_send.polling_enabled=false` row, so the seeded row is load-bearing (a MISSING row would
   default the SEND poller ENABLED). Flip the code default to `False` so a lost/absent row fails safe (a
@@ -692,7 +692,7 @@ the merged work, tracked so it isn't lost. The operator-gated cutover items live
   `SEND_SCRIPTS`-enrolled send daemon, and the External Send Gate is a FIXED high-capability class; even a
   fail-safe tightening on that surface is Seth's call. **Trigger:** any PO send-path session, or a §5 sweep.
   **Tag:** `po_materials`, `po_send`, `external-send-gate`, `low-severity`.
-- **CO-2 (MEDIUM, prove-the-control-bites) — no live-clamd EICAR end-to-end smoke for portal-upload
+- **CO-2 — code half LANDED 2026-07-22 (this PR):** `tests/test_photo_screen.py::test_live_clamd_flags_eicar` + `test_live_clamd_end_to_end_clean_photo` — skip-if-no-clamd, runtime EICAR through the REAL daemon; the operator runs them at the Phase-C hardening gate (`pytest -k live_clamd`) once ClamAV installs on the production Mac. Original: **(MEDIUM, prove-the-control-bites) — no live-clamd EICAR end-to-end smoke for portal-upload
   ClamAV.** `safety_reports/photo_screen._clamav_scan` is wired into every portal upload path and ships
   default-OFF (`safety_reports.photo_screen.clamav_enabled`); the EICAR test (`test_photo_screen.py`) PATCHES
   `_clamav_scan`, so no live clamd ever runs. Per HOUSE_REFLEXES §2, add a live EICAR-through-clamd smoke
@@ -719,7 +719,7 @@ the merged work, tracked so it isn't lost. The operator-gated cutover items live
   operator paste at cutover. VC-03 now catches a skipped/fat-fingered paste. **Trigger:** the next
   verify_cutover hardening pass. **Tag:** `cutover`, `verify_cutover`,
   `low-severity`.
-- **CO-4 (HIGH, stale target) — `build_its_active_jobs_sheet.py` + `build_its_forms_catalog_sheet.py` still
+- **CO-4 — RESOLVED 2026-07-22 (this PR):** both builders repointed to `WORKSPACE_SAFETY_PORTAL` with the live folder names (`00_Safety Portal` / `00_Form Catalog` — two different folders) and the aliased `FOLDER_OPERATIONS_SAFETY_PORTAL` bootstrap line replaced with the real constants; `safety_portal_config_sheets.md` runbook location fixed in the same pass. Landed BEFORE the Phase-1 production builder run this depended on. Original: **(HIGH, stale target) — `build_its_active_jobs_sheet.py` + `build_its_forms_catalog_sheet.py` still
   target the pre-2026-06-05 Safety-Portal location.** Both hardcode `WORKSPACE = sheet_ids.WORKSPACE_OPERATIONS`
   with `FOLDER_NAME = "Safety Portal"` (`build_its_active_jobs_sheet.py:50-51`,
   `build_its_forms_catalog_sheet.py:52-53`), which is stale against the 2026-06-05 move to
@@ -1682,7 +1682,7 @@ equivalent of `test_capability_gating.py`. Surfaced by `ops-stds-enforcer` (W2).
 
 Surfaced: 2026-06-05 Safety Portal Phase 5 PR 2 (transport queue).
 
-## [CUTOVER-BLOCKING] Safety Portal Phase 5 — deploy prerequisites (Cloudflare secrets + D1 + wrangler.jsonc IDs) [OPEN 2026-06-05]
+## [RESOLVED 2026-07-22] Safety Portal Phase 5 — deploy prerequisites (was CUTOVER-BLOCKING, OPEN 2026-06-05)
 
 Additional prerequisites surfaced by Phase 5 PR 2 (transport queue, PR #169) beyond the base deploy entry above:
 
@@ -1700,6 +1700,13 @@ Additional prerequisites surfaced by Phase 5 PR 2 (transport queue, PR #169) bey
 **Revisit when:** Safety Portal deploy session. This entry extends the earlier "deploy + provisioning deferred" entry; that entry covers the base steps; this one covers Phase 5-specific secrets and the D1 migration count update.
 
 Surfaced: 2026-06-05 Safety Portal Phase 5 PR 2 session (PR #169).
+
+**Resolution (2026-07-22, mechanical verify):** every prerequisite was completed by the
+2026-06-08 mirror go-live and its successors — the Worker serves `safety.evergreenmirror.com`
+(custom domain bound), remote D1 exists with ALL migrations applied ("No migrations to
+apply" @ `f2bb9a0`, far past the 0001–0005 this entry names), and the HMAC/internal-token
+secret pairs are live (portal_poll has pulled with verified HMACs since 2026-06-08;
+VC-01 keychain check enrolls the Mac-side pair).
 
 ## [OPEN] Safety email-intake retire — operator-manual + future-PR follow-ups [2026-06-05]
 
@@ -1939,7 +1946,7 @@ Surfaced: 2026-06-12 PR-4 Part A implementation.
 
 Surfaced: 2026-06-12 PR-3 adversarial review.
 
-## [CUTOVER-BLOCKING] [OPEN 2026-06-12] PR-5 Worker + migration 0012 NOT yet deployed to live mirror
+## [RESOLVED 2026-07-22] PR-5 Worker + migration 0012 deployed to live mirror (was CUTOVER-BLOCKING, OPEN 2026-06-12)
 
 PR-5 (#276, merge `213d076`) introduced the `pdf_requests` table (migration 0012, schema `(submission_uuid TEXT, account TEXT, requested_at REAL, ready_at REAL, PRIMARY KEY (submission_uuid, account))`) and the new Worker routes (`GET /api/filed`, `POST /api/request-pdfs`, updated `/status`+`/pdf` re-gated on a live request row, updated `/api/internal/pdf-requests` filtered to live rows). As of session close, the **live mirror Worker does not have these changes**. The README activation step (added in-PR) documents the required ordering: apply migration 0012 to live D1 BEFORE redeploying the Worker — if the Worker is deployed first, the new routes fail-closed (referencing a non-existent table). Until deployed, the Form Request browse page and requester-bound PDF download are not available on `safety.evergreenmirror.com`.
 
@@ -1950,6 +1957,14 @@ PR-5 (#276, merge `213d076`) introduced the `pdf_requests` table (migration 0012
 **Revisit when:** the next operator deploy session (pre-Customer-1 activation).
 
 Surfaced: 2026-06-12 PR-5 implementation (session close).
+
+**Resolution (2026-07-22, mechanical verify):** long-superseded by the 2026-06-08+ deploy
+train. `wrangler d1 migrations list its-safety-portal-db --remote` from an up-to-date
+`~/its` @ `f2bb9a0` → "No migrations to apply" (0012 applied); live-Worker probe:
+`GET /api/filed` and `POST /api/request-pdfs` on `safety.evergreenmirror.com` both return
+401 `application/json` (route exists + auth-gated; a missing route would SPA-fallback to
+200 text/html). The `_service_pdf_requests` daemon pass consuming these routes is live
+(PRs #274/#276).
 
 ## [OPEN 2026-06-20] Safety Portal browser-tab `<title>` + favicon still say "ITS Portal" after banner rebrand
 
