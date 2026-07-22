@@ -670,6 +670,15 @@ LADDER_CONSUMERS = frozenset({
     # landed — and converged onto the shared trio on 2026-07-21. See the ladder note above
     # `_cause_clause` in that module.
     "safety_reports/compile_now_poll.py",
+    # Check W (log-dir rotation, F2 2026-07-21) — its sustained-failure escalation now routes
+    # through the CAPPED ladder `is_escalation_cycle` (was `has_crossed_threshold`, which
+    # minted a NEW unrotatable open-CRITICAL row EVERY daily run a wedged pruner persisted).
+    # So watchdog is a genuine `is_escalation_cycle` CALLER and MUST appear here (the
+    # `_calls_the_helper` AST walk finds the call). It stays in LADDER_EXEMPT below too: that
+    # set only gates `test_no_daemon_hand_rolls_the_threshold_compare_again`, and Check Q's one
+    # `>=` compares a LOCAL `threshold` var (not a `…CRITICAL_THRESHOLD` name), so the exemption
+    # is belt-and-suspenders, not load-bearing.
+    "scripts/watchdog.py",
 })
 
 #: `scripts/watchdog.py` Check Q compares the SAME counter with `>=`, correctly: it is the

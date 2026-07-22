@@ -233,6 +233,12 @@ _LIVE_STATE_COUNTERS = (
     ("po_materials.rfq_poll", "_FETCH_FAILS"),
     ("po_materials.estimate_poll", "_FETCH_FAILS"),
     ("subcontracts.subcontract_poll", "_FETCH_FAILS"),
+    # watchdog Check W's sustained-failure counter (STATE_DIR / "log_dir_rotation_failures.json").
+    # `watchdog` is a scripts/ module, not a first-party package, so the module-attribute sweep in
+    # `_live_state_module_paths` never sees it; its counter lives INSIDE the module object here, so a
+    # Check W failure-path test would otherwise write live state and trip `_forbid_live_state_writes`.
+    # Skipped harmlessly (mod None) in any test file that never imports watchdog.
+    ("watchdog", "_LOG_ROTATION_FAILS"),
 )
 # Send-poller entries. `DaemonConfig` is a FROZEN dataclass, so its `lock_path` needs
 # `dataclasses.replace` rather than a setattr. That one field is BOTH the cycle lock and

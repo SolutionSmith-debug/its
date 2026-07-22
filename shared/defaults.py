@@ -170,6 +170,86 @@ SHEET_ROW_STORM_FLOOR_DAYS             = 2
 # (docs/runbooks/safety_weekly_send.md), while the send proceeds unchanged.
 PACKET_SIZE_WARN_BYTES = 100 * 1024 * 1024  # 104,857,600
 
+# ~/its/logs directory-growth BOUND (growth Slice 2 / watchdog Check W) —
+# constants for scripts/watchdog.py `_check_log_dir_rotation`, which keeps the
+# on-disk logs/ tree from growing without bound (Slice 1 already cut the SOURCES;
+# this is the retention bound). Check O's row-cap-rotation is the sibling — same
+# "constants-in-defaults, zero ITS_Config rows" pattern (keeps the fan-out at ~3
+# surfaces: this block, the module, the watchdog check — no VC-03, no config-dict
+# regen, no ACT registry). This is an ARCHIVE bound, NOT a cleanup: v1 gzips daily
+# logs in place and copy-gz-truncates launchd .out.log, and NEVER unlinks a
+# forensic file (the only irreversible op — deletion — ships separately later).
+#
+# TWO retention lanes, deliberately asymmetric:
+#   DAILY   logs/<YYYY-MM-DD>.log — gzip IN PLACE once age > DAILY_GZIP_AGE_DAYS
+#           (12.8x measured compression, zero forensic loss). Cutoff is a LOCAL
+#           date (date.today()): error_log.py names the daily file with naive
+#           datetime.now() on an EDT host, so a UTC-keyed pruner would race the
+#           current file near midnight. The current local-date file is never
+#           eligible (age 0 < the threshold).
+#   LAUNCHD logs/launchd/<name>.out.log — copy -> .gz sibling -> truncate(0)
+#           IN PLACE, UNCONDITIONAL. launchd opens StandardOutPath O_APPEND and
+#           the child fd follows the INODE, not the dir entry, and there is NO
+#           SIGHUP handler anywhere in the system: a rename (logrotate semantics)
+#           strands the live file at 0 bytes forever, an unlink orphans the inode
+#           (space reclaimed only at close()). truncate-in-place is the ONLY
+#           correct op. .err.log is EXCLUDED from this lane (29-68% unique — it is
+#           the file an incident is read from) and never touched.
+DAILY_GZIP_AGE_DAYS = 14  # gzip a daily log older than this many LOCAL days
+# Per-run file cap (mirrors Check O's MAX_BATCHES_PER_RUN idiom): bound the work
+# one daily watchdog run does so an unexpectedly large backlog can't blow the
+# check's time budget. Overflow is left for the next run (no retry loop inside
+# one execution) and reported as "pending".
+LOG_ROTATION_MAX_FILES_PER_RUN = 200
+# Wall-clock budget (time.monotonic()) for the whole check. Check W is registered
+# LAST in CHECKS specifically so an overrun cannot delay an alerting check; this
+# is the belt-and-suspenders time fuse — past it the check stops cleanly and
+# reports "deadline hit", the remainder deferred to the next run.
+LOG_ROTATION_DEADLINE_SECONDS = 30.0
+# RETAINED-BUT-UNUSED (2026-07-21, F1). Formerly a per-file launchd skip: don't
+# copy-gz-truncate a .out.log whose st_mtime was within this many minutes (assumed
+# an operator mid-tail during an incident). REMOVED as a per-file gate because it
+# FATALLY defeated the check — a fast always-on daemon (portal_poll writes its
+# .out.log every 60s and is the LARGEST target at ~36 MB) ALWAYS has a recent
+# mtime, so it was skipped on EVERY run and NEVER truncated, i.e. the exact
+# unbounded growth the check exists to bound. It also protected almost nothing:
+# copy-gz-truncate archives to a verified .gz BEFORE truncating (an operator loses
+# no data — reads the .gz), and `tail -f` survives an in-place truncate (follows
+# the inode). The real incident guard is now the WHOLE-LANE open-CRITICAL HOLD in
+# the watchdog check. Constant kept (not referenced) so a resurrected per-file
+# policy has a named knob and no import breaks.
+LAUNCHD_INCIDENT_SKIP_MINUTES = 30.0
+# Per-file SIZE CAP (F4). Any daily/launchd candidate whose stat().st_size exceeds
+# this is SKIPPED (never read) and surfaced as an ABNORMAL run naming the file, so
+# a runaway log (a daemon stuck in a print-loop) is operator-visible instead of
+# hogging the watchdog. 1 GiB is ~28x the current largest live log (~36 MB): a
+# single log past it is a fault, not normal retention, and gzipping it inside the
+# 30s deadline is impossible regardless of streaming. Streaming bounds MEMORY; the
+# cap bounds TIME and makes the runaway loud.
+LOG_ROTATION_MAX_FILE_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
+# Bytes read/written per chunk when streaming a source into its gzip archive and
+# when streaming the round-trip verify (F4). Bounds resident memory to ~this size
+# (plus gzip's own window) no matter how large the source — the old path read the
+# whole file into RAM (up to ~3x resident: raw + compressed + decompressed-verify).
+LOG_ROTATION_GZIP_CHUNK_BYTES = 1 * 1024 * 1024  # 1 MiB
+# A crash between temp-create and os.replace can orphan a `.<name>.tmp.<pid>.<rand>.gz`
+# sibling. scan_entries opportunistically reaps such temps older than this many
+# seconds (F7) — one watchdog run is daily, so >1h reliably means "from a dead run",
+# never a temp the CURRENT run is mid-write on. Only the temp pattern is ever removed.
+LOG_ROTATION_TEMP_ORPHAN_AGE_SECONDS = 3600.0
+# The explicit-allowlist EXCLUDE: logs/migrations/ holds committed migration
+# audit output (git-tracked, 8 files), NOT rolling logs — it is never walked.
+LOG_DIR_MIGRATIONS_SUBDIR = "migrations"
+# The launchd log subdirectory (logs/launchd/<name>.out.log). Named here so the
+# classifier and the truncate-only guard agree on one string.
+LOG_DIR_LAUNCHD_SUBDIR = "launchd"
+# Sustained-failure escalation LADDER threshold consumed by the watchdog check:
+# N consecutive daily runs where log rotation itself keeps erroring -> ERROR
+# escalates to CRITICAL (shared/sustained_failure). 3 daily runs ~= three days
+# of a wedged logs/ tree — long enough to rule out a one-run transient, short
+# enough that unbounded growth is caught well before it matters.
+LOG_DIR_ROTATION_CRITICAL_THRESHOLD = 3
+
 
 DEFAULT_REVIEWER_CHAINS: dict[str, ReviewerChainConfig] = {
     "safety_reports": {

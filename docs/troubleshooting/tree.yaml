@@ -821,6 +821,25 @@ workflows:
               - Rotation runs automatically (deletes terminal rows, never open CRITICALs/PENDING). A CRITICAL means even the storm floor found nothing deletable — escalate.
             class: seth_coresolve
             watchdog_check: _check_row_cap_rotation
+      - id: log_dir_rotation
+        title: On-disk log-directory rotation (archive, never delete)
+        what_happens:
+          daemon: watchdog
+          sheets: [ITS_Errors]
+          config_gates: []
+        healthy_signals:
+          - The ~/its/logs directory stays bounded; daily <YYYY-MM-DD>.log files older than 14 days are gzipped IN PLACE (never unlinked), and each launchd .out.log is copy→gz→truncated in place.
+        failure_modes:
+          - id: log_dir_rotation_straining
+            symptom: The watchdog reports the on-disk log directory is growing / rotation is straining, or disk is under pressure.
+            signals: ["log_dir_rotation WARN", "log_dir_rotation CRITICAL", "logs dir unbounded", "disk pressure"]
+            checks:
+              - Dashboard/watchdog → did the log-dir rotation pass run this cycle, and how much did it archive? Is free disk low, or is ~/its/logs still growing after a run?
+            resolutions:
+              - v1 rotation ARCHIVES only — it gzips daily files in place and copy→gz→truncates launchd .out.log files; it NEVER deletes, so there is nothing destructive to undo. Re-run the watchdog (or preview with --dry) per the runbook. A persistently CRITICAL / wedged pruner, or a disk that keeps filling after a clean run, is code/capacity class — escalate.
+            class: seth_coresolve
+            runbook: docs/runbooks/log_dir_rotation.md
+            watchdog_check: _check_log_dir_rotation
       - id: picklist_sync
         title: Hourly picklist sync from master DBs
         what_happens:

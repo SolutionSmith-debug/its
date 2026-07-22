@@ -32,6 +32,11 @@ htmlcov/
 # ITS-specific
 logs/*.log
 logs/**/*.log
+# Rotated-log archives written by watchdog Check W (shared/log_rotation.py): daily
+# <YYYY-MM-DD>.log.gz + the copy→gz→truncate launchd .out.log.gz siblings. NARROW on
+# purpose — `logs/**/*.gz`, NOT `logs/**`, which would swallow the git-TRACKED audit
+# output under logs/migrations/ (box_build_*.txt / reclone_*.txt / *.json — none .gz).
+logs/**/*.gz
 *.local.json
 .env
 .env.*
