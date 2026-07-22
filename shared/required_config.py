@@ -32,11 +32,19 @@ Invariants
 
 Failure modes
 -------------
-- Row present, non-blank Value  → INFO  "source: ITS_Config"      (value coerced)
-- Row MISSING (SmartsheetNotFoundError) → WARN ``config_row_missing`` (→ default)
-- Row present, blank Value (get_setting returns None) → INFO "source: default"
-- Any other SmartsheetError (transient / circuit-open / auth) → WARN
-  ``config_read_error`` (→ default this cycle, fail-open)
+- Row present, non-blank Value  → collected into the per-pass INFO summary
+  (``source ITS_Config``, value coerced)
+- Row present, blank Value (get_setting returns None) → collected into the per-pass
+  INFO summary (``source default``)
+- After the loop, ONE INFO summary line names every successfully-resolved key with
+  its value + source (``config resolved N key(s): setting[workstream]=value(source);
+  ...``); emitted only when ≥1 key resolved (§5 "log each resolved setting with its
+  source" — one line naming them all).
+- Row MISSING (SmartsheetNotFoundError) → WARN ``config_row_missing`` (→ default),
+  kept PER-KEY (each is an individually actionable "seed this row")
+- Any other SmartsheetError (transient / circuit-open / auth) → collected and
+  summarized into ONE ``config_read_error`` WARN per pass (→ default this cycle,
+  fail-open)
 
 Consumers
 ---------
@@ -139,6 +147,15 @@ def resolve_and_log(
     this can be called unconditionally at daemon startup without risking the run.
     """
     resolved: dict[str, object] = {}
+    # Successfully-resolved keys (present-non-blank AND present-but-blank) are COLLECTED and
+    # summarized into ONE INFO line per pass rather than logged per key. Rationale: these
+    # one-shot-per-StartInterval daemons re-run their startup config pass every cycle, so a
+    # daemon with N declared keys emitting N INFO lines *per cycle* (and each written twice —
+    # daily log + launchd stdout) dominated the log corpus (44.6%). One summary line that
+    # NAMES every key with its value + source still satisfies HOUSE_REFLEXES §5 ("log each
+    # resolved setting with its source") while cutting the volume. Order is the input key
+    # order (deterministic + greppable).
+    resolved_summary: list[str] = []
     # Transient read failures (circuit-open / timeout / 5xx / auth) are COLLECTED and
     # summarized into ONE WARN per pass rather than logged per key. Rationale: during a
     # Smartsheet outage the breaker short-circuits every get_setting, so a daemon with N
@@ -179,24 +196,30 @@ def resolve_and_log(
 
         if raw is None:
             # Row present but Value cell blank. NOT a misconfig to page on — the
-            # operator seeded the row and left it default — but still surfaced.
-            log(
-                Severity.INFO,
-                script_name,
-                f"config {key.setting} [{key.workstream}] = {key.default!r} "
-                f"(source: default; row present but blank)",
+            # operator seeded the row and left it default — but still surfaced (in the
+            # per-pass summary line below; source "default").
+            resolved_summary.append(
+                f"{key.setting}[{key.workstream}]={key.default!r}(default)"
             )
             resolved[key.setting] = key.default
             continue
 
         value = _coerce(raw, key)
+        resolved_summary.append(
+            f"{key.setting}[{key.workstream}]={value!r}(ITS_Config)"
+        )
+        resolved[key.setting] = value
+
+    if resolved_summary:
+        # ONE INFO summary line for every successfully-resolved key this pass, naming each
+        # key with its value + source (§5). Emitted only when ≥1 key resolved — a daemon
+        # that declared zero keys, or whose every key missed/errored, writes no summary.
         log(
             Severity.INFO,
             script_name,
-            f"config {key.setting} [{key.workstream}] = {value!r} "
-            f"(source: ITS_Config)",
+            f"config resolved {len(resolved_summary)} key(s): "
+            f"{'; '.join(resolved_summary)}",
         )
-        resolved[key.setting] = value
 
     if transient_failures:
         # ONE summarized WARN for the whole pass (alert-hygiene): during a breaker-open /
