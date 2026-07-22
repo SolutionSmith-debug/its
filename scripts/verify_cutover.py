@@ -284,6 +284,19 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
         "po_materials.po_send.from_mailbox", "po_materials", "non_empty",
         sandbox_scan=True,
     ),
+    # The two Box mirror-tree ROOTS — supersedes CO-3's "stay intentionally unenrolled".
+    # CO-3 was right that sandbox_scan is N/A here (a Box folder id is a bare numeric
+    # string; there is no `evergreenmirror` marker in it to scan, so a scan would assert
+    # nothing), but it conflated that with PRESENCE — which is now both assertable and
+    # worth asserting, because this PR adds scripts/migrations/build_box_roots.py: the
+    # builder is create-only and writes no config row, so its entire output is these two
+    # ids and its last cutover step is a MANUAL operator paste into ITS_Config. A skipped
+    # or fat-fingered paste was previously caught by nothing, and an unset root silently
+    # degrades every filing path (the safety_reports copy is read by intake, portal_poll,
+    # weekly_generate, po_poll, rfq_poll, estimate_poll and subcontract_poll). `non_empty`,
+    # never a value assertion — the id is tenant-specific and not ours to pin.
+    ConfigRow("safety_reports.box.portal_root_folder_id", "safety_reports", "non_empty"),
+    ConfigRow("progress_reports.box.portal_root_folder_id", "progress_reports", "non_empty"),
     # Feature B (PO document attachments): the §34 screener's ClamAV gate must be
     # SEEDED PRESENT (non_empty, NOT forced 'true' — dark-ship reflex: it ships false
     # and stays false until clamd + pyclamd exist on the Mac; the deterministic L1/L2
