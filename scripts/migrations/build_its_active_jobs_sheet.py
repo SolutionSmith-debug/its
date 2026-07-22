@@ -1,14 +1,22 @@
-"""One-shot migration: create ITS_Active_Jobs under ITS — Operations / Safety Portal.
+"""One-shot migration: create ITS_Active_Jobs under ITS –– Safety Portal / 00_Safety Portal.
 
 Safety-Portal prerequisite (blueprint workstreams/safety-portal/brief.md §3).
 ITS_Active_Jobs is the office-PM-maintained source of active jobs for the portal
-home screen + per-form Work Location auto-fill. Built here so the portal (Phase 4)
-can read a stable sheet ID; nothing reads it until the portal is built.
+home screen + per-form Work Location auto-fill.
+
+Location repointed 2026-07-22 (tech-debt CO-4): the sheet moved to the dedicated
+ITS –– Safety Portal workspace on 2026-06-05, but this builder still targeted the
+pre-move ITS — Operations / "Safety Portal" location — on a fresh tenant it would
+have built an orphaned third folder no runtime constant points at, and its
+bootstrap line would have overwritten the REAL folder id via the
+FOLDER_OPERATIONS_SAFETY_PORTAL alias. It now targets the live location.
 
 Creates (find-or-create, idempotent):
-  1. The shared "Safety Portal" FOLDER under ITS — Operations (WORKSPACE_OPERATIONS),
-     if absent. build_its_forms_catalog_sheet.py find-or-creates the SAME folder by
-     name, so the two build scripts are order-independent.
+  1. The "00_Safety Portal" FOLDER under ITS –– Safety Portal
+     (WORKSPACE_SAFETY_PORTAL), if absent. NOTE: build_its_forms_catalog_sheet.py
+     builds into the SEPARATE "00_Form Catalog" folder — the two sheets live in
+     two different folders (the live 2026-06-05 layout), so the builders no
+     longer share one.
   2. The ITS_Active_Jobs SHEET inside that folder.
 
 Schema (one row per active job):
@@ -22,8 +30,8 @@ Schema (one row per active job):
 
 Cutover sequence (FLIP precedes SEED — seed_its_active_jobs.py reads SHEET_ACTIVE_JOBS):
   1. THIS script (build the folder + sheet); note the printed IDs.
-  2. Flip SHEET_ACTIVE_JOBS (and FOLDER_OPERATIONS_SAFETY_PORTAL) in shared/sheet_ids.py.
-  3. seed_its_active_jobs.py (populate the 6 projects).
+  2. Flip SHEET_ACTIVE_JOBS (and FOLDER_SAFETY_PORTAL) in shared/sheet_ids.py.
+  3. seed_its_active_jobs.py (populate the active jobs).
   4. Verify, then rely on the sheet.
 
 Convention: LIVE-write by default; pass --dry-run to preview (matches the
@@ -47,8 +55,8 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]
 
 from shared import sheet_ids, smartsheet_client  # noqa: E402
 
-WORKSPACE = sheet_ids.WORKSPACE_OPERATIONS  # 7217130472007556 (ITS — Operations)
-FOLDER_NAME = "Safety Portal"
+WORKSPACE = sheet_ids.WORKSPACE_SAFETY_PORTAL  # ITS –– Safety Portal (the live 2026-06-05 home)
+FOLDER_NAME = "00_Safety Portal"  # matches FOLDER_SAFETY_PORTAL's live folder name
 SHEET_NAME = "ITS_Active_Jobs"
 
 ACTIVE_OPTIONS = ["Active", "Inactive", "Archived"]
@@ -86,10 +94,10 @@ COLUMN_SCHEMA: list[dict[str, Any]] = [
 
 
 def ensure_safety_portal_folder(*, dry_run: bool) -> int | None:
-    """Find-or-create the "Safety Portal" folder under ITS — Operations.
+    """Find-or-create the "00_Safety Portal" folder under ITS –– Safety Portal.
 
-    Idempotent + order-independent: build_its_forms_catalog_sheet.py
-    find-or-creates the SAME folder by name, so either build may run first.
+    Idempotent. (Not shared with build_its_forms_catalog_sheet.py — that builder
+    targets the separate "00_Form Catalog" folder, per the live 2026-06-05 layout.)
     Returns the folder ID, or None on a dry-run where the folder doesn't exist
     yet (nothing for the sheet step to preview-create against).
     """
@@ -104,7 +112,7 @@ def ensure_safety_portal_folder(*, dry_run: bool) -> int | None:
     print(f"[ok] created folder {FOLDER_NAME!r} (folder_id={new_id}).")
     print(
         f"[bootstrap] Update shared/sheet_ids.py:\n"
-        f"    FOLDER_OPERATIONS_SAFETY_PORTAL = {new_id}"
+        f"    FOLDER_SAFETY_PORTAL = {new_id}"
     )
     return new_id
 
@@ -150,7 +158,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    print(f"[info] Workspace ITS — Operations = {WORKSPACE}")
+    print(f"[info] Workspace ITS –– Safety Portal = {WORKSPACE}")
     print(f"[info] Folder = {FOLDER_NAME!r} | Sheet = {SHEET_NAME!r}")
     print(f"[info] Mode: {'DRY-RUN' if args.dry_run else 'LIVE WRITE'}")
     print()
