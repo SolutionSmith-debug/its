@@ -440,10 +440,77 @@ def test_no_registry_note_asserts_a_live_gate_state() -> None:
         for phrase in banned
         if phrase in e.note.lower()
     ]
+    # The same ban covers the section intros — a group intro is static text too.
+    offenders += [
+        f"GROUP_INTROS[{group!r}]: {phrase!r}"
+        for group, intro in registry.GROUP_INTROS.items()
+        for phrase in banned
+        if phrase in intro.lower()
+    ]
     assert not offenders, (
         "config-editor notes assert a live gate state, which goes stale: "
         f"{offenders} — describe what the edit MEANS; the value column shows the state"
     )
+
+
+# ------------------------------------------------ curated ordering / layout ----
+def test_group_order_names_every_registry_group_exactly_once() -> None:
+    """GROUP_ORDER is the page's curated section order — a new display group must
+    be slotted there deliberately, or it silently sorts to the bottom."""
+    ordered = list(registry.GROUP_ORDER)
+    assert len(ordered) == len(set(ordered)), "duplicate group in GROUP_ORDER"
+    live_groups = {e.group for e in registry.REGISTRY.values()}
+    assert set(ordered) == live_groups, (
+        f"GROUP_ORDER out of sync with registry groups — missing: "
+        f"{sorted(live_groups - set(ordered))}, stale: {sorted(set(ordered) - live_groups)}"
+    )
+    # Intros and accents key real groups only.
+    assert set(registry.GROUP_INTROS) <= live_groups
+    assert set(registry.GROUP_ACCENTS) <= live_groups
+
+
+def test_groups_are_tier_homogeneous() -> None:
+    """The section header derives its ceremony text ('+ PIN' vs '+ re-PIN +
+    confirm') from rows[0].tier — valid only while no group mixes tiers."""
+    tiers_by_group: dict[str, set[str]] = {}
+    for e in registry.REGISTRY.values():
+        tiers_by_group.setdefault(e.group, set()).add(e.tier)
+    mixed = {g: sorted(t) for g, t in tiers_by_group.items() if len(t) > 1}
+    assert not mixed, f"tier-mixed display groups (header ceremony text would lie): {mixed}"
+
+
+def test_registry_state_sorted_by_curated_group_order(fake_smartsheet: dict[str, Any]) -> None:
+    rows = config_write.read_registry_state()
+    ranks = [config_write._GROUP_RANK[r["group"]] for r in rows]
+    assert ranks == sorted(ranks), "read_registry_state not in GROUP_ORDER order"
+    # First section is the daily-driver gates, last is the Class-B endpoint group.
+    assert rows[0]["group"] == registry.GROUP_ORDER[0]
+    assert rows[-1]["group"] == registry.GROUP_ORDER[-1]
+
+
+def test_config_page_renders_slug_anchors_intros_and_pills(
+    fake_smartsheet: dict[str, Any],
+) -> None:
+    """The reorg's render contract: stable slug anchors (not positional), the
+    group intro under each head, and live boolean values as ON/OFF pills."""
+    _seed(fake_smartsheet, "circuit_breaker.enabled", "global", "true", row_id=1)
+    _seed(
+        fake_smartsheet,
+        "safety_reports.portal_poll.polling_enabled",
+        "safety_reports",
+        "false",
+        row_id=2,
+    )
+    client = TestClient(create_app())
+    resp = client.get("/config")
+    assert resp.status_code == 200
+    slug = config_write.group_slug(registry.GROUP_ORDER[0])
+    assert f'id="grp-{slug}"' in resp.text
+    assert f'href="#grp-{slug}"' in resp.text
+    assert 'id="grp-1"' not in resp.text  # positional anchors are gone
+    assert registry.GROUP_INTROS[registry.GROUP_ORDER[0]][:40] in resp.text
+    assert 'class="pill pill-on"' in resp.text
+    assert 'class="pill pill-off"' in resp.text
 
 
 def test_display_state_carries_description_and_reads_the_sheet_once(

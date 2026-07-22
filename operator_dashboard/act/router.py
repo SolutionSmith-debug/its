@@ -35,7 +35,7 @@ from operator_dashboard.act.config_write import (
     read_display_state,
     read_registry_state,
 )
-from operator_dashboard.act.registry import SECRETS
+from operator_dashboard.act.registry import GROUP_ACCENTS, GROUP_INTROS, SECRETS
 from operator_dashboard.auth import OriginError, PinError, check_origin, verify_elevated, verify_pin
 
 
@@ -73,6 +73,10 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             "config.html",
             {
                 "groups": groups,
+                # Stable slug anchors + per-group intro/accent (registry-driven).
+                "group_slugs": {g: config_write.group_slug(g) for g in groups},
+                "group_intros": GROUP_INTROS,
+                "group_accents": GROUP_ACCENTS,
                 "error": error,
                 "secrets": secrets,
                 "display": display,

@@ -333,7 +333,7 @@ _ENTRIES: list[ConfigEntry] = [
     _e("system.operator_email", "global", _DATA, v_email),
     _e("system.heartbeat_url", "global", _DATA, v_url),
     _e("daemons.heartbeat_sheet_id", "global", _DATA, v_id),
-    _e("daemons.health_report_id", "global", _DATA, v_id, note="currently 'TBD'; set to a numeric sheet id"),
+    _e("daemons.health_report_id", "global", _DATA, v_id, note="the daemon-health REPORT's numeric sheet id — seed the real id once that report is built ('TBD' means none is wired)"),
     _e("system.sentry_dsn_keychain_key", "global", _DATA, v_keychain_key),
     _e("system.resend_api_keychain_key", "global", _DATA, v_keychain_key),
 ]
@@ -356,6 +356,79 @@ _IDENTITY = "Identity — sent-from / read mailbox (Class B · elevated)"
 _TRUST = "Trust allowlists (Class B · elevated)"
 _ENDPOINT = "Worker endpoint (Class B · elevated)"
 _BRAKE = "Global brake + privileged daemon (Class B · elevated)"
+
+# Curated page order — the operator's mental model (daily switches first, then
+# what escalates, then what rarely changes), replacing the accidental
+# alphabetical-within-tier sort. config_write.read_registry_state sorts rows by
+# this; tests assert it names every registry group exactly once.
+GROUP_ORDER: tuple[str, ...] = (
+    _GATES,
+    _SEND_GATES,
+    _WINDOWS,
+    _BEHAVIOR,
+    _KNOBS,
+    _DATA,
+    _BRAKE,
+    _IDENTITY,
+    _TRUST,
+    _ENDPOINT,
+)
+
+# One plain-language sentence rendered under each section head. SEMANTICS only —
+# what the group means, never what anything is currently set to (HOUSE_REFLEXES
+# §5; tests/test_config_editor.py runs the no-live-state ban over these too).
+GROUP_INTROS: dict[str, str] = {
+    _GATES: (
+        "Day-to-day on/off switches for the reading half of the machine — pausing "
+        "one stops that daemon's work at its next cycle. Nothing in this group can "
+        "send anything."
+    ),
+    _SEND_GATES: (
+        "The switches on the SENDING half. Pausing one is routine (plain PIN). "
+        "Turning one ON is an External-Send-Gate activation: it escalates, asks you "
+        "to attest the row's go-live preconditions, and is never done casually."
+    ),
+    _WINDOWS: (
+        "When each approved queue actually dispatches — a weekly 'DAY HH:MM' "
+        "Pacific window per send lane."
+    ),
+    _BEHAVIOR: (
+        "How the pipelines behave while running — extraction confidence, model "
+        "choice, and the §34 malware-scanner switches."
+    ),
+    _KNOBS: (
+        "Numeric thresholds and rate caps. The shipped defaults are the intended "
+        "production behavior — tune these for alert noise or guard margins, not to "
+        "fix an outage."
+    ),
+    _DATA: (
+        "Where things live — Box folder roots, sheet ids, the operator's own alert "
+        "address, and per-job recipient fallbacks."
+    ),
+    _BRAKE: (
+        "The whole-system brake (ACTIVE / PAUSED / MAINTENANCE) and the one daemon "
+        "allowed to commit code. The heaviest switches on this page."
+    ),
+    _IDENTITY: (
+        "Which mailbox each lane sends FROM (and intake reads). A wrong value here "
+        "changes what the customer sees — hence the ceremony."
+    ),
+    _TRUST: (
+        "Who may email intake and who reviews what — the allowlists behind "
+        "Invariant 2."
+    ),
+    _ENDPOINT: (
+        "The portal Worker URL the daemons poll. Three physical rows, one per "
+        "workstream reader — keep them identical."
+    ),
+}
+
+# Visual accent per group (CSS modifier suffix on .config-group). The send-gate
+# and brake sections carry the gate-crossing weight the rest of the page doesn't.
+GROUP_ACCENTS: dict[str, str] = {
+    _SEND_GATES: "sendgate",
+    _BRAKE: "brake",
+}
 
 
 def _b(

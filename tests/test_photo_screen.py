@@ -271,3 +271,47 @@ def test_iter_photo_fields_none_when_absent():
 )
 def test_build_caption(name, taken, gps, expected):
     assert photo_screen.build_caption(name, taken, gps) == expected
+
+
+# ── CO-2: LIVE clamd EICAR smoke (prove-the-control-bites, HOUSE_REFLEXES §2) ──
+#
+# Everything above PATCHES `_clamav_scan`, so no test ever proved the real
+# pyclamd → clamd wiring detects anything. These two tests run the REAL daemon:
+# skipped wherever clamd isn't installed (CI, a dev Mac without ClamAV), and
+# exercised on the production Mac at the Phase-C hardening gate, when the
+# operator installs ClamAV and flips `safety_reports.photo_screen.clamav_enabled`.
+# Run explicitly: pytest tests/test_photo_screen.py -k live_clamd -v
+
+
+def _live_clamd_available() -> bool:
+    try:
+        import pyclamd  # noqa: PLC0415 — optional operator-installed dep
+
+        return bool(pyclamd.ClamdUnixSocket().ping())
+    except Exception:
+        return False
+
+
+_needs_live_clamd = pytest.mark.skipif(
+    not _live_clamd_available(), reason="live clamd not available (operator-run smoke)"
+)
+
+
+@_needs_live_clamd
+def test_live_clamd_flags_eicar():
+    """The real daemon must FIND the canonical EICAR probe — this is the bite test
+    for the L3 leg: a misconfigured clamd (stale signatures, wrong socket) fails
+    here instead of silently passing malicious uploads."""
+    verdict, sig = photo_screen._clamav_scan(EICAR.encode("ascii"))
+    assert verdict == "FOUND"
+    assert sig and "eicar" in sig.lower()
+
+
+@_needs_live_clamd
+def test_live_clamd_end_to_end_clean_photo():
+    """A real photo through the FULL ladder with the live daemon: proves the
+    clamav_enabled=True path completes (socket, protocol, tristate handling)
+    on a clean input — the wiring smoke to pair with the EICAR bite above."""
+    res = photo_screen.screen_photo(_jpeg(), clamav_enabled=True)
+    assert res.disposition == "clean"
+    assert res.layer == "L3"

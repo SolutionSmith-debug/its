@@ -9,7 +9,7 @@
 <div class="config-layout">
   <nav class="config-rail" aria-label="Config sections">
     {% for group in groups %}
-    <a href="#grp-{{ loop.index }}">{{ group }}</a>
+    <a href="#grp-{{ group_slugs[group] }}"{% if group_accents.get(group) %} class="rail-accent-{{ group_accents[group] }}"{% endif %}>{{ group }}</a>
     {% endfor %}
     <a href="#grp-intervals">Interval daemons</a>
     <a href="#grp-control">Daemon control</a>
@@ -31,6 +31,8 @@
     <b>Class-A</b> = operator PIN. <b>Class-B</b> (<span class="tier-b">B</span> weighted:
     identity, trust, endpoint, global brake) = re-enter the PIN <em>and</em> type the exact
     setting name. <b>Class-C</b> = write-only secret rotation. Class-D/E are read-only.
+    A <span class="gated">⚑</span> marks a send-poller gate: pausing it is plain Class-A,
+    turning it ON escalates and requires attesting the row's go-live preconditions.
   </p>
   <div class="config-filter">
     <input type="search" id="config-filter-input" placeholder="Filter settings — key, purpose, note…"
@@ -40,8 +42,9 @@
   {% if error %}<div class="config-error">{{ error }}</div>{% endif %}
 
   {% for group, rows in groups.items() %}
-  <section class="config-group" id="grp-{{ loop.index }}">
+  <section class="config-group{% if group_accents.get(group) %} config-group--{{ group_accents[group] }}{% endif %}" id="grp-{{ group_slugs[group] }}">
     <h3>{{ group }}</h3>
+    {% if group_intros.get(group) %}<p class="config-group-intro">{{ group_intros[group] }}</p>{% endif %}
     <table class="config-table">
       <thead>
         <tr><th>setting</th><th>workstream</th><th>current</th><th>new value{% if rows[0].tier != 'A' %} + re-PIN + confirm{% else %} + PIN{% endif %}</th></tr>
@@ -60,7 +63,17 @@
             {% if r.gated and r.description %}<div class="cfg-note">Go-live preconditions (ITS_Config Description): {{ r.description }}</div>{% endif %}
           </td>
           <td class="cfg-ws">{{ r.workstream }}</td>
-          <td class="cfg-current">{% if r.present %}{{ r.value }}{% else %}<span class="missing">(no row — seed first)</span>{% endif %}</td>
+          <td class="cfg-current">
+            {%- if r.present and r.value.lower() == 'true' -%}
+            <span class="pill pill-on">ON</span>
+            {%- elif r.present and r.value.lower() == 'false' -%}
+            <span class="pill pill-off">OFF</span>
+            {%- elif r.present -%}
+            {{ r.value }}
+            {%- else -%}
+            <span class="missing">(no row — seed first)</span>
+            {%- endif -%}
+          </td>
           <td>
             {% if r.tier == 'A' %}
             <form hx-post="/act/config" hx-target="#out-{{ r.slug }}" hx-swap="innerHTML" class="cfg-form">

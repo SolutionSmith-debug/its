@@ -18,8 +18,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from operator_dashboard.act.registry import REGISTRY, get_entry
+from operator_dashboard.act.registry import GROUP_ORDER, REGISTRY, get_entry
 from operator_dashboard.act.validators import ConfigValidationError
+
+# Curated section order (registry.GROUP_ORDER); an unknown group sorts last so a
+# new group is visible-but-flagged rather than lost (the parity test names it).
+_GROUP_RANK: dict[str, int] = {g: i for i, g in enumerate(GROUP_ORDER)}
+
+
+def group_slug(name: str) -> str:
+    """URL/CSS-safe stable anchor for a display-group name (replaces the old
+    positional #grp-<loop.index> anchors, which shifted whenever ordering did)."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 # The generated data dictionary (operator_dashboard/config_defaults.json) is the
 # self-documentation source: its per-key `purpose` prose is surfaced next to each
@@ -138,7 +148,9 @@ def read_registry_state() -> list[dict[str, Any]]:
                 "slug": slug,
             }
         )
-    out.sort(key=lambda d: (d["tier"], d["group"], d["setting"]))
+    out.sort(
+        key=lambda d: (_GROUP_RANK.get(d["group"], len(GROUP_ORDER)), d["setting"])
+    )
     return out
 
 

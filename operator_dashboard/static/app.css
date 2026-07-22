@@ -185,6 +185,15 @@ article.panel-heartbeats .panel-body td { white-space: nowrap; }
 }
 .gated { color: var(--warn); }
 .config-group { margin: 18px 0; }
+.config-group-intro { margin: 2px 0 8px; font-size: 12px; line-height: 1.5; color: var(--muted); max-width: 72ch; }
+.config-group--sendgate { border-left: 3px solid var(--brand-gold); padding-left: 12px; }
+.config-group--sendgate h3 { color: var(--brand-gold-soft); }
+.config-group--brake { border-left: 3px solid var(--error); padding-left: 12px; }
+.config-rail a.rail-accent-sendgate { color: var(--brand-gold-soft); }
+.config-rail a.rail-accent-brake { color: var(--error); }
+.pill { display: inline-block; min-width: 34px; text-align: center; padding: 1px 8px; border-radius: 9px; font-size: 11px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, monospace; }
+.pill-on { color: var(--ok); border: 1px solid var(--ok); }
+.pill-off { color: var(--unavailable); border: 1px solid var(--unavailable); }
 .config-group h3 {
   font-size: 13px; color: var(--muted); font-weight: 600;
   border-bottom: 1px solid var(--border); padding-bottom: 5px;
