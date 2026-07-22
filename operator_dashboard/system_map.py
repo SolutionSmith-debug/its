@@ -12,8 +12,15 @@ schematic. Nodes carry the JOIN KEYS that tie the map to every other surface:
 - ``heartbeat_stem``  — the `state/<stem>_heartbeat.txt` liveness file.
 - ``config_gate``     — the ITS_Config key that turns the capability on/off
                         (workstream = the key's first dotted segment).
-- ``watchdog_checks`` — which watchdog check letters watch this node.
+- ``watchdog_checks`` — the watchdog check letters whose SUBJECT is this node
+                        (each letter is badged on exactly the surface it
+                        probes; letters with no better home — the watchdog's
+                        own infra checks — badge the watchdog node itself).
 - ``runbook``         — the §43 successor-remediation doc served at /doc/….
+- ``docs``            — extra (label, path) doc links for the detail rail.
+
+Sheet nodes additionally carry an operator-grade brief in the companion
+``sheet_briefs.py`` (kept separate so this registry stays scannable).
 
 Layout is data too: ``lane`` (the left→right TRUST GRADIENT: field → cloud
 queue → ‖HMAC wall‖ → generation → records/review → ‖SEND GATE‖ → send →
@@ -71,6 +78,7 @@ class MapNode:
     watchdog_checks: tuple[str, ...] = ()
     script_path: str | None = None
     runbook: str | None = None
+    docs: tuple[tuple[str, str], ...] = ()  # extra (label, repo-relative path) doc links
     sheet_id: int | None = None
     send_half: str | None = None  # generation | send | None (capability-gating list)
     marker: str | None = None  # watchdog TRACKED_JOBS Check-C marker slug
@@ -159,11 +167,29 @@ NODES: tuple[MapNode, ...] = (
         blurb="The job roster: which jobs compile weekly, and who receives each job's safety "
               "packet (TO + CC resolved from here at send time).",
         sheet_id=6223950341164932, runbook="docs/runbooks/safety_portal_job_management.md",
+        docs=(("config-sheets guide", "docs/runbooks/safety_portal_config_sheets.md"),),
+    ),
+    MapNode(
+        id="sheet_orphaned_reports", label="Orphaned Reports", kind="sheet", lane="records",
+        band="safety", satellite=True,
+        blurb="The lost-and-found: portal submissions naming an unknown or inactive job "
+              "land here instead of a week sheet, so nothing is silently dropped.",
+        sheet_id=2577084374273924,
+        docs=(("data model reference", "docs/references/data_model_reference.md"),),
+    ),
+    MapNode(
+        id="sheet_forms_catalog", label="ITS_Forms_Catalog", kind="sheet", lane="records",
+        band="safety", satellite=True,
+        blurb="The menu of safety forms the portal offers, and which jobs each form "
+              "appears on.",
+        sheet_id=423274885369732, runbook="docs/runbooks/safety_portal_forms.md",
     ),
     MapNode(
         id="sheet_week_sheets", label="per-job week sheets", kind="sheet", lane="records", band="safety",
         blurb="One sheet per job per week: every filed submission lands as a row here, and the "
               "'Compile Now' checkbox lives on the rollup row.",
+        runbook="docs/runbooks/week_sheet_config.md",
+        docs=(("weekly compile runbook", "docs/runbooks/safety_weekly_generate.md"),),
     ),
     MapNode(
         id="sheet_wsr", label="WSR_human_review", kind="sheet", lane="records", band="safety",
@@ -207,6 +233,7 @@ NODES: tuple[MapNode, ...] = (
         lane="records", band="progress",
         blurb="The progress-side job roster, mirrored from the portal by fieldops_sync.",
         sheet_id=3079764947455876,
+        runbook="docs/runbooks/progress_reporting_config_sheets.md",
     ),
     MapNode(
         id="sheet_wpr", label="WPR_human_review", kind="sheet", lane="records", band="progress",
@@ -220,7 +247,7 @@ NODES: tuple[MapNode, ...] = (
         error_scripts=("progress_reports.progress_send_poll", "progress_reports.progress_send"),
         launchd_label="org.solutionsmith.its.progress-send", heartbeat_stem="progress_send",
         config_gate="progress_reports.progress_send.polling_enabled",
-        watchdog_checks=("C",), script_path="progress_reports/progress_send_poll.py",
+        watchdog_checks=("C", "N"), script_path="progress_reports/progress_send_poll.py",
         runbook="docs/runbooks/progress_send.md", send_half="send", marker="progress_send_poll",
     ),
     # ── field-ops band ───────────────────────────────────────────────────
@@ -256,6 +283,7 @@ NODES: tuple[MapNode, ...] = (
         id="sheet_trackers", label="tracker sheets", kind="sheet", lane="records", band="fieldops",
         blurb="The standing tracker sheets: Hours Log, equipment status, material list, "
               "material incidents — ITS-owned structured stores (§51).",
+        runbook="docs/runbooks/hours_log_sync.md",
     ),
     # ── purchase-order band ──────────────────────────────────────────────
     MapNode(
@@ -311,16 +339,19 @@ NODES: tuple[MapNode, ...] = (
         id="sheet_its_vendors", label="ITS_Vendors", kind="sheet", lane="records", band="po",
         blurb="The vendor roster (§51 down/up-sync with the portal's vendor picker).",
         sheet_id=5404286845407108,
+        runbook="docs/runbooks/po_poll.md",
+        docs=(("purchase-orders guide", "docs/enablement/purchase_orders.md"),),
     ),
     MapNode(
         id="sheet_po_log", label="PO_Log", kind="sheet", lane="records", band="po",
         blurb="The PO ledger — one row per rendered PO, mirroring the D1 record.",
         sheet_id=3152487031721860,
+        runbook="docs/runbooks/po_poll.md",
     ),
     MapNode(
         id="sheet_po_pending_review", label="PO_Pending_Review", kind="sheet", lane="records", band="po",
         blurb="The PO approval queue — human approval here releases a PO to its vendor.",
-        sheet_id=1816168087113604, watchdog_checks=("U",),
+        sheet_id=1816168087113604, watchdog_checks=("T", "U"),
         runbook="docs/runbooks/po_send.md",
     ),
     MapNode(
@@ -341,7 +372,7 @@ NODES: tuple[MapNode, ...] = (
         blurb="The RFQ approval queue — one row per (RFQ, vendor). A PO_Pending_Review schema twin "
               "tagged po_materials_rfq, so the PO and subcontract send daemons can never dispatch "
               "an RFQ row. Human approval here is what releases an RFQ to its vendor.",
-        sheet_id=3555996805844868, watchdog_checks=("U",),
+        sheet_id=3555996805844868, watchdog_checks=("T", "U"),
         runbook="docs/runbooks/rfq_send.md",
     ),
     MapNode(
@@ -351,7 +382,7 @@ NODES: tuple[MapNode, ...] = (
         error_scripts=("po_materials.po_send_poll", "po_materials.po_send"),
         launchd_label="org.solutionsmith.its.po-send", heartbeat_stem="po_send",
         config_gate="po_materials.po_send.polling_enabled",
-        watchdog_checks=("C",), script_path="po_materials/po_send_poll.py",
+        watchdog_checks=("C", "N"), script_path="po_materials/po_send_poll.py",
         runbook="docs/runbooks/po_send.md", send_half="send", marker="po_send_poll",
     ),
     MapNode(
@@ -364,7 +395,7 @@ NODES: tuple[MapNode, ...] = (
         error_scripts=("po_materials.rfq_send_poll", "po_materials.rfq_send"),
         launchd_label="org.solutionsmith.its.rfq-send", heartbeat_stem="rfq_send",
         config_gate="po_materials.rfq_send.polling_enabled",
-        watchdog_checks=("C",), script_path="po_materials/rfq_send_poll.py",
+        watchdog_checks=("C", "N"), script_path="po_materials/rfq_send_poll.py",
         runbook="docs/runbooks/rfq_send.md", send_half="send", marker="rfq_send_poll",
     ),
     # ── subcontracts band ────────────────────────────────────────────────
@@ -387,17 +418,20 @@ NODES: tuple[MapNode, ...] = (
         id="sheet_its_subcontractors", label="ITS_Subcontractors", kind="sheet", lane="records", band="subcontracts",
         blurb="The subcontractor roster — the send recipient is resolved from here by Sub Key.",
         sheet_id=2107762140991364,
+        runbook="docs/runbooks/subcontract_generation_path.md",
+        docs=(("subcontracts guide", "docs/enablement/subcontracts.md"),),
     ),
     MapNode(
         id="sheet_subcontract_log", label="Subcontract_Log", kind="sheet", lane="records", band="subcontracts",
         blurb="The subcontract ledger, mirroring the D1 record.",
         sheet_id=1195034345951108,
+        runbook="docs/runbooks/subcontract_generation_path.md",
     ),
     MapNode(
         id="sheet_subcontract_pending_review", label="Subcontract_Pending_Review", kind="sheet",
         lane="records", band="subcontracts",
         blurb="The subcontract approval queue — human approval here releases the package.",
-        sheet_id=7950433787006852, watchdog_checks=("U",),
+        sheet_id=7950433787006852, watchdog_checks=("T", "U"),
         runbook="docs/runbooks/subcontract_send.md",
     ),
     MapNode(
@@ -407,7 +441,7 @@ NODES: tuple[MapNode, ...] = (
         error_scripts=("subcontracts.subcontract_send_poll", "subcontracts.subcontract_send"),
         launchd_label="org.solutionsmith.its.subcontract-send", heartbeat_stem="subcontract_send",
         config_gate="subcontracts.subcontract_send.polling_enabled",
-        watchdog_checks=("C",), script_path="subcontracts/subcontract_send_poll.py",
+        watchdog_checks=("C", "N"), script_path="subcontracts/subcontract_send_poll.py",
         runbook="docs/runbooks/subcontract_send.md", send_half="send", marker="subcontract_send_poll",
     ),
     # ── outside ──────────────────────────────────────────────────────────
@@ -421,12 +455,15 @@ NODES: tuple[MapNode, ...] = (
     # ── machine plane ────────────────────────────────────────────────────
     MapNode(
         id="watchdog", label="watchdog", kind="daemon", lane="generation", band="machine",
-        blurb="The daily 07:00 sweep: 20 checks over every daemon marker, sheet backlog, "
-              "breaker, token, and send queue — then pings the external dead-man's switch. "
-              "The eye chips on nodes above mark what it watches.",
+        blurb="The daily 07:00 sweep: every registered check runs over the daemon markers, "
+              "sheet backlogs, breaker, tokens, and send queues — then pings the external "
+              "dead-man's switch. The eye chips on nodes above mark what it watches; its own "
+              "infrastructure checks (blueprint guard, main-CI green, log rotation) badge here.",
         error_scripts=("scripts.watchdog",),
         launchd_label="org.solutionsmith.its.watchdog",
+        watchdog_checks=("M", "S", "W"),
         script_path="scripts/watchdog.py", runbook="docs/runbooks/circuit_breaker.md",
+        docs=(("log-dir rotation (Check W)", "docs/runbooks/log_dir_rotation.md"),),
     ),
     MapNode(
         id="picklist_sync", label="picklist_sync", kind="daemon", lane="generation", band="machine",
@@ -479,40 +516,85 @@ NODES: tuple[MapNode, ...] = (
     MapNode(
         id="error_log", label="error_log spine", kind="script", lane="generation", band="machine",
         blurb="Every script's @its_error_log wrapper lands here: one durable ITS_Errors row per "
-              "occurrence, plus deduped CRITICAL pages to Resend and Sentry.",
-        script_path="shared/error_log.py", watchdog_checks=("G", "K"),
+              "occurrence, plus deduped CRITICAL pages to Resend and Sentry. A prolonged "
+              "Smartsheet circuit-breaker outage pages through this spine too (Check J).",
+        script_path="shared/error_log.py", watchdog_checks=("G", "J", "K"),
+        runbook="docs/runbooks/circuit_breaker.md",
+        docs=(("escalation matrix", "docs/references/escalation_matrix.md"),),
     ),
     MapNode(
         id="sheet_config", label="ITS_Config", kind="sheet", lane="records", band="machine",
         blurb="The runtime switchboard: every daemon reads its gates and tuning here each "
-              "cycle. Edited only through the PIN-gated config editor.",
+              "cycle. Edited only through the PIN-gated config editor. Check L's daily "
+              "write probe proves the Smartsheet token can still write at all.",
         sheet_id=3072320166907780, runbook="docs/runbooks/operator_dashboard_config_editor.md",
+        watchdog_checks=("L",),
+        docs=(
+            ("config dictionary (every setting)", "docs/references/its_config_dictionary.md"),
+            ("token write probe (Check L)", "docs/runbooks/token_write_capability.md"),
+        ),
     ),
     MapNode(
         id="sheet_errors", label="ITS_Errors", kind="sheet", lane="records", band="machine",
         blurb="The forensic error log. An open CRITICAL (blank Resolved At) is the 'am I on "
               "fire' surface; watchdog Check B counts them and Check O rotates the terminal rest.",
         sheet_id=27291433258884, watchdog_checks=("B", "O"),
+        runbook="docs/runbooks/its_errors_triage.md",
+        docs=(("data model reference", "docs/references/data_model_reference.md"),),
     ),
     MapNode(
         id="sheet_review_queue", label="ITS_Review_Queue", kind="sheet", lane="records", band="machine",
         blurb="Where ambiguity goes instead of silent failure: low-confidence extractions, "
               "refused attachments, fenced compile failures. Check A counts stale PENDING rows.",
         sheet_id=7243317526876036, watchdog_checks=("A", "O"),
+        runbook="docs/runbooks/review_queue_triage.md",
+        docs=(("data model reference", "docs/references/data_model_reference.md"),),
     ),
     MapNode(
         id="sheet_daemon_health", label="ITS_Daemon_Health", kind="sheet", lane="records", band="machine",
         blurb="One row per polling daemon, updated in place each cycle — the operator's "
               "at-a-glance liveness sheet.",
         sheet_id=4529351700729732, runbook="docs/runbooks/daemon_health_self_provision.md",
+        docs=(("daemon reference (all daemons)", "docs/references/daemon_reference.md"),),
     ),
     MapNode(
-        id="registry_sheets", label="registry sheets", kind="sheet", lane="records", band="machine",
-        blurb="The supporting registries: ITS_Quarantine, ITS_Time_Off, Picklist_Sync_Config, "
-              "ITS_Project_Routing, the Forms Catalog, and the master DBs picklist_sync reads "
-              "from (Vendor, Subcontractor, Equipment). Aggregated deliberately — each is a "
-              "lookup table, not a lane surface.",
-        watchdog_checks=("D",),
+        id="sheet_quarantine", label="ITS_Quarantine", kind="sheet", lane="records",
+        band="machine", satellite=True,
+        blurb="The holding pen for suspicious inbound email — logged, never processed. "
+              "Load-bearing when Email Triage handles inbound mail.",
+        sheet_id=8687740798324612,
+        docs=(("data model reference", "docs/references/data_model_reference.md"),),
+    ),
+    MapNode(
+        id="sheet_project_routing", label="ITS_Project_Routing", kind="sheet", lane="records",
+        band="machine", satellite=True,
+        blurb="The project-to-Box-folder map: re-route document filing without touching code.",
+        sheet_id=3500842291253124,
+        runbook="docs/runbooks/project_routing_onboarding.md",
+    ),
+    MapNode(
+        id="sheet_time_off", label="ITS_Time_Off", kind="sheet", lane="records",
+        band="machine", satellite=True,
+        blurb="The PTO calendar: the reviewer chain skips anyone listed as out; Check D "
+              "scans two weeks ahead for windows with nobody available.",
+        sheet_id=1506418040459140, watchdog_checks=("D",),
+        runbook="docs/runbooks/time_off_reviewer_chain.md",
+    ),
+    MapNode(
+        id="sheet_picklist_sync_config", label="Picklist_Sync_Config", kind="sheet",
+        lane="records", band="machine", satellite=True,
+        blurb="The wiring diagram for dropdown syncing: which master column feeds which "
+              "sheet's picklist.",
+        sheet_id=7486553185013636,
+        runbook="docs/runbooks/picklist_drift_reconcile.md",
+        docs=(("picklist sync reference", "docs/references/picklist_sync.md"),),
+    ),
+    MapNode(
+        id="registry_sheets", label="master DB sheets", kind="sheet", lane="records", band="machine",
+        blurb="The master-database references behind dropdown syncing — Equipment Master is "
+              "the live canonical source — plus the Documentation Index. The retired Vendor DB "
+              "/ Subcontractor DB stubs are superseded by ITS_Vendors and ITS_Subcontractors.",
+        docs=(("documentation index", "docs/references/documentation_index.md"),),
     ),
     MapNode(
         id="alerts", label="operator alerts", kind="external", lane="outside", band="machine",
@@ -555,6 +637,7 @@ EDGES: tuple[MapEdge, ...] = (
     MapEdge("intake", "box", "file rendered PDF + screened photos", "write"),
     MapEdge("intake", "sheet_week_sheets", "append filed row", "write"),
     MapEdge("intake", "sheet_review_queue", "low-confidence / security-flag routing", "write"),
+    MapEdge("intake", "sheet_orphaned_reports", "unknown / inactive Job ID → lost-and-found", "write"),
     MapEdge("sheet_active_jobs", "portal_poll", "job roster → portal dropdown sync", "read"),
     MapEdge("sheet_active_jobs", "weekly_generate", "compile roster", "read"),
     MapEdge("sheet_week_sheets", "weekly_generate", "gather the week's filed PDFs", "read"),
@@ -621,7 +704,9 @@ EDGES: tuple[MapEdge, ...] = (
     # machine plane
     MapEdge("worker", "publish_daemon", "publish queue pull · commit + deploy push", "pull"),
     MapEdge("worker", "config_actuator", "config_requests pull · PR → CI → deploy", "pull"),
-    MapEdge("picklist_sync", "registry_sheets", "PICKLIST option sync across sheets", "write"),
+    MapEdge("sheet_picklist_sync_config", "picklist_sync", "mapping wiring (source → target)", "read"),
+    MapEdge("registry_sheets", "picklist_sync", "canonical option source (Equipment Master)", "read"),
+    MapEdge("watchdog", "sheet_time_off", "14-day reviewer-chain PTO scan (Check D)", "read"),
     MapEdge("dashboard", "sheet_config", "PIN-gated config edits", "write"),
     MapEdge("dashboard", "sheet_errors", "mark-resolved · clear terminal rows", "write"),
     MapEdge("error_log", "sheet_errors", "one row per occurrence", "write"),

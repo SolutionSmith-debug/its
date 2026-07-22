@@ -18,6 +18,9 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-22 | operations | active | infrastructure | [Runbook — ITS_Errors triage (reading the error log + the mark-resolved / clear verbs) (Successor-Remediation, Op Stds §43)](its_errors_triage.md) | _–_ |
+| 2026-07-22 | operations | active | _–_ | [Runbook — ITS_Review_Queue triage (working the human-review queue + the resolve verb) (Successor-Remediation, Op Stds §43)](review_queue_triage.md) | _–_ |
+| 2026-07-22 | operations | active | infrastructure | [Runbook — ITS_Time_Off + the reviewer chain (PTO entry, chain skip logic, watchdog Check D gaps) (Successor-Remediation, Op Stds §43)](time_off_reviewer_chain.md) | _–_ |
 | 2026-07-21 | operations | active | infrastructure | [Runbook — On-disk log-directory rotation (watchdog Check W) (Successor-Remediation, Op Stds §43)](log_dir_rotation.md) | _–_ |
 | 2026-07-19 | operations | active | po_materials | [Runbook — Vendor-estimate importer (`estimate_poll`) (an uploaded estimate stuck / refused / dark) (Successor-Remediation, Op Stds §43)](estimate_import_path.md) | _–_ |
 | 2026-07-19 | operations | active | po_materials | [Runbook — RFQ generation path (`rfq_poll`) (a composed RFQ stuck / refused / dark) (Successor-Remediation, Op Stds §43)](rfq_generation_path.md) | _–_ |

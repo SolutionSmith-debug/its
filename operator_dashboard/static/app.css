@@ -527,6 +527,12 @@ td a.cell-link:hover { color: var(--brand-gold-soft); border-bottom-style: solid
 .sm-half-generation { border: 1px solid var(--info); color: var(--info); }
 .sm-half-send { border: 1px solid var(--brand-gold); color: var(--brand-gold-soft); }
 .sm-blurb { font-size: 12px; line-height: 1.55; color: var(--text); }
+.sm-brief { border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: 6px; padding: 8px 11px; margin: 10px 0; }
+.sm-brief h4 { margin: 0 0 5px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.sm-brief p { margin: 0 0 7px; font-size: 12px; line-height: 1.55; color: var(--text); }
+.sm-brief p:last-child { margin-bottom: 0; }
+.sm-brief-cols { color: var(--muted); font-size: 11px; }
+.sm-brief-cols b { color: var(--brand-gold-soft); font-weight: 600; }
 .sm-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 10px; font-size: 12px; margin: 10px 0; }
 .sm-facts dt { color: var(--muted); }
 .sm-facts dd { margin: 0; overflow-wrap: anywhere; }

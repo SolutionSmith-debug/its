@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 
 from operator_dashboard.cache import cached
 from operator_dashboard.config import SMARTSHEET_TTL_SECONDS
+from operator_dashboard.sheet_briefs import SHEET_BRIEFS
 from operator_dashboard.sources.base import clean, fmt_timedelta
 from operator_dashboard.system_map import (
     BANDS,
@@ -38,6 +39,11 @@ from operator_dashboard.system_map import (
 )
 
 _FALSY_GATE_VALUES = {"", "false", "0", "no", "off"}
+
+# Sheet permalinks are effectively immutable, but the fetch can fail during a
+# Smartsheet outage — cache hits AND misses for an hour so the htmx-hot rail
+# neither hammers the API nor blocks on it.
+_PERMALINK_TTL_SECONDS = 3600.0
 
 
 # ── live joins (each fail-soft, each cheap or TTL-cached) ────────────────────
@@ -145,6 +151,27 @@ def _gate_state_by_node() -> dict[str, str]:
         else:
             states[node.id] = "dark" if value.lower() in _FALSY_GATE_VALUES else "on"
     return states
+
+
+def _sheet_permalink(sheet_id: int) -> str | None:
+    """The sheet's Smartsheet web-app URL ("open in Smartsheet"), or None.
+
+    The permalink is a distinct opaque token — NOT derivable from the numeric
+    id — so it must be fetched once per sheet (page_size=1 keeps the payload
+    tiny). Fail-soft: any error caches None for the TTL and the rail renders
+    without the link.
+    """
+
+    def _load() -> str | None:
+        try:
+            ss: Any = importlib.import_module("shared.smartsheet_client")
+            sheet = ss.get_client().Sheets.get_sheet(sheet_id, page_size=1)
+            link = getattr(sheet, "permalink", None)
+            return str(link) if link else None
+        except Exception:
+            return None
+
+    return cached(f"sheet_permalink:{sheet_id}", _PERMALINK_TTL_SECONDS, _load)
 
 
 def _troubleshoot_joins() -> dict[str, list[dict[str, str]]]:
@@ -297,5 +324,7 @@ def register_system_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "heartbeat_age": _heartbeat_age_by_node().get(node_id),
                 "gate_state": _gate_state_by_node().get(node_id),
                 "ts_joins": _troubleshoot_joins().get(node_id, []),
+                "brief": SHEET_BRIEFS.get(node_id),
+                "permalink": _sheet_permalink(node.sheet_id) if node.sheet_id else None,
             },
         )

@@ -147,7 +147,7 @@ A field submission enters at the send-free portal, is pulled + filed on the Mac,
 **Resolutions (in order):**
 - Work the queued items (approve / reject / escalate) per the item's reason.
 
-**See also:** watchdog `_check_stale_review_queue`
+**See also:** runbook `docs/runbooks/review_queue_triage.md` · watchdog `_check_stale_review_queue`
 
 #### A reviewer-chain assignment is missing or points at an out-of-office reviewer.
 
@@ -161,7 +161,7 @@ A field submission enters at the send-free portal, is pulled + filed on the Mac,
 **Resolutions (in order):**
 - Fill the chain gap / set the PTO override per the scheduling config.
 
-**See also:** watchdog `_check_reviewer_chain_forward`
+**See also:** runbook `docs/runbooks/time_off_reviewer_chain.md` · watchdog `_check_reviewer_chain_forward`
 
 #### A submission landed under the wrong form workflow / category.
 
@@ -997,7 +997,7 @@ The shared infrastructure every workstream rides on: launchd, heartbeats + marke
 **Resolutions (in order):**
 - Work each CRITICAL to resolution; mark resolved via the dashboard once handled.
 
-**See also:** watchdog `_check_open_criticals`
+**See also:** runbook `docs/runbooks/its_errors_triage.md` · watchdog `_check_open_criticals`
 
 #### A daemon is running but has no ITS_Daemon_Health row.
 
