@@ -83,7 +83,14 @@ def create_app() -> FastAPI:
         # may cache freely and bust naturally on change.
         response = await call_next(request)
         if not request.url.path.startswith("/static"):
-            response.headers.setdefault("Cache-Control", "no-cache")
+            # `no-store`, not `no-cache`: a Safari Dock web app imports Safari's
+            # HTTP cache at creation and revalidates unreliably on in-app
+            # navigation, so a `no-cache` page can still be served stale after a
+            # deploy (2026-07-22 stale-map/config-tab incident — the SECOND
+            # Safari-app cache bite after the blank-page one this middleware was
+            # born from). Pages are small and localhost-served; never storing
+            # them costs nothing. Assets stay exempt: versioned URLs cache freely.
+            response.headers.setdefault("Cache-Control", "no-store")
         return response
 
     # Sync `def` endpoints run in Starlette's threadpool, so the blocking
