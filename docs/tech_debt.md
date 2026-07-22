@@ -161,12 +161,12 @@ is a deliberate scope line:
   ("No launchd plist yet (D1-3b)"); #597 fixed it in the same PR as the `mark_errors_resolved` verb — the row
   now reads "launchd-managed (`org.solutionsmith.its.dashboard`)" and lists the mark-resolved+clear verbs.
   (Re-verified 2026-07-17: `grep operator_dashboard CLAUDE.md` no longer contains "No launchd plist yet.")
-  **Residual, still stale (re-verified 2026-07-17):** `scripts/verify_cutover.py:73` still reads
-  `` (``operator_dashboard/auth.py``, manual-start, no plist yet) `` — #597's fix didn't cover this second
-  surface (multi-surface fan-out). Trigger: next `verify_cutover.py` touch or docs-currency pass.
-- **WS2-3 (doc-sync) — the enablement guide predates Blocks 2-5.** `docs/enablement/operator_dashboard.md`
-  (#572) documents D1-x only; it needs a delta for the launchd service, the interval-edit / daemon-control /
-  breaker-clear verbs, the send-queue + audit panels, and the brand. Trigger: the next A8 enablement pass.
+  **Residual RESOLVED 2026-07-22 (#658):** the `verify_cutover.py` docstring now reads
+  "launchd-managed, `org.solutionsmith.its.dashboard`" — the second surface is fixed.
+- **WS2-3 — DELTA LANDED 2026-07-22 (session-close PR):** `docs/enablement/operator_dashboard.md` now
+  covers the sweep panel, the system-map operator briefs/doc links/Smartsheet out-links, and the reorganized
+  config editor. (The guide had already grown the verb/panel coverage in the interim; this delta brought it
+  current with the 2026-07-22 dashboard trilogy #655/#657/#658.)
 - **WS2-4 (Seth decision, by design) — no mutating send-lane verb.** The send-queue panel is read-only;
   bulk-approve / resend-FAILED / clear-HELD are deliberately NOT built (D13). Trigger: an explicit operator
   decision to expose a send-lane action (would need its own adversarial review).
@@ -421,7 +421,7 @@ were retracted/resolved from this diagnosis. Four open design gaps surfaced, non
 
 ## Docs-currency residuals from the 2026-07-15 documentation-corpus program [OPEN 2026-07-17]
 
-- **(LOW, docs) — `docs/enablement/subcontracts.md` has one residual stale line PR #603 (Tranche D) missed.**
+- **RESOLVED 2026-07-22 (session-close PR — line reworded to send-gate semantics, manifest sha re-recorded).** Original: **(LOW, docs) — `docs/enablement/subcontracts.md` has one residual stale line PR #603 (Tranche D) missed.**
   #603 correctly updated the top callout (line ~43) and removed the "automated sending" bullet from "What's
   not built yet" to reflect SC-S4 (#599) shipping the send lane. It did NOT catch a second assertion later in
   the same file: "Turning generation on enables **filing only** — subcontractor **send** stays dark regardless
@@ -430,7 +430,8 @@ were retracted/resolved from this diagnosis. Four open design gaps surfaced, non
   A second multi-surface-fan-out miss, same class as the CLAUDE.md/verify_cutover.py one above. Deliberately
   left unedited here (a parallel session owns `docs/enablement/`, per this session's own note). Trigger: next
   `docs/enablement/subcontracts.md` touch — re-hash the manifest sha256 if edited.
-- **(LOW, docs) — CLAUDE.md's "What's stubbed vs. real" table still frames `po_send`/`subcontract_send` by
+- **RESOLVED 2026-07-22 (session-close PR — the po_materials row's "Ships dark" phrase reworded to
+  gates-in-ITS_Config semantics; the subcontracts/RFQ rows already carried read-ITS_Config language from 07-21).** Original: **(LOW, docs) — CLAUDE.md's "What's stubbed vs. real" table still frames `po_send`/`subcontract_send` by
   their dark-ships-by-default posture.** Both lanes are now genuinely **LIVE** (operator-activated 2026-07-16/17,
   end-to-end Graph send confirmed on both) — the table doesn't yet say so. Not edited here (CLAUDE.md is a
   high-contention shared file, out of this agent's edit scope per its own boundaries). Trigger: next
@@ -1966,7 +1967,9 @@ train. `wrangler d1 migrations list its-safety-portal-db --remote` from an up-to
 200 text/html). The `_service_pdf_requests` daemon pass consuming these routes is live
 (PRs #274/#276).
 
-## [OPEN 2026-06-20] Safety Portal browser-tab `<title>` + favicon still say "ITS Portal" after banner rebrand
+## [RESOLVED-STALE 2026-07-22] Safety Portal browser-tab `<title>` + favicon (was OPEN 2026-06-20)
+
+**Resolution (2026-07-22, verified):** stale claim — `safety_portal/index.html:5-13` already carries the inline-SVG Evergreen favicon and `<title>Evergreen ITS Portal</title>`; fixed at some earlier rebrand pass, entry never updated.
 
 The 2026-06-20 banner rebrand (PRs #297–#300) dropped the ITS-crest PNG and replaced the "Portal" header text with "Integrated Technical System" (Great Vibes gold-script wordmark). However, the browser-tab `<title>` (`<title>ITS Portal</title>` in `safety_portal/worker/src/index.html` or the React root) and the ITS-crest favicon (`public/favicon.ico` / `<link rel="icon">`) were deliberately left unchanged — out of banner scope, operator's call.
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -100,15 +101,32 @@ def main(argv: list[str] | None = None) -> int:
     existing = smartsheet_client.find_sheet_by_name_in_folder(PARENT_FOLDER, SHEET_NAME)
     if existing is not None:
         print(f"[skip] {SHEET_NAME!r} already present (sheet_id={existing}); not re-seeding.")
+        # Still ensure the ITS_Config record exists — a prior run that crashed
+        # between seed and record (the 2026-07-22 run did, on the create→read
+        # propagation window below) is completed by simply re-running.
+        _record_sheet_id(existing)
         return 0
 
     sheet_id = smartsheet_client.create_sheet_in_folder(PARENT_FOLDER, SHEET_NAME, COLUMN_SCHEMA)
     print(f"[ok] Created {SHEET_NAME!r} (sheet_id={sheet_id}).")
     smartsheet_client.add_rows(sheet_id, rows)
     print(f"[ok] Seeded {len(rows)} row(s).")
-    # verify-after (read back the row count)
-    back = smartsheet_client.get_rows(sheet_id)
-    print(f"[verify] read back {len(back)} row(s).")
+    # verify-after (read back the row count). Bounded retry: a brand-new sheet
+    # can 404/1006 for a few seconds after create (Smartsheet's create→read
+    # propagation window — the job_sheet.py readiness-probe finding); one flake
+    # here must not abort the run after the seed already landed.
+    back: list[dict] = []
+    for attempt in range(5):
+        try:
+            back = smartsheet_client.get_rows(sheet_id)
+            break
+        except smartsheet_client.SmartsheetNotFoundError:
+            if attempt == 4:
+                print("[warn] read-back still propagating; sheet + rows were written.")
+                break
+            time.sleep(2)
+    if back:
+        print(f"[verify] read back {len(back)} row(s).")
     # record the id so nothing hardcodes it (idempotent — add the ITS_Config row only if absent)
     _record_sheet_id(sheet_id)
     print(f"[bootstrap] Optionally add to shared/sheet_ids.py: SHEET_DOCS_INDEX = {sheet_id}")
@@ -117,7 +135,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _record_sheet_id(sheet_id: int) -> None:
     """Record the sheet id in ITS_Config (``system.docs_index_sheet_id``), idempotent."""
-    existing = smartsheet_client.get_setting(CFG_SHEET_ID_KEY, workstream=CFG_WORKSTREAM)
+    try:
+        existing = smartsheet_client.get_setting(CFG_SHEET_ID_KEY, workstream=CFG_WORKSTREAM)
+    except smartsheet_client.SmartsheetNotFoundError:
+        # get_setting RAISES on a missing row (it does not return None) — absent
+        # means "record it now". The original None-check made a first-ever record
+        # crash here (2026-07-22 run).
+        existing = None
     if existing is not None and str(existing).strip():
         print(f"[skip] {CFG_SHEET_ID_KEY} already set ({existing}); not overwriting.")
         return

@@ -107,13 +107,13 @@ docs:
     title: "The Operator Dashboard"
     version: v1
     source: docs/enablement/operator_dashboard.md
-    sha256: f94d05540f74600bb92a1e5b41aaa44875a12d336adacfd076b125c3ed456d97
+    sha256: cb8415af6430edf7a6feda54adb0b9f0dc1e3542452b992b9453998c36ed8023
 
   - key: subcontracts
     title: "Subcontracts — Generating a Subcontract Package"
     version: v1
     source: docs/enablement/subcontracts.md
-    sha256: 53157bf9924505743fed3f12addf1d409e1c32eb9bcfbca9380aab90ac6882a6
+    sha256: 33a9a1d581f8dd89d8f2c530e23c2b0970507d7cc26d5555b9dfe59fc6ac35be
 
   # ── Tier-1 system references (documentation-corpus, WS3 / Tranche A, authored 2026-07-14/15).
   #    Extraction-first operator references — each factual paragraph carries an invisible

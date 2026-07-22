@@ -59,6 +59,7 @@ here changes anything.
 | Panel | What it tells you |
 |---|---|
 | **launchd daemons** | Which background workers are loaded and running. |
+| **Watchdog sweep** | The last nightly sweep's per-check results — each check's letter, verdict, and one-line summary, so "did last night's sweep run, and what did it find" is one glance. A sweep older than a day warns even when every check passed. |
 | **Watchdog markers** | The last-run timestamps the watchdog uses to spot a worker that's gone quiet. |
 | **Circuit breaker** | Whether ITS has tripped its Smartsheet safety breaker (and is pausing to recover). |
 | **Daemon liveness** | Each worker's heartbeat — proof it's actually cycling, not just loaded. |
@@ -84,7 +85,10 @@ each outgoing packet, the **External Send Gate** (drawn as a literal gold wall �
 without that approval), the send workers, and finally the outside world. Each node shows its live
 state: a red count means open CRITICALs, `DARK` means that capability's switch is off, and the dot
 shows whether its worker is running. Click any node for a plain-language explanation, its current
-state, and direct links to its runbook and its troubleshooting entries. Error rows and worker names
+state, and direct links to its runbook and its troubleshooting entries. Every Smartsheet node
+additionally carries an operator brief — what the sheet is, who writes it, and what you do with it
+day-to-day — plus links to its deeper documentation and an "open in Smartsheet" link straight to
+the live sheet. Error rows and worker names
 elsewhere in the dashboard link straight to their node on the map — so "what is this thing and where
 does it sit?" is always one click.
 
@@ -92,7 +96,11 @@ does it sit?" is always one click.
 
 Below the read-only panels is the **config editor** — the only part of the dashboard that changes
 anything. It edits settings in the **`ITS_Config`** sheet; a change takes effect on the affected
-worker's **next cycle**. There are three kinds of action, in increasing weight:
+worker's **next cycle**. The page is organized for daily use: the everyday on/off switches come
+first and the heavyweight sections last, each section opens with a one-line explanation of what it
+means, live on/off values render as green/grey pills, and the send-gate section carries a gold
+accent (the global brake a red one) so the weight of what you're touching is visible before you
+touch it. There are three kinds of action, in increasing weight:
 
 ### Class A — everyday settings (PIN only)
 
