@@ -10,6 +10,14 @@
   </header>
   <p class="sm-blurb">{{ node.blurb }}</p>
 
+  {% if brief %}
+  <div class="sm-brief">
+    <h4>What this is · what you do</h4>
+    {% for para in brief.what.split('\n\n') %}<p>{{ para }}</p>{% endfor %}
+    {% if brief.columns %}<p class="sm-brief-cols"><b>Key columns</b> — {{ brief.columns }}</p>{% endif %}
+  </div>
+  {% endif %}
+
   <dl class="sm-facts">
     {% if launchd_state %}<dt>launchd</dt><dd class="{% if launchd_state.startswith('exited') or launchd_state == 'NOT LOADED' %}sm-fact-bad{% endif %}">{{ launchd_state }}{% if node.launchd_label %} <code>{{ node.launchd_label }}</code>{% endif %}</dd>{% endif %}
     {% if heartbeat_age %}<dt>heartbeat</dt><dd>{{ heartbeat_age }} ago</dd>{% endif %}
@@ -20,7 +28,7 @@
     {% for g in node.extra_gates %}<dt>pass gate</dt><dd><a class="sm-link" href="/config?f={{ g }}"><code>{{ g }}</code></a></dd>{% endfor %}
     {% if node.watchdog_checks %}<dt>watched by</dt><dd>watchdog {{ node.watchdog_checks|join(' · ') }}</dd>{% endif %}
     {% if node.script_path %}<dt>code</dt><dd><code>{{ node.script_path }}</code></dd>{% endif %}
-    {% if node.sheet_id %}<dt>sheet id</dt><dd><code>{{ node.sheet_id }}</code></dd>{% endif %}
+    {% if node.sheet_id %}<dt>sheet</dt><dd>{% if permalink %}<a class="sm-link" href="{{ permalink }}" target="_blank" rel="noopener">open in Smartsheet ↗</a> · {% endif %}<code>{{ node.sheet_id }}</code></dd>{% endif %}
   </dl>
 
   {% if criticals %}
@@ -58,6 +66,9 @@
     {% if node.runbook %}
     <a class="sm-link" href="/doc/{{ node.runbook.replace('docs/', '', 1) }}">runbook — {{ node.runbook.split('/')[-1] }}</a>
     {% endif %}
+    {% for label, path in node.docs %}
+    <a class="sm-link" href="/doc/{{ path.replace('docs/', '', 1) }}">{{ label }}</a>
+    {% endfor %}
     {% for j in ts_joins %}
     <a class="sm-link" href="/troubleshoot?wf={{ j.wf }}&step={{ j.step }}">troubleshoot — {{ j.wf_title }} → {{ j.step_title }}</a>
     {% endfor %}

@@ -102,6 +102,7 @@ workflows:
             resolutions:
               - Work the queued items (approve / reject / escalate) per the item's reason.
             class: daniel_solo
+            runbook: docs/runbooks/review_queue_triage.md
             watchdog_check: _check_stale_review_queue
           - id: reviewer_chain_gap
             symptom: A reviewer-chain assignment is missing or points at an out-of-office reviewer.
@@ -111,6 +112,7 @@ workflows:
             resolutions:
               - Fill the chain gap / set the PTO override per the scheduling config.
             class: daniel_solo
+            runbook: docs/runbooks/time_off_reviewer_chain.md
             watchdog_check: _check_reviewer_chain_forward
           - id: form_miscategorized
             symptom: A submission landed under the wrong form workflow / category.
@@ -754,6 +756,7 @@ workflows:
             resolutions:
               - Work each CRITICAL to resolution; mark resolved via the dashboard once handled.
             class: seth_coresolve
+            runbook: docs/runbooks/its_errors_triage.md
             watchdog_check: _check_open_criticals
           - id: heartbeat_not_provisioning
             symptom: A daemon is running but has no ITS_Daemon_Health row.

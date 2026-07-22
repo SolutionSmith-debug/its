@@ -29,6 +29,10 @@ from operator_dashboard.system_map import (
 
 _REPO = Path(__file__).resolve().parent.parent
 
+# Captured at import time, BEFORE any fixture monkeypatches the module attr —
+# lets the fail-soft test exercise the real permalink producer.
+_REAL_SHEET_PERMALINK = system_view._sheet_permalink
+
 
 # ── registry shape ───────────────────────────────────────────────────────────
 
@@ -210,6 +214,123 @@ def test_runbook_paths_exist() -> None:
             assert (_REPO / n.runbook).is_file(), f"{n.id}: runbook {n.runbook} missing"
 
 
+def test_docs_links_exist_and_are_servable() -> None:
+    """Every extra doc link must point at a real file the /doc viewer can serve
+    (only .md under the four allowlisted docs/ subdirs) — a dead rail link is
+    worse than no link."""
+    servable = ("runbooks", "enablement", "references", "troubleshooting")
+    for n in NODES:
+        for label, path in n.docs:
+            assert label.strip(), f"{n.id}: docs entry with empty label"
+            assert (_REPO / path).is_file(), f"{n.id}: doc {path} missing"
+            parts = Path(path).parts
+            assert parts[0] == "docs" and parts[1] in servable and path.endswith(".md"), (
+                f"{n.id}: doc {path} is outside the /doc viewer's allowlist {servable}"
+            )
+
+
+def test_every_sheet_node_with_id_has_an_operator_brief() -> None:
+    """Depth contract: a Smartsheet node on the map must explain itself to a
+    non-technical operator — every sheet-kind node with a real sheet_id carries
+    a brief in sheet_briefs.py, and every brief keys a real node."""
+    from operator_dashboard.sheet_briefs import SHEET_BRIEFS
+
+    missing = sorted(
+        n.id for n in NODES if n.kind == "sheet" and n.sheet_id and n.id not in SHEET_BRIEFS
+    )
+    assert not missing, (
+        f"sheet nodes with no operator brief: {missing} — add a SheetBrief in "
+        "operator_dashboard/sheet_briefs.py"
+    )
+    orphans = sorted(k for k in SHEET_BRIEFS if k not in NODES_BY_ID)
+    assert not orphans, f"briefs keyed to nonexistent nodes: {orphans}"
+
+
+def test_briefs_never_assert_live_state() -> None:
+    """HOUSE_REFLEXES §5: static text states what a thing MEANS, never what it
+    is currently set to — live state is one ITS_Config read away and drifts."""
+    from operator_dashboard.sheet_briefs import SHEET_BRIEFS
+
+    # NB "at the moment of sending" is timing SEMANTICS (recipients resolve at
+    # send time) — only bare tense-of-now phrases are banned.
+    banned = ("currently", "ships dark", "as of 20", "right now")
+    offenders = [
+        f"{node_id}: {phrase!r}"
+        for node_id, brief in SHEET_BRIEFS.items()
+        for phrase in banned
+        if phrase in brief.what.lower() or phrase in brief.columns.lower()
+    ]
+    assert not offenders, f"briefs asserting live state: {offenders}"
+
+
+def test_every_registered_watchdog_letter_is_badged_on_a_node() -> None:
+    """Coverage contract: each registered watchdog check letter appears on the
+    node it probes (so the map can answer "who watches this?" for everything).
+
+    The letter set is pinned here against len(watchdog.CHECKS): adding or
+    removing a check changes the count, fails this test, and forces BOTH the
+    letter set and a node badge to be updated in the same PR.
+    """
+    scripts_dir = _REPO / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from watchdog import CHECKS
+
+    # 21 callables span 20 distinct letters (Check I has a safety + a progress
+    # wrapper). E is deferred (Admin-API prerequisite) and not registered.
+    assert len(CHECKS) == 21, (
+        "watchdog.CHECKS changed — update REGISTERED_LETTERS below AND badge the "
+        "new check's subject node in system_map.py (watchdog_checks=...)"
+    )
+    registered_letters = set("ABCDGIJKLMNOPQRSTUVW")
+    badged = {letter for n in NODES for letter in n.watchdog_checks}
+    unbadged = sorted(registered_letters - badged)
+    assert not unbadged, (
+        f"registered watchdog letters on no node badge: {unbadged} — add the letter to "
+        "its subject node's watchdog_checks in system_map.py"
+    )
+    unknown = sorted(badged - registered_letters)
+    assert not unknown, f"node badges naming unregistered letters: {unknown}"
+
+
+def test_every_live_sheet_constant_has_a_map_node() -> None:
+    """Coverage contract: every live sheet in shared/sheet_ids.py is somewhere
+    on the map — a sheet the system owns but the console never shows is an
+    operational blind spot (the Orphaned-Reports class)."""
+    from shared import sheet_ids
+
+    # Deliberate exemptions — each with a stated reason.
+    exempt = {
+        "SHEET_TRUSTED_CONTACTS",    # 0 placeholder — dormant until Email Triage (Phase 1.4)
+        "SHEET_WPR_PENDING_REVIEW",  # decommissioned (superseded by WSR_human_review)
+        "SHEET_VENDOR_DB",           # decommissioned (superseded by ITS_Vendors)
+        "SHEET_SUBCONTRACTOR_DB",    # retired in place (superseded by ITS_Subcontractors)
+        "SHEET_EQUIPMENT_MASTER",    # aggregated in the registry_sheets node (no own chip)
+    }
+    node_sheet_ids = {n.sheet_id for n in NODES if n.sheet_id}
+    missing = sorted(
+        name
+        for name in dir(sheet_ids)
+        if name.startswith("SHEET_")
+        and name not in exempt
+        and isinstance(getattr(sheet_ids, name), int)
+        and getattr(sheet_ids, name) > 0
+        and getattr(sheet_ids, name) not in node_sheet_ids
+    )
+    assert not missing, (
+        f"live sheet constants with no system-map node: {missing} — add a node (or a "
+        "documented exemption) in operator_dashboard/system_map.py"
+    )
+    # Reverse: a node must never carry a sheet_id that sheet_ids.py doesn't know.
+    known = {
+        getattr(sheet_ids, name)
+        for name in dir(sheet_ids)
+        if name.startswith("SHEET_") and isinstance(getattr(sheet_ids, name), int)
+    }
+    rogue = sorted(n.id for n in NODES if n.sheet_id and n.sheet_id not in known)
+    assert not rogue, f"nodes with sheet_ids unknown to shared/sheet_ids.py: {rogue}"
+
+
 def test_script_paths_exist() -> None:
     for n in NODES:
         if n.script_path:
@@ -248,6 +369,7 @@ def offline_joins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(system_view, "_heartbeat_age_by_node", lambda: {})
     monkeypatch.setattr(system_view, "_gate_state_by_node", lambda: {})
     monkeypatch.setattr(system_view, "_troubleshoot_joins", lambda: {})
+    monkeypatch.setattr(system_view, "_sheet_permalink", lambda _sheet_id: None)
 
 
 def test_system_page_renders_every_node(offline_joins: None) -> None:
@@ -281,6 +403,44 @@ def test_node_rail_renders_and_unknown_is_soft(offline_joins: None) -> None:
     r = client.get("/system/node/nope")
     assert r.status_code == 200
     assert "unknown node" in r.text
+
+
+def test_sheet_node_rail_renders_brief_docs_and_permalink(
+    offline_joins: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The depth surfaces: a sheet node's rail carries the operator brief, every
+    doc link, and the Smartsheet out-link when the permalink resolves."""
+    monkeypatch.setattr(
+        system_view,
+        "_sheet_permalink",
+        lambda _sheet_id: "https://app.smartsheet.com/sheets/TESTTOKEN",
+    )
+    client = TestClient(create_app())
+    r = client.get("/system/node/sheet_wsr")
+    assert r.status_code == 200
+    assert "What this is" in r.text                      # brief block header
+    assert "approval desk for Weekly Safety Reports" in r.text
+    assert "Key columns" in r.text
+    assert 'href="https://app.smartsheet.com/sheets/TESTTOKEN"' in r.text
+    assert "open in Smartsheet" in r.text
+    # And a node with extra docs renders each link into the /doc viewer.
+    r = client.get("/system/node/sheet_config")
+    assert "/doc/references/its_config_dictionary.md" in r.text
+    assert "/doc/runbooks/token_write_capability.md" in r.text
+
+
+def test_permalink_fetch_is_fail_soft(offline_joins: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Smartsheet outage must degrade the rail to no out-link, never an error."""
+    monkeypatch.setattr(system_view, "_sheet_permalink", _REAL_SHEET_PERMALINK)
+
+    def bomb(_name: str) -> Any:
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(system_view.importlib, "import_module", bomb)
+    client = TestClient(create_app())
+    r = client.get("/system/node/sheet_wsr")
+    assert r.status_code == 200
+    assert "open in Smartsheet" not in r.text
 
 
 def test_live_join_failure_degrades_to_plain_map(monkeypatch: pytest.MonkeyPatch) -> None:
