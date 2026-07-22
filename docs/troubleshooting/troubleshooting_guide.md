@@ -1090,6 +1090,30 @@ The shared infrastructure every workstream rides on: launchd, heartbeats + marke
 
 **See also:** watchdog `_check_row_cap_rotation`
 
+### On-disk log-directory rotation (archive, never delete)
+
+| What happens | |
+|---|---|
+| Daemon | `watchdog` |
+| Sheets | `ITS_Errors` |
+
+**Healthy signals:**
+- The ~/its/logs directory stays bounded; daily <YYYY-MM-DD>.log files older than 14 days are gzipped IN PLACE (never unlinked), and each launchd .out.log is copy→gz→truncated in place.
+
+#### The watchdog reports the on-disk log directory is growing / rotation is straining, or disk is under pressure.
+
+**Resolution class:** Escalate to Seth (co-resolve)
+
+**Signals:** log_dir_rotation WARN, log_dir_rotation CRITICAL, logs dir unbounded, disk pressure
+
+**Checks (in order):**
+- Dashboard/watchdog → did the log-dir rotation pass run this cycle, and how much did it archive? Is free disk low, or is ~/its/logs still growing after a run?
+
+**Resolutions (in order):**
+- v1 rotation ARCHIVES only — it gzips daily files in place and copy→gz→truncates launchd .out.log files; it NEVER deletes, so there is nothing destructive to undo. Re-run the watchdog (or preview with --dry) per the runbook. A persistently CRITICAL / wedged pruner, or a disk that keeps filling after a clean run, is code/capacity class — escalate.
+
+**See also:** runbook `docs/runbooks/log_dir_rotation.md` · watchdog `_check_log_dir_rotation`
+
 ### Hourly picklist sync from master DBs
 
 | What happens | |

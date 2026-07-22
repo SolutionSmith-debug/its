@@ -18,6 +18,7 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-21 | operations | active | infrastructure | [Runbook — On-disk log-directory rotation (watchdog Check W) (Successor-Remediation, Op Stds §43)](log_dir_rotation.md) | _–_ |
 | 2026-07-19 | operations | active | po_materials | [Runbook — Vendor-estimate importer (`estimate_poll`) (an uploaded estimate stuck / refused / dark) (Successor-Remediation, Op Stds §43)](estimate_import_path.md) | _–_ |
 | 2026-07-19 | operations | active | po_materials | [Runbook — RFQ generation path (`rfq_poll`) (a composed RFQ stuck / refused / dark) (Successor-Remediation, Op Stds §43)](rfq_generation_path.md) | _–_ |
 | 2026-07-19 | operations | active | po_materials | [Runbook — RFQ send daemon (`rfq_send`) (an RFQ row stuck HELD / blocked / "contamination") (Successor-Remediation, Op Stds §43)](rfq_send.md) | _–_ |

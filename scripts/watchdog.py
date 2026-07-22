@@ -119,6 +119,7 @@ from shared import (
     defaults,
     heartbeat_client,
     keychain,
+    log_rotation,
     portal_client,
     resend_client,
     review_queue,
@@ -451,21 +452,29 @@ def _check_stale_review_queue() -> CheckResult:
 # ---- Check B: open CRITICAL events --------------------------------------
 
 
-def _check_open_criticals() -> CheckResult:
-    """CRITICAL rows in ITS_Errors with Resolved At blank → WARN.
+def _open_critical_rows() -> list[dict[str, Any]]:
+    """The OPEN-CRITICAL working set in ITS_Errors: Severity CRITICAL with a blank
+    `Resolved At`. THE single reader for the "am I on fire?" query — shared by Check B
+    (`_check_open_criticals`, below) and Check W's incident-safety gate
+    (`_check_log_dir_rotation`), so the query lives in ONE place (HOUSE_REFLEXES §1,
+    multi-surface fan-out) and the two can never disagree about what "open" means.
 
-    The `Severity` filter is passed to `get_rows` so the filtering happens
-    inside the SDK layer (currently client-side post-fetch per
-    smartsheet_client.get_rows — at sandbox volume that's fine). The
-    `Resolved At` blank-check is local because a missing-key row dict and
-    a row with `Resolved At=None` both mean "open" per the schema's
-    "presence implies resolved" design.
+    The `Severity` filter is passed to `get_rows` so the filtering happens inside the SDK
+    layer (currently client-side post-fetch per smartsheet_client.get_rows — at sandbox
+    volume that's fine). The `Resolved At` blank-check is local because a missing-key row
+    dict and a row with `Resolved At=None` both mean "open" per the schema's "presence
+    implies resolved" design.
     """
     rows = smartsheet_client.get_rows(
         sheet_ids.SHEET_ERRORS,
         filters={"Severity": "CRITICAL"},
     )
-    open_rows = [r for r in rows if not r.get("Resolved At")]
+    return [r for r in rows if not r.get("Resolved At")]
+
+
+def _check_open_criticals() -> CheckResult:
+    """CRITICAL rows in ITS_Errors with Resolved At blank → WARN."""
+    open_rows = _open_critical_rows()
 
     if not open_rows:
         return CheckResult(
@@ -2537,6 +2546,221 @@ def _check_row_cap_rotation(dry_run: bool = False) -> CheckResult:
     return CheckResult(severity=worst, summary=summary, details=" | ".join(notes))
 
 
+# ---- Check W: ~/its/logs directory-growth bound (archive, never delete) -----
+#
+# Growth Slice 2. Slice 1 cut the log SOURCES; Check W BOUNDS the on-disk retention
+# using the pure `shared/log_rotation.py` engine. It is an ARCHIVE bound, NOT a cleanup:
+# DAILY logs older than DAILY_GZIP_AGE_DAYS are gzip'd IN PLACE (the .log removed only
+# after a verified .gz sibling exists), and launchd `.out.log` files are copy-gz-TRUNCATED
+# in place (never renamed / unlinked — launchd's O_APPEND child fd follows the inode, and
+# there is no SIGHUP handler, so a rename strands the live file at 0 bytes forever). The
+# one irreversible op — deletion of a forensic file — ships in a SEPARATE later slice.
+
+# Sustained-failure escalation for Check W. Routes through the CAPPED ladder
+# `sustained_failure.is_escalation_cycle` (F2, 2026-07-21), NOT `has_crossed_threshold`.
+# The prior code used `has_crossed_threshold`, which is True for EVERY cycle at/past the
+# threshold — so a persistently-wedged pruner would mint one NEW open-CRITICAL ITS_Errors
+# row EVERY daily run, forever. An open CRITICAL is never terminal (`shared/errors_rotation`
+# returns False without a "Resolved At" stamp), so those rows are UNROTATABLE at every floor
+# including Check O's storm floor — exactly the 20k-cap lockout the 2026-07-21 error-triage
+# work exists to prevent (ITS_Errors hit 19,975/20,000 on 2026-07-13). `is_escalation_cycle`
+# fires on the CROSSING cycle then at 2×/4×/8× the threshold, capping the step at
+# threshold × LADDER_MAX_MULTIPLIER (8) — i.e. days 3, 6, 12, 24, then every 24 days — so a
+# long unattended wedge re-notifies on a bounded ladder while the between-rung cycles still
+# write their per-occurrence row at Severity.WARN (terminal, reclaimable). A real sustained
+# outage still escalates to CRITICAL; nothing is silent.
+#
+# LADDER_EXEMPT / test_transient_fence.py: watchdog stays in LADDER_EXEMPT (it is NOT a
+# 90-120 s daemon and its call is not a raw `n >= …CRITICAL_THRESHOLD` compare). The exempt
+# set only gates `test_no_daemon_hand_rolls_the_threshold_compare_again`. The SECOND fence
+# test (`test_every_escalation_site_routes_through_the_shared_helper`) enumerates every module
+# that CALLS `is_escalation_cycle` and asserts it equals LADDER_CONSUMERS — so this file must
+# be enrolled in LADDER_CONSUMERS in the same landing (test-owned change).
+_LOG_ROTATION_FAILS = sustained_failure.SustainedFailureCounter(
+    STATE_DIR / "log_dir_rotation_failures.json",
+    _SCRIPT,
+    "log_dir_rotation_counter_failed",
+)
+
+
+def _rotate_log_dir(*, skip_launchd: bool, dry_run: bool) -> log_rotation.RotationOutcome:
+    """DELEGATE to the single `log_rotation.run_log_rotation` orchestrator (F6).
+
+    Formerly this re-implemented the scan/plan/archive loop so it could express the
+    watchdog-only "hold the whole launchd lane during an open-CRITICAL incident" policy,
+    which the engine had no way to say. That duplication was a footgun: the engine's
+    exported `run_log_rotation` lacked the incident gate, so a future caller wiring the
+    "public" entry point would truncate launchd files mid-incident. `run_log_rotation`
+    now takes `skip_launchd`, so incident-safety lives in the ONE loop and this fn is a
+    thin delegator — the check still OWNS the decision (`skip_launchd = "open CRITICALs
+    exist"`, computed in `_check_log_dir_rotation`) and merely passes it down.
+
+    Kept as a named seam (not inlined) because `tests/test_watchdog.py` patches
+    `watchdog._rotate_log_dir` to inject synthetic outcomes into the check.
+    """
+    return log_rotation.run_log_rotation(skip_launchd=skip_launchd, dry_run=dry_run)
+
+
+def _check_log_dir_rotation(
+    dry_run: bool = False, *, alerts_suppressed: bool = False
+) -> CheckResult:
+    """Check W (growth Slice 2): BOUND ~/its/logs growth by ARCHIVING — never deleting.
+
+    gzip aged DAILY logs in place and copy-gz-truncate launchd `.out.log`, via the single
+    `log_rotation.run_log_rotation` orchestrator (`_rotate_log_dir` delegates to it, F6).
+    Returns a CheckResult, so `_run_check` pages / MAINTENANCE-defers it like every other
+    check. `dry_run=True` (the `--dry` CLI flag) previews the would-gzip / would-truncate
+    counts with ZERO writes.
+
+    `alerts_suppressed` (F3): threaded by `_run_check` via signature inspection (like Check
+    G / I / J / K). The sustained-failure CRITICAL is logged INLINE here (bypassing
+    `_run_check`'s WARN/CRITICAL→INFO MAINTENANCE downgrade), so during a maintenance window
+    it would page unless we opt out — under `alerts_suppressed` it RECORDS the CRITICAL to
+    ITS_Errors with `alert=False` (no push legs); the still-open row resurfaces via Check B
+    post-MAINTENANCE. Outside MAINTENANCE it pages as before.
+
+    SEVERITY (deliberate refinement of Check O's always-WARN): a ROUTINE, fully-completed run
+    returns INFO — INFO does not reach ITS_Errors (unless ITS_ERROR_LOG_INFO=1), so a check
+    that truncates `.out.log` EVERY daily run does not add rows forever to the very sheet whose
+    20k cap has locked out twice. WARN only on an ABNORMAL outcome (a per-run cap / deadline
+    partial, an oversized-file skip, the launchd lane held for incident-safety, or a
+    gzip-verify / truncate FAILURE).
+    """
+    # Incident gate: hold back the ENTIRE launchd truncate pass while the operator is likely
+    # mid-incident (any open CRITICAL) — they may be tailing a `.out.log`. Reuse Check B's
+    # open-CRITICAL reader (`_open_critical_rows`) so the "am I on fire?" query lives in ONE
+    # place. FAIL-SAFE: if the signal itself is unreadable, ASSUME an incident (hold launchd;
+    # the .gz daily lane is always safe) rather than truncating blind.
+    try:
+        skip_launchd = bool(_open_critical_rows())
+    except Exception:  # noqa: BLE001 — fail-safe: unreadable "am I on fire?" ⇒ hold launchd
+        skip_launchd = True
+
+    try:
+        outcome: log_rotation.RotationOutcome | None = _rotate_log_dir(
+            skip_launchd=skip_launchd, dry_run=dry_run
+        )
+        run_error: str | None = None
+    except Exception as exc:  # noqa: BLE001 — self-limit: a check must never raise out
+        outcome = None
+        run_error = repr(exc)
+
+    # A FAILURE cycle = the pruner itself erroring (a per-file gzip-verify / truncate failure
+    # or an internal exception), NOT a merely-partial run (cap / deadline / incident-hold) —
+    # a partial run means the pruner worked and simply left work for the next run.
+    had_failure = run_error is not None or (outcome is not None and outcome.had_errors)
+    abnormal = had_failure or (
+        outcome is not None
+        and bool(
+            outcome.deadline_hit
+            or outcome.daily_pending
+            or outcome.launchd_pending
+            or outcome.oversized_skipped  # F4: a runaway log skipped over the size cap
+        )
+    )
+
+    # F5: when the ONLY abnormality is the open-CRITICAL launchd HOLD — no real per-file
+    # failure, no deadline, no cap-driven daily overflow, no oversized skip, and the launchd
+    # deferral is entirely the incident hold (which sets launchd_pending == every eligible
+    # launchd file) — keep the CheckResult WARN for dashboard visibility but do NOT write the
+    # SECOND, explicit `log_dir_rotation` row and do NOT touch the failure streak. This removes
+    # the DUPLICATE per-run row; the single CheckResult WARN still lands one row/run via
+    # _run_check, but it is a WARN (non-CRITICAL) — TERMINAL and rotatable by Check O — so it
+    # can never drive the 20k lockout the way a never-terminal open CRITICAL does. The point is
+    # to not DOUBLE-log while Check B is already surfacing the open CRITICAL that caused the hold.
+    incident_hold_only = bool(
+        skip_launchd
+        and not had_failure
+        and outcome is not None
+        and not outcome.deadline_hit
+        and not outcome.daily_pending
+        and not outcome.oversized_skipped
+        and outcome.launchd_pending
+    )
+
+    # Human note — the engine's note() already carries the "[log-dir-rotation] " prefix; a
+    # None outcome means the compose itself raised.
+    if outcome is not None:
+        note = outcome.note()
+    else:
+        note = f"[log-dir-rotation] internal error, no work done: {run_error}"
+    if skip_launchd and outcome is not None and outcome.launchd_pending:
+        note += (
+            " | launchd lane HELD (incident-safety: an open CRITICAL is present, or the "
+            "open-CRITICAL signal was unreadable) — deferred to the next clean run"
+        )
+
+    if dry_run:
+        # Operator preview (--dry): ZERO writes — no explicit record, no counter I/O, no
+        # truncate, no .gz. Just the would-do numbers. Mirrors Check O's --dry preview.
+        return CheckResult(
+            severity=Severity.WARN if abnormal else Severity.INFO,
+            summary="Log-dir rotation preview (--dry): no writes performed.",
+            details=note,
+        )
+
+    # Sustained-failure escalation (see the `_LOG_ROTATION_FAILS` comment above). Increment on
+    # a real failure cycle; RESET on any non-failure cycle (a cap / deadline / oversized / hold
+    # partial IS a success — the pruner did not error). A state glitch degrades record() to
+    # 1 + WARN, which is below threshold, so it never false-pages. F2: the escalate decision
+    # routes through the CAPPED ladder `is_escalation_cycle` (fires day 3, 6, 12, 24, then every
+    # 24), NOT `has_crossed_threshold` (which fired every day past 3 and minted a NEW unrotatable
+    # open-CRITICAL row daily). The failure streak is NOT touched on an incident-hold-only cycle
+    # (F5) — that path takes the else branch here anyway (had_failure is False), a harmless reset.
+    escalate = False
+    if had_failure:
+        n = _LOG_ROTATION_FAILS.record()
+        escalate = sustained_failure.is_escalation_cycle(
+            n, defaults.LOG_DIR_ROTATION_CRITICAL_THRESHOLD
+        )
+    else:
+        _LOG_ROTATION_FAILS.reset()
+
+    # NEVER-SILENT record: on an ABNORMAL cycle write an explicit ITS_Errors row OUTSIDE the
+    # CheckResult, carrying the stable `log_dir_rotation` error_code — exactly as Check O does
+    # at `_rotate_one_sheet` — because `_run_check` downgrades a WARN/CRITICAL CheckResult to
+    # INFO during MAINTENANCE and INFO never reaches Smartsheet, so a CheckResult-only record
+    # would vanish precisely when an operator is watching. A ROUTINE (fully-completed, no-defer)
+    # cycle — AND an incident-hold-only cycle (F5) — writes NOTHING here, which keeps Check W
+    # from adding a row every day to the 20k-capped ITS_Errors sheet. On a sustained FAILURE
+    # (`escalate`) the row is CRITICAL, so error_log's push legs wake someone — EXCEPT during
+    # MAINTENANCE (F3: `alert=False` records the CRITICAL without paging; Check B resurfaces the
+    # still-open row post-window).
+    if abnormal and not incident_hold_only:
+        if had_failure:
+            log(
+                Severity.CRITICAL if escalate else Severity.WARN,
+                _SCRIPT,
+                f"{note} | pruner FAILURE"
+                + (
+                    f" — {defaults.LOG_DIR_ROTATION_CRITICAL_THRESHOLD}+ consecutive daily "
+                    "runs, ESCALATED to CRITICAL on the capped re-notify ladder "
+                    "(pruner appears wedged)"
+                    if escalate
+                    else " this run (retries next run)"
+                ),
+                error_code="log_dir_rotation",
+                alert=not alerts_suppressed,  # F3: record-only during MAINTENANCE, no page
+            )
+        else:
+            log(Severity.WARN, _SCRIPT, note, error_code="log_dir_rotation")
+
+    # CheckResult routed by `_run_check` (MAINTENANCE-downgradeable). Routine = INFO; abnormal =
+    # WARN. A sustained FAILURE already pages via the explicit CRITICAL above, so the CheckResult
+    # itself stays WARN and never double-pages.
+    if not abnormal:
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="~/its/logs growth bound healthy — archived, nothing to escalate.",
+            details=note,
+        )
+    return CheckResult(
+        severity=Severity.WARN,
+        summary="~/its/logs rotation abnormal — partial / deferred / failed (see note).",
+        details=note,
+    )
+
+
 # ---- Entrypoint ---------------------------------------------------------
 
 
@@ -2613,6 +2837,17 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # unresolved creds or transient transport. (O is reserved for the A5 row-cap
     # rotation; H was never built; V is the first free letter after U.)
     _check_portal_prune_health,
+    # Check W (growth Slice 2): ~/its/logs directory-growth BOUND — gzip aged daily logs in
+    # place + copy-gz-TRUNCATE launchd .out.log via the pure shared/log_rotation.py engine.
+    # It ARCHIVES, it does NOT delete (the one irreversible op ships in a later slice). Returns
+    # a CheckResult, so _run_check pages / MAINTENANCE-defers it. Registered LAST on purpose:
+    # it is the only check that walks the filesystem + gzips, so a self-limited overrun (its own
+    # cap + monotonic deadline) can never delay an ALERTING check ahead of it. Routine runs are
+    # INFO (no ITS_Errors row); only an abnormal partial / deferred / failed / oversized run is
+    # WARN, with a sustained failure escalating to CRITICAL via the CAPPED is_escalation_cycle
+    # ladder (F2 — days 3/6/12/24 then every 24, so a wedge never mints a NEW unrotatable
+    # open-CRITICAL every day — see the _LOG_ROTATION_FAILS note).
+    _check_log_dir_rotation,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.
@@ -2712,20 +2947,24 @@ if __name__ == "__main__":
         "--dry",
         action="store_true",
         help=(
-            "Preview Check O (row-cap rotation) ONLY: print per-sheet counts and "
-            "would-delete numbers without deleting rows, writing rotation records, "
-            "or running the other checks."
+            "Preview the two destructive-retention checks ONLY — Check O (row-cap "
+            "rotation) and Check W (log-dir rotation): print counts and would-delete / "
+            "would-gzip / would-truncate numbers WITHOUT deleting rows, gzipping, "
+            "truncating, writing rotation records, or running the other checks."
         ),
     )
     args = parser.parse_args()
     if args.dry:
-        # Operator preview surface — runs the one check with deletes disabled and
-        # prints the CheckResult instead of routing it through log() (no records,
-        # no pages; the daily launchd run never passes --dry).
-        _result = _check_row_cap_rotation(dry_run=True)
-        _line = f"{_result.severity.value}: {_result.summary}"
-        if _result.details:
-            _line += f" | {_result.details}"
-        print(_line)
+        # Operator preview surface — runs the destructive-retention checks with all writes
+        # disabled and prints each CheckResult instead of routing it through log() (no
+        # records, no pages; the daily launchd run never passes --dry).
+        for _result in (
+            _check_row_cap_rotation(dry_run=True),
+            _check_log_dir_rotation(dry_run=True),
+        ):
+            _line = f"{_result.severity.value}: {_result.summary}"
+            if _result.details:
+                _line += f" | {_result.details}"
+            print(_line)
     else:
         main()

@@ -146,6 +146,11 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_stale_held_rows,  # Check T (P5) — WSR+WPR HELD-row staleness backstop
         watchdog._check_approver_drift,  # Check U (P5) — send-workspace approver-set drift/empty
         watchdog._check_portal_prune_health,  # Check V (GS2) — D1 prune heartbeat
+        # Check W (growth Slice 2) — ~/its/logs directory-growth bound (archive, never
+        # delete). Registered LAST on purpose: the only filesystem-walking + gzipping
+        # check, self-limited by its own per-run cap + monotonic deadline, so an overrun
+        # can never delay an alerting check ahead of it.
+        watchdog._check_log_dir_rotation,  # Check W (growth Slice 2) — log-dir archive bound
     ]
 
 
@@ -3172,3 +3177,287 @@ def test_compose_summary_sentry_key_tagged_and_prefix_stripped():
     assert "sentry::" not in subject  # prefix stripped, not displayed raw
     assert "Error code:       uncaught_exception" in body
     assert "Script:           safety_reports.intake" in body
+
+
+# ---- Check W: ~/its/logs directory-growth bound (growth Slice 2) ----------
+#
+# The pure pruner ENGINE (classification, planners, archive primitives, the
+# never-unlink/rename-a-launchd-path invariant) is tested in
+# tests/test_log_rotation.py against a temp logs dir. These tests cover the
+# WATCHDOG-check wiring that lives here alongside every other check: the
+# INFO-routine vs WARN-abnormal severity split, the exactly-one never-silent
+# ITS_Errors record, the open-CRITICAL incident-hold of the launchd lane, and
+# the sustained-failure CRITICAL escalation. Seams: `watchdog._rotate_log_dir`
+# (the engine compose) and `watchdog._open_critical_rows` (Check B's reader) are
+# mocked; the record row is asserted against `watchdog.log` (the mock_log seam).
+#
+# NOTE ON THE ESCALATION PREDICATE (F2, 2026-07-21 — verified against live HEAD): the check
+# escalates via the CAPPED ladder `sustained_failure.is_escalation_cycle`, NOT
+# `has_crossed_threshold`. `has_crossed_threshold` is True for EVERY cycle at/past the
+# threshold, so a persistently-wedged pruner minted one NEW open-CRITICAL ITS_Errors row
+# EVERY daily run — and an open CRITICAL is never terminal (`errors_rotation`), hence
+# UNROTATABLE at every floor including Check O's storm floor: exactly the 20k-cap lockout
+# (19,975/20,000 on 2026-07-13) the error-triage work exists to prevent. `is_escalation_cycle`
+# fires on the CROSSING cycle then at 2×/4×/8× the threshold (threshold 3 ⇒ days 3, 6, 12, 24,
+# then every 24), writing the between-rung cycles at Severity.WARN (terminal, reclaimable). The
+# tests below assert that capped-ladder behaviour. watchdog is now a genuine `is_escalation_cycle`
+# CALLER, enrolled in LADDER_CONSUMERS in tests/test_transient_fence.py in this same landing.
+
+_ROT = watchdog.log_rotation.RotationOutcome
+_LogEntry = watchdog.log_rotation.LogEntry
+_LogKind = watchdog.log_rotation.LogKind
+
+
+def test_log_dir_rotation_routine_is_info_and_writes_no_record(mock_log, mocker):
+    """A fully-completed, no-defer run is INFO and writes NO ITS_Errors row — the property
+    that keeps Check W from adding a row every day to the 20k-capped sheet."""
+    mocker.patch("watchdog._open_critical_rows", return_value=[])
+    mocker.patch(
+        "watchdog._rotate_log_dir", return_value=_ROT(daily_gzipped=1, launchd_truncated=2)
+    )
+    result = watchdog._check_log_dir_rotation()
+    assert result.severity is Severity.INFO
+    assert not [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "log_dir_rotation"
+    ]
+
+
+def test_log_dir_rotation_abnormal_writes_exactly_one_warn_record(mock_log, mocker):
+    """An abnormal (partial/deferred) run is WARN and writes the never-silent record EXACTLY
+    once — INFO never reaches Smartsheet, so the explicit row is how an operator sees it."""
+    mocker.patch("watchdog._open_critical_rows", return_value=[])
+    mocker.patch(
+        "watchdog._rotate_log_dir", return_value=_ROT(daily_gzipped=1, daily_pending=3)
+    )
+    result = watchdog._check_log_dir_rotation()
+    assert result.severity is Severity.WARN
+    recs = [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "log_dir_rotation"
+    ]
+    assert len(recs) == 1
+    assert recs[0].args[0] is Severity.WARN
+
+
+def test_log_dir_rotation_dry_run_is_info_and_writes_no_record(mock_log, mocker):
+    mocker.patch("watchdog._open_critical_rows", return_value=[])
+    mocker.patch(
+        "watchdog._rotate_log_dir", return_value=_ROT(daily_gzipped=2, dry_run=True)
+    )
+    result = watchdog._check_log_dir_rotation(dry_run=True)
+    assert result.severity is Severity.INFO
+    assert not [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "log_dir_rotation"
+    ]
+
+
+def test_log_dir_rotation_incident_hold_skips_launchd_but_runs_daily(
+    tmp_path, mock_log, mocker
+):
+    """An open CRITICAL (operator likely mid-incident, maybe tailing a .out.log) holds the
+    ENTIRE launchd truncate lane while the always-safe daily .gz lane still runs. Exercises
+    the real `_rotate_log_dir(skip_launchd=True)` path with the archive primitives spied."""
+    mocker.patch("watchdog._open_critical_rows", return_value=[{"Severity": "CRITICAL"}])
+    daily = _LogEntry(
+        path=tmp_path / "2000-01-01.log",
+        kind=_LogKind.DAILY,
+        size_bytes=500,
+        mtime=0.0,
+        daily_date=date(2000, 1, 1),
+    )
+    launchd = _LogEntry(
+        path=tmp_path / "launchd" / "d.out.log",
+        kind=_LogKind.LAUNCHD_OUT,
+        size_bytes=900,
+        mtime=0.0,
+    )
+    mocker.patch("watchdog.log_rotation.scan_entries", return_value=[daily, launchd])
+    gzip_spy = mocker.patch("watchdog.log_rotation.gzip_in_place", return_value=500)
+    trunc_spy = mocker.patch("watchdog.log_rotation.archive_and_truncate", return_value=900)
+
+    result = watchdog._check_log_dir_rotation()
+
+    gzip_spy.assert_called_once_with(daily.path)  # daily .gz lane ran
+    trunc_spy.assert_not_called()  # launchd truncate lane HELD
+    assert result.severity is Severity.WARN  # abnormal — launchd deferred
+    assert "HELD" in result.details or "held" in result.details.lower()
+
+
+def test_log_dir_rotation_fail_safe_holds_launchd_when_signal_unreadable(
+    tmp_path, mocker
+):
+    """If the 'am I on fire?' open-CRITICAL read itself throws, ASSUME an incident and hold
+    the launchd lane (the daily .gz lane is always safe) rather than truncating blind."""
+    mocker.patch("watchdog._open_critical_rows", side_effect=RuntimeError("smartsheet down"))
+    launchd = _LogEntry(
+        path=tmp_path / "launchd" / "d.out.log",
+        kind=_LogKind.LAUNCHD_OUT,
+        size_bytes=900,
+        mtime=0.0,
+    )
+    mocker.patch("watchdog.log_rotation.scan_entries", return_value=[launchd])
+    trunc_spy = mocker.patch("watchdog.log_rotation.archive_and_truncate", return_value=900)
+    result = watchdog._check_log_dir_rotation()
+    trunc_spy.assert_not_called()  # held: unreadable signal ⇒ assume incident
+    assert result.severity is Severity.WARN
+
+
+def test_log_dir_rotation_sustained_failure_escalates_on_the_capped_ladder(mock_log, mocker):
+    """F2: drive N consecutive FAILURE cycles (the pruner itself erroring). The CRITICAL
+    escalation fires ONLY on the `is_escalation_cycle` rungs — for threshold 3 that is
+    n=3, 6, 12, 24, then every 24 — NOT every cycle past 3 (which was the
+    `has_crossed_threshold` bug that minted a NEW unrotatable open-CRITICAL row every
+    daily run). Every between-rung cycle records at WARN (terminal, reclaimable). Uses the
+    REAL `_LOG_ROTATION_FAILS` counter (conftest redirects its state path to tmp)."""
+    threshold = watchdog.defaults.LOG_DIR_ROTATION_CRITICAL_THRESHOLD
+    assert threshold == 3
+    mocker.patch("watchdog._open_critical_rows", return_value=[])
+    failed = _ROT(errors=("daily 2020-01-01.log: OSError('boom')",))
+    mocker.patch("watchdog._rotate_log_dir", return_value=failed)
+
+    # Cross past the doubling rungs AND into the fixed-interval tail (cap = 3×8 = 24).
+    n_cycles = 30
+    severities = []
+    for _ in range(n_cycles):
+        mock_log.reset_mock()  # so each cycle's record is read in isolation
+        watchdog._check_log_dir_rotation()
+        rec = [
+            c for c in mock_log.call_args_list
+            if c.kwargs.get("error_code") == "log_dir_rotation"
+        ][-1]
+        severities.append(rec.args[0])
+
+    critical_cycles = {
+        n for n, sev in enumerate(severities, start=1) if sev is Severity.CRITICAL
+    }
+    warn_cycles = {
+        n for n, sev in enumerate(severities, start=1) if sev is Severity.WARN
+    }
+    # Rungs for threshold 3: crossing (3), then 2×/4×/8× (6, 12, 24), then every 24 (48…).
+    assert critical_cycles == {3, 6, 12, 24}
+    # Below the threshold AND every between-rung cycle is a reclaimable WARN — NOT a CRITICAL.
+    assert warn_cycles == set(range(1, n_cycles + 1)) - critical_cycles
+    # The specific regression: cycles 4, 5, 7 past the threshold do NOT re-page.
+    assert severities[3] is Severity.WARN  # n=4
+    assert severities[4] is Severity.WARN  # n=5
+    assert severities[6] is Severity.WARN  # n=7
+    # And the decision really routes through the shared ladder predicate.
+    for n in (3, 6, 12, 24):
+        assert watchdog.sustained_failure.is_escalation_cycle(n, threshold)
+    for n in (4, 5, 7, 11, 13, 23, 25):
+        assert not watchdog.sustained_failure.is_escalation_cycle(n, threshold)
+
+
+def test_log_dir_rotation_recovery_resets_the_failure_counter(mock_log, mocker):
+    """A non-failure cycle RESETS the streak, so a later isolated failure is WARN (n=1),
+    not an immediate CRITICAL — the escalation requires *consecutive* failures."""
+    mocker.patch("watchdog._open_critical_rows", return_value=[])
+    failed = _ROT(errors=("boom",))
+    healthy = _ROT(daily_gzipped=1)
+    seq = [failed, failed, failed, healthy, failed]  # 3 fails (→CRITICAL), recover, 1 fail
+    mocker.patch("watchdog._rotate_log_dir", side_effect=seq)
+
+    severities: list[object] = []
+    for _ in seq:
+        mock_log.reset_mock()  # each cycle's record read in isolation (healthy cycle → none)
+        watchdog._check_log_dir_rotation()
+        recs = [
+            c for c in mock_log.call_args_list
+            if c.kwargs.get("error_code") == "log_dir_rotation"
+        ]
+        severities.append(recs[-1].args[0] if recs else None)
+
+    assert severities[2] is Severity.CRITICAL  # 3rd consecutive failure escalated (rung n=3)
+    assert severities[3] is None  # healthy cycle wrote NO record (INFO)
+    assert severities[4] is Severity.WARN  # streak reset ⇒ isolated failure is WARN again
+
+
+def test_log_dir_rotation_maintenance_records_critical_without_paging(mock_log, mocker):
+    """F3: during a MAINTENANCE window (alerts_suppressed=True) a SUSTAINED failure still
+    RECORDS its CRITICAL to ITS_Errors (so Check B resurfaces the still-open row post-window),
+    but the push legs are NOT fired — the CRITICAL log call carries alert=False. The inline
+    log bypasses `_run_check`'s WARN/CRITICAL→INFO MAINTENANCE downgrade, so without this
+    opt-out it would page during maintenance."""
+    threshold = watchdog.defaults.LOG_DIR_ROTATION_CRITICAL_THRESHOLD
+    assert threshold == 3
+    mocker.patch("watchdog._open_critical_rows", return_value=[])
+    mocker.patch("watchdog._rotate_log_dir", return_value=_ROT(errors=("boom",)))
+
+    crit = None
+    for _ in range(threshold):  # drive to the crossing rung (n=3 → CRITICAL)
+        mock_log.reset_mock()
+        watchdog._check_log_dir_rotation(alerts_suppressed=True)
+        recs = [
+            c for c in mock_log.call_args_list
+            if c.kwargs.get("error_code") == "log_dir_rotation"
+        ]
+        crit = recs[-1]
+    assert crit is not None
+    assert crit.args[0] is Severity.CRITICAL  # the CRITICAL is RECORDED...
+    assert crit.kwargs.get("alert") is False  # ...but push legs are SUPPRESSED (record-only)
+
+
+def test_log_dir_rotation_sustained_failure_pages_outside_maintenance(mock_log, mocker):
+    """F3 (contrast): outside a maintenance window (alerts_suppressed=False, the default) the
+    same sustained-failure CRITICAL PAGES — alert=True."""
+    threshold = watchdog.defaults.LOG_DIR_ROTATION_CRITICAL_THRESHOLD
+    mocker.patch("watchdog._open_critical_rows", return_value=[])
+    mocker.patch("watchdog._rotate_log_dir", return_value=_ROT(errors=("boom",)))
+
+    crit = None
+    for _ in range(threshold):
+        mock_log.reset_mock()
+        watchdog._check_log_dir_rotation(alerts_suppressed=False)
+        recs = [
+            c for c in mock_log.call_args_list
+            if c.kwargs.get("error_code") == "log_dir_rotation"
+        ]
+        crit = recs[-1]
+    assert crit is not None
+    assert crit.args[0] is Severity.CRITICAL
+    assert crit.kwargs.get("alert") is True  # pages the operator
+
+
+def test_log_dir_rotation_incident_hold_only_writes_no_row_and_no_increment(mock_log, mocker):
+    """F5: when the ONLY abnormality is the open-CRITICAL launchd HOLD (no real per-file
+    failure, no deadline, no cap-driven daily overflow, no oversized skip), the check keeps
+    the CheckResult WARN for dashboard visibility but writes NO explicit `log_dir_rotation`
+    ITS_Errors row and does NOT touch the failure streak — otherwise it would pile one WARN
+    row per daily run onto the already-stressed 20k-capped sheet exactly while the open
+    CRITICAL that Check B ALREADY surfaces is what triggered the hold."""
+    mocker.patch("watchdog._open_critical_rows", return_value=[{"Severity": "CRITICAL"}])
+    # incident-hold-only outcome: launchd deferred (held), daily lane clean, no failure.
+    mocker.patch(
+        "watchdog._rotate_log_dir",
+        return_value=_ROT(daily_gzipped=1, launchd_pending=2),
+    )
+    record_spy = mocker.spy(watchdog._LOG_ROTATION_FAILS, "record")
+
+    result = watchdog._check_log_dir_rotation()
+
+    assert result.severity is Severity.WARN  # still WARN for the dashboard
+    assert not [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "log_dir_rotation"
+    ]  # NO explicit never-silent row
+    record_spy.assert_not_called()  # failure streak NOT incremented
+
+
+def test_log_dir_rotation_real_failure_does_write_row_and_increment(mock_log, mocker):
+    """F5 (contrast): a REAL failure (the pruner erroring) DOES write the never-silent row
+    AND increments the failure streak — the property the incident-hold-only path suppresses."""
+    mocker.patch("watchdog._open_critical_rows", return_value=[])
+    mocker.patch("watchdog._rotate_log_dir", return_value=_ROT(errors=("boom",)))
+    record_spy = mocker.spy(watchdog._LOG_ROTATION_FAILS, "record")
+
+    result = watchdog._check_log_dir_rotation()
+
+    assert result.severity is Severity.WARN
+    recs = [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "log_dir_rotation"
+    ]
+    assert len(recs) == 1  # the never-silent row IS written
+    record_spy.assert_called_once()  # failure streak incremented
