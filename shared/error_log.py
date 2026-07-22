@@ -86,7 +86,12 @@ def _local_log(severity: Severity, script: str, message: str, exc_info: str | No
         line += f"\n{exc_info}"
     with (LOG_DIR / f"{datetime.now():%Y-%m-%d}.log").open("a") as f:
         f.write(line + "\n")
-    print(line)
+    # Echo to stdout only at WARN+ (launchd captures stdout into a ~0%-unique
+    # .out.log duplicate of the daily file; INFO — dominated by per-key config
+    # resolution — is the bulk of that duplicate). The daily <date>.log f.write
+    # above stays unconditional, so it remains the complete record.
+    if severity is not Severity.INFO:
+        print(line)
 
 
 def local_log(severity: Severity, script: str, message: str, exc_info: str | None = None) -> None:

@@ -16,7 +16,7 @@ import pytest
 
 import shared.alert_dedupe as alert_dedupe_module
 import shared.error_log as error_log_module
-from shared.error_log import Severity, _local_log, its_error_log, log
+from shared.error_log import Severity, _local_log, its_error_log, local_log, log
 from shared.smartsheet_client import SmartsheetError
 
 # UUID4 pattern for correlation-ID assertions.
@@ -160,6 +160,59 @@ def test_local_log_includes_exc_info_when_provided(log_dir):
 
     contents = _today_log(log_dir).read_text()
     assert "Traceback" in contents
+
+
+# ---- stdout gating: INFO writes the daily file but does NOT echo to stdout --
+# S1-b: launchd captures stdout into a ~0%-unique .out.log duplicate of the daily
+# file, and INFO (dominated by per-key config resolution) is the bulk of it. The
+# daily <date>.log f.write stays unconditional (complete record); only the stdout
+# echo is gated to WARN+.
+
+
+def test_info_writes_daily_file_but_does_not_print_to_stdout(log_dir, capsys):
+    log(Severity.INFO, "test.script", "info-only-line")
+
+    # Complete record still lands in the daily file.
+    assert "info-only-line" in _today_log(log_dir).read_text()
+    # But nothing was echoed to stdout (the launchd .out.log duplicate is what we cut).
+    out = capsys.readouterr().out
+    assert "info-only-line" not in out
+
+
+def test_warn_error_critical_print_to_stdout_and_write_daily_file(log_dir, capsys):
+    log(Severity.WARN, "s", "warn-line")
+    log(Severity.ERROR, "s", "error-line")
+    log(Severity.CRITICAL, "s", "critical-line")
+
+    out = capsys.readouterr().out
+    assert "warn-line" in out
+    assert "error-line" in out
+    assert "critical-line" in out
+
+    contents = _today_log(log_dir).read_text()
+    assert "warn-line" in contents
+    assert "error-line" in contents
+    assert "critical-line" in contents
+
+
+def test_public_local_log_info_writes_file_not_stdout(log_dir, capsys):
+    # local_log is the seam for below-Smartsheet-boundary modules; INFO must stay
+    # off stdout there too (delegates to _local_log).
+    local_log(Severity.INFO, "shared.smartsheet_client", "loc-info-line")
+
+    assert "loc-info-line" in _today_log(log_dir).read_text()
+    assert "loc-info-line" not in capsys.readouterr().out
+
+
+def test_public_local_log_error_still_prints_to_stdout(log_dir, capsys):
+    # The outage-speech path from below-boundary modules survives: an ERROR via the
+    # public local_log seam MUST still echo to stdout (launchd captures it) AND write
+    # the daily file.
+    local_log(Severity.ERROR, "shared.smartsheet_client", "loc-error-line")
+
+    out = capsys.readouterr().out
+    assert "loc-error-line" in out
+    assert "loc-error-line" in _today_log(log_dir).read_text()
 
 
 # ---- log() public helper --------------------------------------------------

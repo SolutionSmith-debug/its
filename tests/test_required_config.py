@@ -41,11 +41,17 @@ def test_resolved_string_logs_info_source_its_config(mock_get_setting, mock_log)
     mock_get_setting.return_value = "hello"
     out = resolve_and_log("test.script", [ConfigKey("a.b", "global", "fallback", "str")])
     assert out == {"a.b": "hello"}
+    # ONE summary INFO line for the pass (not a per-key line). Retargeted to the
+    # single-summary format `setting[workstream]=value(SOURCE)` — the section-5
+    # content (key + workstream + value + source) must still be named in it.
+    mock_log.assert_called_once()
     severity, script, message = mock_log.call_args.args
     assert severity is Severity.INFO
     assert script == "test.script"
-    assert "a.b" in message and "global" in message
-    assert "source: ITS_Config" in message
+    assert "a.b" in message and "global" in message  # key + workstream named
+    assert "hello" in message  # resolved value named
+    assert "ITS_Config" in message  # source named (distinct from the blank/default branch)
+    assert "config resolved 1 key(s)" in message
 
 
 @pytest.mark.parametrize(
@@ -95,9 +101,84 @@ def test_blank_row_logs_info_source_default(mock_get_setting, mock_log):
     mock_get_setting.return_value = None  # row present, Value cell blank
     out = resolve_and_log("t", [ConfigKey("k", "global", "dflt", "str")])
     assert out == {"k": "dflt"}
+    # Blank row is folded into the same one-per-pass summary INFO line, source "default".
+    mock_log.assert_called_once()
     severity, _, message = mock_log.call_args.args
     assert severity is Severity.INFO
-    assert "source: default" in message and "blank" in message
+    assert "k" in message and "global" in message  # key + workstream named
+    assert "dflt" in message  # the default value named
+    assert "default" in message  # source named
+    assert "ITS_Config" not in message  # a blank row is NOT sourced from ITS_Config
+
+
+# ---- mixed pass → exactly ONE summary line naming every key + source -----
+
+
+def test_mixed_pass_emits_one_summary_naming_each_key_and_source(mock_get_setting, mock_log):
+    # k1 resolves from ITS_Config, k2 is a present-but-blank row (→ default), in ONE pass.
+    # The whole pass emits EXACTLY ONE INFO summary line, and that line NAMES every resolved
+    # key with its value AND source. This single test red-lights on BOTH S1-a regressions:
+    #   - reverting to per-key lines  → call_count becomes 2 (not 1)
+    #   - collapsing to a bare count  → the key names / values / sources vanish from the line
+    def _side(setting, *, workstream):
+        return "cfgval" if setting == "k1" else None  # k2 → blank → default
+
+    mock_get_setting.side_effect = _side
+    out = resolve_and_log(
+        "d.poll",
+        [
+            ConfigKey("k1", "field_ops", "d1", "str"),
+            ConfigKey("k2", "field_ops", "d2", "str"),
+        ],
+    )
+    # Returned dict is populated identically to the per-key era: config value for k1,
+    # declared default for the blank k2.
+    assert out == {"k1": "cfgval", "k2": "d2"}
+    # Exactly ONE log call for the whole pass, and it is the INFO summary.
+    assert mock_log.call_count == 1, "expected exactly ONE summary INFO line for the pass"
+    severity, script, message = mock_log.call_args.args
+    assert severity is Severity.INFO
+    assert script == "d.poll"
+    assert "config resolved 2 key(s)" in message
+    # section-5: the ONE line names EACH key with its value + source.
+    assert "k1" in message and "cfgval" in message and "ITS_Config" in message
+    assert "k2" in message and "d2" in message and "default" in message
+
+
+def test_missing_row_excluded_from_the_resolved_summary(mock_get_setting, mock_log):
+    # A MISSING row keeps its own per-key config_row_missing WARN and is NOT folded into the
+    # resolved-keys INFO summary (which names only successfully-resolved keys).
+    def _side(setting, *, workstream):
+        if setting == "absent":
+            raise SmartsheetNotFoundError("no row")
+        return "ok"
+
+    mock_get_setting.side_effect = _side
+    resolve_and_log(
+        "t",
+        [
+            ConfigKey("present", "global", "d1", "str"),
+            ConfigKey("absent", "global", "d2", "str"),
+        ],
+    )
+    infos = [c for c in mock_log.call_args_list if c.args[0] is Severity.INFO]
+    warns = [c for c in mock_log.call_args_list if c.args[0] is Severity.WARN]
+    assert len(infos) == 1  # one summary INFO for the resolved key
+    assert len(warns) == 1  # one per-key WARN for the missing row
+    summary_msg = infos[0].args[2]
+    assert "present" in summary_msg  # the resolved key IS named
+    assert "absent" not in summary_msg  # the missing key is NOT folded into the summary
+    assert warns[0].kwargs["error_code"] == "config_row_missing"
+    assert "absent" in warns[0].args[2]
+
+
+def test_empty_keys_no_crash_and_no_zero_key_summary(mock_get_setting, mock_log):
+    # An empty keys sequence must not crash and must NOT emit a confusing
+    # "config resolved 0 key(s)" line (the summary is emitted only when ≥1 key resolved).
+    out = resolve_and_log("t", [])
+    assert out == {}
+    mock_get_setting.assert_not_called()
+    mock_log.assert_not_called()  # nothing at all — no summary, no WARN
 
 
 # ---- transient / unexpected error → WARN config_read_error, fail-open -----
