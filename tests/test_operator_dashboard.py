@@ -654,10 +654,12 @@ def test_drilldown_view_shows_more_rows_than_panel(client: TestClient, monkeypat
 
 
 def test_asset_urls_are_content_versioned_and_html_is_no_cache() -> None:
-    # Regression for the Safari Dock-app blank-page failure: a cached HTML shell
-    # paired with a stale stylesheet. Every stylesheet/script URL must carry the
-    # content-hash version (so an asset change busts the cache), and page HTML
-    # must always revalidate.
+    # Regression for BOTH Safari Dock-app cache failures: the blank page (cached
+    # HTML shell + stale stylesheet) and the 2026-07-22 stale-map/config-tab
+    # incident (Safari web apps import Safari's HTTP cache at creation and
+    # revalidate `no-cache` pages unreliably). Every stylesheet/script URL must
+    # carry the content-hash version, and page HTML must be `no-store` — never
+    # cached at all, not merely revalidated.
     from operator_dashboard.app import ASSET_VERSION
 
     assert len(ASSET_VERSION) == 10 and all(c in "0123456789abcdef" for c in ASSET_VERSION)
@@ -665,14 +667,14 @@ def test_asset_urls_are_content_versioned_and_html_is_no_cache() -> None:
     r = client.get("/")
     assert f"/static/app.css?v={ASSET_VERSION}" in r.text
     assert f"/static/htmx.min.js?v={ASSET_VERSION}" in r.text
-    assert r.headers["cache-control"] == "no-cache"
+    assert r.headers["cache-control"] == "no-store"
     r = client.get("/system")
     assert f"/static/system-map.js?v={ASSET_VERSION}" in r.text
-    assert r.headers["cache-control"] == "no-cache"
+    assert r.headers["cache-control"] == "no-store"
     # Static assets are exempt — their URLs are versioned, so they may cache.
     r = client.get(f"/static/app.css?v={ASSET_VERSION}")
     assert r.status_code == 200
-    assert r.headers.get("cache-control") != "no-cache"
+    assert r.headers.get("cache-control") not in ("no-cache", "no-store")
 
 
 def test_watchdog_sweep_panel_reads_results_file(
