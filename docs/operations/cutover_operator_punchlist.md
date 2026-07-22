@@ -25,7 +25,10 @@ mechanical, its gate check (`VC-NN`). Runbooks: `host_migration_runbook.md`, `pr
 
 ## ⓪ PRE-EVERYTHING — the one NEW gap surfaced 2026-07-10
 
-- [ ] **CL-23 — enable branch protection on `main` (currently ABSENT).**
+- [x] **CL-23 — DONE 2026-07-22: branch protection enabled on `main`** (required checks
+  `test`+`portal`+`secrets`, strict up-to-date, `enforce_admins=true`, no required reviews —
+  preserves autonomous slice-PR merging). **Bite-proven**: a direct push was server-rejected.
+  Original item:
   `gh api repos/SolutionSmith-debug/its/branches/main/protection` → **404 "Branch not protected"**
   today. Add required status checks `test` + `portal` + `secrets` (+ require branch up-to-date).
   Repo-admin GitHub setting. Verify: the same `gh api …/protection --jq '.required_status_checks.contexts'`

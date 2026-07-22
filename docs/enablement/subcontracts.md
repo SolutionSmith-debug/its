@@ -106,8 +106,9 @@ The whole subcontracts pipeline **ships off** — every pass of the `subcontract
 configuration gate seeded to **false**, so nothing runs until the operator turns it on at go-live.
 Go-live is a checklist (in the runbook): deploy the Worker, seed the credentials and the subcontractor
 registry, set the Box filing root, confirm the config, then flip the gates **after reading each gate's
-description first**. Turning generation on enables **filing only** — subcontractor **send** stays dark
-regardless (there's no send code yet).
+description first**. Turning generation on enables **filing only** — the subcontractor **send** lane
+has its own separate gates and approval flow, and nothing dispatches without a human-approved
+review row (the External Send Gate).
 
 ## If something looks stuck
 
