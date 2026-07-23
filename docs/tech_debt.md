@@ -2276,3 +2276,108 @@ symptom this would guard against as of this session. **Trigger:** Seth requests 
 a smaller daemon's log is observed truncated at an inconvenient moment during a live incident. **Tag:**
 `watchdog`, `log_rotation`, `low-severity`, `deferred-refinement`.
 
+## Archive-on-closure — defined/implemented for one narrow slice, never proven live; ~11 per-job surfaces have no closure path at all [OPEN 2026-07-23]
+
+A 3-lens adversarial audit run during the 2026-07-23 tenant-wipe/stand-up rehearsal — code-level
+(`~/its/logs/reviews/2026-07-23_arch_code.json`), doctrine/runbook-level (`2026-07-23_arch_docs.json`),
+per-job-surface inventory (`2026-07-23_arch_inventory.json`) — converged on one verdict for "what happens
+when a project is archived": Op Stds v21 §51 + its folded riders define archive-on-closure for **exactly
+one slice**, the four progress standing-tracker sheets (Hours Log, Equipment, Material List, Material
+Incidents), implemented by `field_ops/fieldops_sync.py:811-869` (`_archive_closed_job_trackers` →
+`shared/smartsheet_client.move_sheet_to_folder`, its#462, PR #465) and never anything else.
+
+**Three compounding gaps, none of them fixed by this audit (diagnosis only):**
+
+1. **Trigger-semantics mismatch.** The move fires only when a portal-origin job's `lifecycle` is explicitly
+   set to `'archived'`. The portal UI's own documented normal close path is `'inactive'`
+   (`fieldops_job_write.ts:273-274`) — which does **not** archive anything. Nothing in the UI or any doc
+   tells an operator that closing and archiving are different actions with different consequences.
+   Smartsheet-origin jobs are structurally exempt entirely (`fieldops_sync` mirrors only portal-origin dirty
+   jobs), so setting `Archived` directly in `ITS_Active_Jobs` can never trigger the move.
+2. **Closure policy undefined for ~11 other per-job surfaces.** Safety + progress week sheets and their
+   per-job Smartsheet folders, WSR/WPR human-review rows, PO/RFQ/estimate/subcontract per-job mirror sheets
+   (`shared/job_sheet.py`-created) and their flat Log rows, and **all** per-job Box content
+   (`shared/box_client.py` has zero move/archive primitive) have no archive path defined OR implemented
+   anywhere. The only whole-project procedure on record is the destructive manual 3-system `purge-job` nuke
+   (D1 cascade + manual Smartsheet + manual Box) — deletion, not archival, with its own documented footgun
+   (delete the `ITS_Active_Jobs` row first or the down-sync re-creates it; HOUSE_REFLEXES §7).
+3. **§30 live smoke never run.** The committed operator-run live integration test
+   (`tests/test_smartsheet_client_integration.py::test_move_sheet_to_folder_relocates_live`) has been a
+   listed pre-reliance TODO since the 2026-07-04 session log
+   (`docs/session_logs/2026-07-04_smartsheet-verify-hours-smoke-archive-on-closure.md`) and no later session
+   log records it running. Decisive corroboration: the `ITS — Archive` workspace held **0 sheets** in the
+   2026-07-23 pre-wipe dump (`~/its/logs/migrations/prewipe_20260723T030026Z/_manifest.json`) — no job has
+   ever actually reached `lifecycle='archived'` against live data in this system's history.
+
+**A concurrent Brief-A session opened PR #678** (`docs/project-closure-archive` — a project-closure runbook
++ closure-policy proposal) addressing the doc side of gaps 1/2 above; check `gh pr list`/`gh pr view 678`
+before starting doc work here, it may already be answered. Gap 3 (the live smoke) and any code-level fix for
+gap 1/2 remain open regardless of what #678 lands, since #678 is docs/proposal-only. **Trigger:** Seth
+reviews the three dossiers + PR #678 and decides (a) whether `'inactive'` should also archive or archiving
+stays deliberate, (b) a closure policy for the ~11 uncovered surfaces (retain-in-place is the current
+de-facto policy, never chosen explicitly), (c) schedules the overdue live move smoke. **Tag:** `field_ops`,
+`archive-on-closure`, `its#462`, `§51`, `audit`, `seth-owned`.
+
+## Un-adopted optimization findings from the 2026-07-23 stand-up rehearsal — 2 of 5 named opportunities remain unclaimed, 3 already in flight [OPEN 2026-07-23]
+
+Three review passes over the 2026-07-23 tenant wipe+stand-up rehearsal produced optimization dossiers —
+operator-experience (`~/its/logs/reviews/2026-07-23_opt_operator.json`), runtime/safety
+(`2026-07-23_opt_runtime.json`), code-simplification (`2026-07-23_opt_simplify.json`) — proposing follow-on
+work beyond what shipped this session (exec PRs #664-672/#674). **A concurrent Brief-A session has already
+claimed 3 of the higher-value findings** — confirmed via `gh pr list`/worktree inspection at the time of
+this entry, re-check before acting on any of these:
+
+- **Standup finish/epilogue mechanization** (codify the by-hand post-merge tail: state cleanup, posture-
+  flagged fleet reload, cycle-wait, heartbeat/error verify, gate-flip report) — **IN FLIGHT, PR #679**
+  (`feat/standup-finish`, open as of this writing). Do not re-build.
+- **CL-12 repoint actuator** (`production_repoint.py` — a declarative plan/commit tool for the production
+  repoint changeset) — **IN FLIGHT, PR #680** (`feat/production-repoint`, open as of this writing). Do not
+  re-build.
+- **CL-11 approver-share manifest + a mechanical VC-10 approver-shares `verify_cutover` check** — **IN
+  PROGRESS**, local WIP branch `feat/production-shares` (worktree `~/its-shares`, one commit ahead of
+  `origin/main` as of this writing, not yet pushed/PR'd: "mechanize CL-11 — approver-share manifest +
+  guarded seeder + VC-10 approver-shares gate"). Do not re-build; if picking this up, coordinate with
+  whoever owns that worktree first.
+
+**Genuinely still unclaimed, no worktree/PR found for either as of this writing:**
+
+1. **Collapse the cutover checklist's Smartsheet/Box stand-up into ONE `standup.py` invocation.** The Aug-7
+   punch-list's cutover-day binder (`docs/operations/cutover_checklist.md`,
+   `docs/operations/cutover_operator_punchlist.md`, `docs/runbooks/host_migration_runbook.md`) has zero
+   mentions of `standup.py`/`sheet_ids_regen.py` (grep-confirmed) and `scripts/migrations/README.md` still
+   documents the superseded manual builder-by-builder walk with hand-pasted FLIP steps as "the Phase-1
+   cutover builder sequence" — on the real cutover day an operator following the binder as written would
+   redo the exact ordeal this rehearsal just paid to retire. **Same PR should fix the CL-12 doc bug:**
+   `cutover_checklist.md`'s CL-12 line asserts "all `*_enabled` gates true," which contradicts CL-03 (send
+   daemons dark), CL-13 (read gate Descriptions first), the standup epilogue's own stated posture ("gates
+   seeded DARK — the production posture"), and HOUSE_REFLEXES §5's "static text must never assert a LIVE
+   gate state" rule — rewrite as "gates flipped per the activation plan, send gates last, Seth."
+2. **Auto-created run-branch mode for `standup.py`** — commit regen output per stage and merge
+   `origin/main` into a dedicated run branch, instead of the stash/pull/pop dance the operator improvised 6
+   times this session to land mid-run fix-PRs (#665-#672) without losing in-progress regen state.
+
+Lower-priority findings recorded in the dossiers but not named here (see the JSON files directly for full
+detail): enrolling more manual CL items as mechanical `verify_cutover` checks (CL-15/CL-17/CL-19); rejecting
+the scratch-prefix dress-rehearsal mode in favor of scheduling an early real production stand-up; documenting
+why a production wipe variant is deliberately out of scope; scoping `sheet_ids_regen --retry-missing`
+re-resolution to only the unresolved `--expect` constants' workspaces; a generic dump-restore utility for
+any sheet on demand; extracting one shared config-seed engine module (parameterize-not-clone) behind the
+existing per-lane `seed_*.py`/`build_*.py` files. **Trigger:** before starting any of the "genuinely
+unclaimed" items, re-run `gh pr list` and `git worktree list` — the concurrent session was still active at
+the time this entry was written and may have claimed more ground since. **Tag:** `migrations`, `standup`,
+`cutover`, `optimization`, `parallel-session-coordination`.
+
+## `~/its-standup` worktree needs operator-run removal — untracked `.venv-wt` blocks plain `git worktree remove` [OPEN 2026-07-23]
+
+The `~/its-standup` worktree (used to run the 2026-07-23 tenant-wipe/stand-up rehearsal in isolation from the
+live `~/its` daemon tree, per `docs/operations/worktree_discipline.md`) is left on disk, detached HEAD at
+`origin/main`, working tree otherwise clean — but its `.venv-wt` directory (the per-worktree fresh venv
+`worktree_discipline.md` mandates for Python-source edits) is untracked, and `git worktree remove` refuses to
+remove a worktree with untracked files present without `--force`. Per this repo's own guardrail convention,
+`git worktree remove --force` is NOT something CC should run unprompted (the hook-blocked
+`git branch -D`/`git clean -f` pattern this repo already treats as operator-only destructive-op territory —
+see the exec `CLAUDE.md` git-guardrails section) — this is a manual operator cleanup, not a code task.
+**Trigger:** next operator terminal session; run `git worktree remove --force ~/its-standup` (safe: the
+worktree's own git state is clean, nothing uncommitted of value lives there) then `git worktree prune`. **Tag:**
+`worktree`, `operator-manual`, `cleanup`, `low-severity`.
+
