@@ -509,13 +509,28 @@ def missing_required(
     return miss
 
 
-def _resolve_live() -> tuple[dict[str, Resolution], dict[str, dict[str, Resolution]],
+def _resolve_live(workspace_filter: set[str] | None = None,
+                  ) -> tuple[dict[str, Resolution], dict[str, dict[str, Resolution]],
                              dict[str, int]]:
-    """Resolve REGISTRY + EXTERNAL_CONSTANTS + DAEMON_HEALTH_COLUMNS against the tenant."""
+    """Resolve REGISTRY + EXTERNAL_CONSTANTS + DAEMON_HEALTH_COLUMNS against the tenant.
+
+    ``workspace_filter`` (retry-loop optimization, 2026-07-23 review): fetch
+    loadAll trees ONLY for the named workspaces — the propagation-probe burst
+    re-resolves just the unresolved --expect constants' workspaces (~2-3 GETs
+    instead of ~11 per attempt, on a 3s cadence — exactly where 429 risk
+    concentrates). Constants whose workspace was NOT fetched resolve MISSING in
+    the RETURN VALUE; the caller overlays them onto the prior full resolution
+    (`_overlay_resolutions`) so a filtered retry can never degrade an
+    already-resolved constant. The INITIAL per-invocation resolve stays FULL
+    (drift-self-heal + the final --check depend on it) — the filter is
+    retry-loop-only by design.
+    """
     workspaces = fetch_workspaces()
     needed = {t.workspace for t in REGISTRY.values()}
     for consts in EXTERNAL_CONSTANTS.values():
         needed |= {t.workspace for t in consts.values()}
+    if workspace_filter is not None:
+        needed &= workspace_filter
     by_name: dict[str, list[dict[str, Any]]] = {}
     for ws in workspaces:
         by_name.setdefault(str(ws.get("name")), []).append(ws)
@@ -540,6 +555,49 @@ def _resolve_live() -> tuple[dict[str, Resolution], dict[str, dict[str, Resoluti
             if title in id_by_title:
                 columns_by_key[key] = id_by_title[title]
     return resolutions, external, columns_by_key
+
+
+def _constant_workspaces(names: set[str]) -> set[str]:
+    """The registry workspaces the named constants ('CONST' or 'path:CONST') live in."""
+    out: set[str] = set()
+    for name in names:
+        if ":" in name:
+            path, const = name.split(":", 1)
+            target = EXTERNAL_CONSTANTS.get(path, {}).get(const)
+        else:
+            target = REGISTRY.get(name)
+        if target is not None:
+            out.add(target.workspace)
+    return out
+
+
+def _overlay_resolutions(
+    old: tuple[dict[str, Resolution], dict[str, dict[str, Resolution]], dict[str, int]],
+    fresh: tuple[dict[str, Resolution], dict[str, dict[str, Resolution]], dict[str, int]],
+    refetched: set[str],
+) -> tuple[dict[str, Resolution], dict[str, dict[str, Resolution]], dict[str, int]]:
+    """Merge a workspace-FILTERED re-resolve over the prior full one.
+
+    Only constants whose workspace was actually refetched take the fresh value;
+    everything else keeps the prior resolution — a filtered retry must never
+    flip an already-resolved constant to MISSING just because its tree was
+    deliberately not fetched (test_filtered_retry_never_degrades... is the teeth).
+    """
+    old_res, old_ext, old_cols = old
+    fresh_res, fresh_ext, fresh_cols = fresh
+    merged_res = dict(old_res)
+    for const, target in REGISTRY.items():
+        if target.workspace in refetched:
+            merged_res[const] = fresh_res[const]
+    merged_ext = {path: dict(cmap) for path, cmap in old_ext.items()}
+    for path, consts in EXTERNAL_CONSTANTS.items():
+        for const, target in consts.items():
+            if target.workspace in refetched:
+                merged_ext.setdefault(path, {})[const] = fresh_ext[path][const]
+    # DAEMON_HEALTH columns ride SHEET_DAEMON_HEALTH's workspace.
+    dh_ws = REGISTRY["SHEET_DAEMON_HEALTH"].workspace
+    merged_cols = fresh_cols if dh_ws in refetched else old_cols
+    return merged_res, merged_ext, merged_cols
 
 
 def _print_resolution_report(
@@ -630,12 +688,19 @@ def main() -> int:
         if not target:
             break
         attempt += 1
+        # Scope the re-resolve to the unresolved constants' workspaces (the
+        # standup interleave always expects a single stage's workspace) and
+        # OVERLAY onto the prior full resolution — see _resolve_live's doc.
+        target_workspaces = _constant_workspaces(target)
         print(f"[info] propagation_probe: {len(target)} "
               f"{'expected' if expect else 'required'} constant(s) unresolved — "
-              f"re-resolving (attempt {attempt}/{args.retry_missing}, "
+              f"re-resolving {len(target_workspaces)} workspace(s) "
+              f"(attempt {attempt}/{args.retry_missing}, "
               f"{args.retry_delay:g}s delay)...")
         time.sleep(args.retry_delay)
-        resolutions, external, columns_by_key = _resolve_live()
+        fresh = _resolve_live(target_workspaces)
+        resolutions, external, columns_by_key = _overlay_resolutions(
+            (resolutions, external, columns_by_key), fresh, target_workspaces)
         new_missing = missing_required(resolutions, external)
         if not expect and new_missing == missing:
             print(f"[info] propagation_probe: missing set converged at "
