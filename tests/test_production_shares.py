@@ -175,31 +175,51 @@ class _Resp:
             raise requests.HTTPError(f"HTTP {self.status_code}")
 
 
+class _FakeTransport:
+    """Stands in for sps.request_with_retry — the module's SINGLE REST seam
+    since the _rest_retry refit. POSTs BOOM unless a test installs a handler,
+    so plan-mode/refusal tests prove no write is reachable by default."""
+
+    def __init__(self, listing: list[dict], shares_by_id: dict[int, list[dict]],
+                 share_calls: list[int] | None = None) -> None:
+        self.listing = listing
+        self.shares_by_id = shares_by_id
+        self.share_calls = share_calls
+        self.post_handler: Any = None
+
+    def __call__(self, method: str, url: str, *, headers=None, json=None,
+                 timeout=None, raise_for_status: bool = True, **kwargs) -> _Resp:
+        if method == "get":
+            if url.endswith("/workspaces?includeAll=true"):
+                return _Resp(body={"data": self.listing})
+            match = re.search(r"/workspaces/(\d+)/shares", url)
+            if match:
+                workspace_id = int(match.group(1))
+                if self.share_calls is not None:
+                    self.share_calls.append(workspace_id)
+                return _Resp(body={"data": self.shares_by_id.get(workspace_id, [])})
+            raise AssertionError(f"unexpected GET {url}")
+        if method == "post":
+            if self.post_handler is None:
+                raise AssertionError(f"POST reached: {url}")
+            return self.post_handler(url, json)
+        raise AssertionError(f"unexpected method {method!r}")
+
+
 def _install_fake_get(
     monkeypatch,
     listing: list[dict],
     shares_by_id: dict[int, list[dict]],
     share_calls: list[int] | None = None,
-):
-    def fake_get(url, headers=None, timeout=None):
-        if url.endswith("/workspaces?includeAll=true"):
-            return _Resp(body={"data": listing})
-        match = re.search(r"/workspaces/(\d+)/shares", url)
-        if match:
-            workspace_id = int(match.group(1))
-            if share_calls is not None:
-                share_calls.append(workspace_id)
-            return _Resp(body={"data": shares_by_id.get(workspace_id, [])})
-        raise AssertionError(f"unexpected GET {url}")
-
-    monkeypatch.setattr(sps.requests, "get", fake_get)
+) -> _FakeTransport:
+    transport = _FakeTransport(listing, shares_by_id, share_calls)
+    monkeypatch.setattr(sps, "request_with_retry", transport)
+    return transport
 
 
-def _boom_post(monkeypatch):
-    def fake_post(url, headers=None, json=None, timeout=None):
-        raise AssertionError(f"requests.post reached: {url}")
-
-    monkeypatch.setattr(sps.requests, "post", fake_post)
+def _boom_post(monkeypatch) -> None:
+    """Readability no-op: the transport BOOMS on POST by default — kept so
+    call sites still state the no-write expectation explicitly."""
 
 
 def _owner_listing(manifest: dict[str, Any], access_level: str = "OWNER") -> list[dict]:
@@ -273,18 +293,18 @@ def test_commit_invalid_user_404_warns_named_and_continues(monkeypatch, capsys, 
     first_email = ws["approvers"][0]["email"]
     monkeypatch.setattr(sps, "MANIFEST_PATH", _write_manifest(tmp_path, manifest))
 
-    _install_fake_get(
+    transport = _install_fake_get(
         monkeypatch, [{"name": ws["name"], "id": 42, "accessLevel": "OWNER"}], {}
     )
     posts: list[tuple[str, Any]] = []
 
-    def fake_post(url, headers=None, json=None, timeout=None):
-        posts.append((url, json))
+    def fake_post(url, body):
+        posts.append((url, body))
         if len(posts) == 1:
             return _Resp(404, text="Not Found: no such user")
         return _Resp(200)
 
-    monkeypatch.setattr(sps.requests, "post", fake_post)
+    transport.post_handler = fake_post
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
 
     assert sps.main(["--commit"]) == 1  # one add failed → nonzero, but BOTH attempted
@@ -301,16 +321,16 @@ def test_commit_all_adds_succeed_with_expected_payload(monkeypatch, capsys, tmp_
     ws = manifest["workspaces"][0]
     ws["approvers"] = ws["approvers"][:2]
     monkeypatch.setattr(sps, "MANIFEST_PATH", _write_manifest(tmp_path, manifest))
-    _install_fake_get(
+    transport = _install_fake_get(
         monkeypatch, [{"name": ws["name"], "id": 42, "accessLevel": "OWNER"}], {}
     )
     posts: list[tuple[str, Any]] = []
 
-    def fake_post(url, headers=None, json=None, timeout=None):
-        posts.append((url, json))
+    def fake_post(url, body):
+        posts.append((url, body))
         return _Resp(200)
 
-    monkeypatch.setattr(sps.requests, "post", fake_post)
+    transport.post_handler = fake_post
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
 
     assert sps.main(["--commit"]) == 0

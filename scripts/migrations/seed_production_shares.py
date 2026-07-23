@@ -30,9 +30,10 @@ Guards (each one bites; tests/test_production_shares.py proves it):
 - **ADD-only** via ``POST /workspaces/{id}/shares?sendEmail=false``. A
   404/invalid-user response WARNs LOUDLY naming the account (the account must
   exist as a real Smartsheet user first — pending admin asks E1/E2) and never
-  blocks the other adds. No retry helper exists on this branch point (plain
-  ``requests``; a transient failure is re-run-safe — the applier is idempotent
-  because already-present emails are never re-posted).
+  blocks the other adds. Transient 429/5xx ride ``_rest_retry`` and PROPAGATE
+  on exhaustion — never the WARN path (a silently narrower F22 approver set is
+  the failure mode this family refuses); re-runs are idempotent because
+  already-present emails are never re-posted.
 
 Auth: ``ITS_SMARTSHEET_TOKEN`` from macOS Keychain (the standup raw-REST pattern).
 
@@ -53,9 +54,13 @@ import pathlib
 import sys
 from typing import Any
 
-import requests  # type: ignore[import-untyped]
-
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+
+# Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
+# it explicitly). Transient 429/5xx retried; exhaustion PROPAGATES — an F22
+# approver add must never be silently dropped behind a rate-limit blip (the
+# same polarity as standup's share restore).
+from _rest_retry import request_with_retry  # noqa: E402
 
 from shared import keychain, sheet_ids  # noqa: E402
 
@@ -182,18 +187,17 @@ def _confirm(prompt: str) -> bool:
 
 
 def _live_workspaces() -> list[dict[str, Any]]:
-    r = requests.get(f"{BASE}/workspaces?includeAll=true", headers=_headers(), timeout=30)
-    r.raise_for_status()
+    r = request_with_retry("get", f"{BASE}/workspaces?includeAll=true",
+                           headers=_headers(), timeout=30)
     data: list[dict[str, Any]] = r.json().get("data", [])
     return data
 
 
 def _fetch_shares(workspace_id: int) -> list[dict[str, Any]]:
-    r = requests.get(
-        f"{BASE}/workspaces/{workspace_id}/shares?includeAll=true",
+    r = request_with_retry(
+        "get", f"{BASE}/workspaces/{workspace_id}/shares?includeAll=true",
         headers=_headers(), timeout=30,
     )
-    r.raise_for_status()
     data: list[dict[str, Any]] = r.json().get("data", [])
     return data
 
@@ -312,11 +316,15 @@ def apply_plans(plans: list[WorkspacePlan]) -> tuple[int, int]:
             failed += len(plan.to_add)
             continue
         for email, level in plan.to_add:
-            r = requests.post(
-                f"{BASE}/workspaces/{plan.live_id}/shares?sendEmail=false",
+            # raise_for_status=False: a permanent 4xx (invalid user, dup) keeps
+            # the loud-but-non-fatal WARN below; a transient 429/5xx retries
+            # inside the helper and PROPAGATES on exhaustion — it must never
+            # ride the WARN path and silently narrow an F22 approver set.
+            r = request_with_retry(
+                "post", f"{BASE}/workspaces/{plan.live_id}/shares?sendEmail=false",
                 headers=_headers(),
                 json=[{"email": email, "accessLevel": level}],
-                timeout=30,
+                timeout=30, raise_for_status=False,
             )
             if r.status_code == 200:
                 added += 1
