@@ -8,6 +8,7 @@ was reachable), not just a green path.
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -28,6 +29,17 @@ import standup  # noqa: E402
 import wipe_tenant as wipe  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _redirect_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test here gets the stand-up ACT-fence marker (PR #674) redirected
+    to tmp_path — unit tests must never touch ~/its/state (the live-state
+    tripwire enforces it; forensic class #8)."""
+    monkeypatch.setattr(standup, "STANDUP_MARKER_PATH",
+                        tmp_path / "standup_in_progress.json")
+    monkeypatch.setattr(wipe, "STANDUP_MARKER_PATH",
+                        tmp_path / "standup_in_progress.json")
 
 
 # ---- wipe_tenant: allowlist double-match (guard 1) ------------------------
@@ -833,3 +845,186 @@ def test_write_state_is_best_effort(
     monkeypatch.setattr(standup.state_io, "atomic_write_json", _oser)
     standup._write_state({"status": "running"}, tmp_path)  # must not raise
     assert "run_state_write_failed" in capsys.readouterr().out
+
+
+# ---- standup finish + marker + dashboard exemption (PR: finish subcommand) --
+
+
+def test_send_dispatch_labels_match_shipped_plists() -> None:
+    """Parity teeth: every SEND_DISPATCH label must be a shipped plist (a
+    renamed plist would silently drop from the dark-posture exclusion and a
+    send daemon would load), and the set is exactly the five dispatch lanes."""
+    shipped = {p.name.removesuffix(".plist")
+               for p in (REPO_ROOT / "scripts" / "launchd").glob(
+                   "org.solutionsmith.its.*.plist")}
+    missing = standup.SEND_DISPATCH_LABELS - shipped
+    assert not missing, f"SEND_DISPATCH label(s) with no shipped plist: {missing}"
+    assert standup.SEND_DISPATCH_LABELS == {
+        "org.solutionsmith.its.po-send",
+        "org.solutionsmith.its.rfq-send",
+        "org.solutionsmith.its.subcontract-send",
+        "org.solutionsmith.its.weekly-send",
+        "org.solutionsmith.its.progress-send",
+    }
+    assert standup.DASHBOARD_LABEL in shipped
+
+
+def test_reload_fleet_dark_never_loads_send_or_dashboard(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    loads: list[str] = []
+
+    def _record(plist: str) -> int:
+        loads.append(plist)
+        return 0
+
+    monkeypatch.setattr(standup, "_install_load", _record)
+    failures = standup._reload_fleet("dark")
+    assert failures == []
+    labels = {name.removesuffix(".plist") for name in loads}
+    assert not labels & standup.SEND_DISPATCH_LABELS, (
+        "dark posture loaded a SEND-DISPATCH plist — External-Send-Gate violation")
+    assert standup.DASHBOARD_LABEL not in labels  # restarted last, not here
+    assert len(labels) >= 10  # the working fleet actually loads
+
+
+def test_reload_fleet_full_loads_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    loads: list[str] = []
+
+    def _record(plist: str) -> int:
+        loads.append(plist)
+        return 0
+
+    monkeypatch.setattr(standup, "_install_load", _record)
+    standup._reload_fleet("full")
+    labels = {name.removesuffix(".plist") for name in loads}
+    assert standup.SEND_DISPATCH_LABELS <= labels
+    assert standup.DASHBOARD_LABEL not in labels
+
+
+def _boom_named(what: str) -> Any:
+    def _inner(*a: Any, **k: Any) -> None:
+        raise AssertionError(f"{what} reached — must not run in this mode")
+    return _inner
+
+
+def test_finish_verify_only_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--verify-only runs only the read-only legs: no gate, no cleanup, no
+    reload, no dashboard restart, no daemons-down requirement."""
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: True)
+    monkeypatch.setattr(standup, "_verify_regen_parity", lambda: True)
+    monkeypatch.setattr(standup, "_await_heartbeats", lambda *a, **k: [])
+    monkeypatch.setattr(standup, "_post_reload_error_sweep", lambda: 0)
+    monkeypatch.setattr(standup, "_gate_report", lambda dump_dir: None)
+    for seam in ("_require_daemons_down", "_state_cleanup", "_reload_fleet",
+                 "_restart_dashboard", "_confirm", "_confirm_full_posture"):
+        monkeypatch.setattr(standup, seam, _boom_named(seam))
+    assert standup.finish_main(["--verify-only", "--no-restore"]) == 0
+
+
+def test_finish_full_posture_requires_phrase(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A declined LOAD SEND DAEMONS phrase aborts BEFORE any cleanup/reload."""
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: True)
+    monkeypatch.setattr(standup, "_verify_regen_parity", lambda: True)
+    monkeypatch.setattr(standup, "_require_daemons_down", lambda: True)
+    monkeypatch.setattr(standup, "_confirm_full_posture", lambda: False)
+    for seam in ("_state_cleanup", "_reload_fleet", "_restart_dashboard",
+                 "_confirm"):
+        monkeypatch.setattr(standup, seam, _boom_named(seam))
+    assert standup.finish_main(["--posture", "full", "--no-restore"]) == 1
+
+
+def test_finish_precondition_failures_abort(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    for seam in ("_require_daemons_down", "_state_cleanup", "_reload_fleet",
+                 "_restart_dashboard", "_confirm", "_await_heartbeats",
+                 "_post_reload_error_sweep", "_gate_report"):
+        monkeypatch.setattr(standup, seam, _boom_named(seam))
+    # dirty tree refuses first
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: False)
+    monkeypatch.setattr(standup, "_verify_regen_parity", _boom_named("regen"))
+    assert standup.finish_main(["--no-restore"]) == 1
+    # regen mismatch refuses second
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: True)
+    monkeypatch.setattr(standup, "_verify_regen_parity", lambda: False)
+    assert standup.finish_main(["--no-restore"]) == 1
+
+
+def test_dashboard_exempt_from_daemon_guards(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both daemon-down guards EXEMPT the dashboard (read-only panels stay up;
+    ACT verbs are marker-fenced, its#677) but still refuse on any other job."""
+    dash = standup.DASHBOARD_LABEL
+    monkeypatch.setattr(standup, "_loaded_its_labels", lambda: [dash])
+    assert standup._require_daemons_down() is True
+    monkeypatch.setattr(standup, "_loaded_its_labels",
+                        lambda: [dash, "org.solutionsmith.its.portal-poll"])
+    assert standup._require_daemons_down() is False
+
+    monkeypatch.setattr(wipe, "_loaded_its_daemons", lambda: [dash])
+    wipe.require_daemons_down()  # exempt -> no raise
+    monkeypatch.setattr(wipe, "_loaded_its_daemons",
+                        lambda: [dash, "org.solutionsmith.its.portal-poll"])
+    with pytest.raises(wipe.WipeRefusedError):
+        wipe.require_daemons_down()
+
+
+def test_wipe_commit_sets_fence_marker_and_leaves_it(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wipe sets the ACT-fence marker BEFORE the dump and does NOT clear it
+    — only a COMPLETED standup run clears the marker (PR #674 lifecycle: the
+    wipe->rebuild window stays fenced end to end)."""
+    marker = tmp_path / "standup_in_progress.json"
+    monkeypatch.setattr(wipe, "STANDUP_MARKER_PATH", marker)
+    monkeypatch.setattr(wipe, "require_daemons_down", lambda: None)
+    monkeypatch.setattr(wipe, "_list_workspaces",
+                        lambda: [dict(zip(("name", "id"),
+                                          wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0],
+                                          strict=True))])
+    monkeypatch.setattr(wipe, "_box_root_items", lambda: [])
+    monkeypatch.setattr(wipe, "_confirm_phrase", lambda: True)
+    monkeypatch.setattr(wipe, "DUMP_ROOT", tmp_path / "dumps")
+    (tmp_path / "dumps").mkdir()
+    seen: dict[str, bool] = {}
+
+    def _dump(ws: dict[str, Any], dump_dir: Path) -> tuple[int, list[str]]:
+        seen["marker_during_dump"] = marker.is_file()
+        return 1, []
+
+    def _delete(ws_id: int) -> None:
+        seen["marker_during_delete"] = marker.is_file()
+
+    monkeypatch.setattr(wipe, "dump_workspace", _dump)
+    monkeypatch.setattr(wipe, "_delete_workspace", _delete)
+    monkeypatch.setattr(wipe, "_delete_box_folder", _boom_named("box delete"))
+    monkeypatch.setattr(sys, "argv", ["wipe_tenant.py", "--commit"])
+    assert wipe.main() == 0
+    assert seen == {"marker_during_dump": True, "marker_during_delete": True}
+    assert marker.is_file()  # NOT cleared — standup completion owns the clear
+
+
+def test_gate_report_shows_dump_vs_live(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    ws_dir = tmp_path / "smartsheet" / "ITS — System"
+    ws_dir.mkdir(parents=True)
+    (ws_dir / "cfg__1.sheet.json").write_text(json.dumps({
+        "name": "ITS_Config",
+        "columns": [], "rows": [
+            {"Setting": "x.polling_enabled", "Workstream": "x", "Value": "true"},
+        ]}), encoding="utf-8")
+    live_rows = [
+        {"Setting": "x.polling_enabled", "Workstream": "x", "Value": "false",
+         "Description": "Do NOT set true until the rider merges."},
+        {"Setting": "x.worker_base_url", "Workstream": "x", "Value": "https://x"},
+    ]
+    import shared.smartsheet_client as sc
+    monkeypatch.setattr(sc, "get_rows", lambda sheet_id: live_rows)
+    standup._gate_report(tmp_path)
+    out = capsys.readouterr().out
+    assert "x.polling_enabled [x]" in out
+    assert "dump='true'  live='false'" in out
+    assert "DIFFERS from pre-wipe" in out
+    assert "Do NOT set true until the rider merges." in out
+    assert "READ-ONLY" in out
+    assert "x.worker_base_url" not in out  # non-gate rows stay out of the report
