@@ -57,7 +57,9 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-import requests  # type: ignore[import-untyped]  # noqa: E402
+# Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
+# it explicitly — the test_standup_tools.py import pattern).
+from _rest_retry import request_with_retry  # noqa: E402
 
 from shared import keychain  # noqa: E402
 
@@ -338,8 +340,12 @@ def _stage_restore_rows(dump_dir: pathlib.Path) -> None:
                   f"({len(dump.get('rows', []))} dumped, all present or empty).")
             continue
         for i in range(0, len(payload), 300):
-            r = requests.post(f"{BASE}/sheets/{target_id}/rows", headers=_headers(),
-                              json=payload[i:i + 300], timeout=120)
+            # raise_for_status=False: transient 429/5xx are retried inside the
+            # helper (exhaustion propagates -> stage fails with its resume
+            # hint); a non-transient failure surfaces WITH the response body.
+            r = request_with_retry(
+                "post", f"{BASE}/sheets/{target_id}/rows", headers=_headers(),
+                json=payload[i:i + 300], timeout=120, raise_for_status=False)
             if r.status_code != 200:
                 raise StageFailedError(
                     f"restore add-rows failed for {sheet_name!r}: "
@@ -396,9 +402,8 @@ def _stage_restore_shares(dump_dir: pathlib.Path) -> None:
     set on Purchase Orders / Subcontracts would fail-close the send gates with
     no explanation.
     """
-    ws_listing = requests.get(f"{BASE}/workspaces?includeAll=true",
-                              headers=_headers(), timeout=30)
-    ws_listing.raise_for_status()
+    ws_listing = request_with_retry("get", f"{BASE}/workspaces?includeAll=true",
+                                    headers=_headers(), timeout=30)
     live_by_name: dict[str, list[dict[str, Any]]] = {}
     for ws in ws_listing.json().get("data", []):
         live_by_name.setdefault(str(ws.get("name")), []).append(ws)
@@ -431,10 +436,16 @@ def _stage_restore_shares(dump_dir: pathlib.Path) -> None:
                       f"accessLevel={level}) — GROUP shares must be re-added by hand "
                       "or the approver set is narrower than pre-wipe.")
                 continue
-            r = requests.post(
-                f"{BASE}/workspaces/{int(target['id'])}/shares?sendEmail=false",
+            # raise_for_status=False: a permanent 4xx (already-shared dup,
+            # invalid user) keeps the loud-but-non-fatal WARN below, but a
+            # transient 429/5xx is retried and PROPAGATES on exhaustion — it
+            # must never ride the WARN path, or the F22 approver set silently
+            # narrows behind a rate-limit blip.
+            r = request_with_retry(
+                "post", f"{BASE}/workspaces/{int(target['id'])}/shares?sendEmail=false",
                 headers=_headers(),
-                json=[{"email": email, "accessLevel": level}], timeout=30)
+                json=[{"email": email, "accessLevel": level}], timeout=30,
+                raise_for_status=False)
             if r.status_code == 200:
                 added += 1
             else:
