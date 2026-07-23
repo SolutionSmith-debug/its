@@ -30,7 +30,11 @@ Guards (each fails CLOSED, each is separately tested)
        ~/its/logs/migrations/prewipe_<UTC>/ as JSON, plus a Box tree manifest
        (names/ids; file bytes are NOT downloaded — the operator declined content
        preservation, the dump is the deletion audit record + the row-restore
-       source for the stand-up). A dump failure aborts the wipe.
+       source for the stand-up). A dump failure aborts the wipe. Transient
+       fetch errors (429/5xx/timeouts) are retried bounded (`_rest_retry`) and
+       ABORT on exhaustion; only PERMANENT signatures (404 / errorCode
+       1006/1115 — broken shells with no content to preserve) are recorded as
+       "unreadable" and skipped.
 
 Deletion mechanics
     Smartsheet: DELETE /workspaces/{id} (cascades folders/sheets). Box:
@@ -63,6 +67,10 @@ from typing import Any
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 import requests  # type: ignore[import-untyped]  # noqa: E402
+
+# Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
+# it explicitly — the test_standup_tools.py import pattern).
+from _rest_retry import is_permanent_read_failure, request_with_retry  # noqa: E402
 
 from shared import box_client, keychain  # noqa: E402
 
@@ -190,22 +198,20 @@ def _headers() -> dict[str, str]:
 
 
 def _list_workspaces() -> list[dict[str, Any]]:
-    r = requests.get(f"{BASE}/workspaces?includeAll=true", headers=_headers(), timeout=30)
-    r.raise_for_status()
+    r = request_with_retry("get", f"{BASE}/workspaces?includeAll=true",
+                           headers=_headers(), timeout=30)
     return list(r.json().get("data", []))
 
 
 def _workspace_tree(workspace_id: int) -> dict[str, Any]:
-    r = requests.get(f"{BASE}/workspaces/{workspace_id}?loadAll=true",
-                     headers=_headers(), timeout=120)
-    r.raise_for_status()
+    r = request_with_retry("get", f"{BASE}/workspaces/{workspace_id}?loadAll=true",
+                           headers=_headers(), timeout=120)
     return dict(r.json())
 
 
 def _workspace_shares(workspace_id: int) -> list[dict[str, Any]]:
-    r = requests.get(f"{BASE}/workspaces/{workspace_id}/shares?includeAll=true",
-                     headers=_headers(), timeout=30)
-    r.raise_for_status()
+    r = request_with_retry("get", f"{BASE}/workspaces/{workspace_id}/shares?includeAll=true",
+                           headers=_headers(), timeout=30)
     return list(r.json().get("data", []))
 
 
@@ -221,11 +227,11 @@ def _sheet_dump(sheet_id: int) -> dict[str, Any]:
     sheet: dict[str, Any] = {}
     raw_rows: list[dict[str, Any]] = []
     while True:
-        r = requests.get(
+        r = request_with_retry(
+            "get",
             f"{BASE}/sheets/{sheet_id}?pageSize=5000&page={page}"
             "&level=2&include=objectValue",
             headers=_headers(), timeout=120)
-        r.raise_for_status()
         sheet = r.json()
         raw_rows.extend(sheet.get("rows", []))
         total = int(sheet.get("totalRowCount") or 0)
@@ -286,11 +292,19 @@ def dump_workspace(ws: dict[str, Any], dump_dir: pathlib.Path,
     """Dump one workspace (tree + shares + every sheet) to JSON.
 
     Returns (sheets_dumped, unreadable) where `unreadable` names sheets whose
-    FETCH failed (e.g. the four zero-column ITS_Errors shells from the row-cap
-    incident return 1115/404 on read) — recorded and reported, not fatal: an
-    unreadable broken shell has no content to preserve, and blocking the whole
-    wipe on it would strand the operation. Any WRITE failure still propagates
-    (guard 4 — a dump we cannot persist aborts the wipe).
+    fetch failed with a PERMANENT signature — HTTP 404 or Smartsheet errorCode
+    1006/1115 (`_rest_retry.is_permanent_read_failure`), e.g. the four
+    zero-column ITS_Errors shells from the row-cap incident — recorded and
+    reported, not fatal: an unreadable broken shell has no content to preserve,
+    and blocking the whole wipe on it would strand the operation.
+
+    Everything ELSE fails CLOSED: transient errors (429/5xx/timeouts) are
+    retried by `request_with_retry` and PROPAGATE on exhaustion, and a
+    truncated dump (`sheet_dump_truncated`) propagates immediately — guard 4
+    then aborts the wipe with nothing deleted. Before 2026-07-23 both classes
+    were misclassified as "unreadable" and the wipe proceeded — a fail-open
+    data-loss path (the dump is the sole row-restore source). Any WRITE
+    failure still propagates (guard 4).
 
     Filenames carry the sheet id so duplicate names in one folder (the
     ITS_Errors quintuplet) can never silently overwrite each other. Reports /
@@ -315,7 +329,9 @@ def dump_workspace(ws: dict[str, Any], dump_dir: pathlib.Path,
         label = "/".join((*path, str(sheet_meta.get("name"))))
         try:
             dump = _sheet_dump(sheet_id)
-        except (requests.HTTPError, RuntimeError) as e:
+        except requests.HTTPError as e:
+            if not is_permanent_read_failure(e):
+                raise  # transient after retry exhaustion — guard 4 aborts, nothing deleted
             unreadable.append(f"{label} (id={sheet_id}): {e}")
             print(f"[WARN] sheet_unreadable: {label} (id={sheet_id}) — {e}. "
                   "Recorded and skipped (no content preserved for this sheet).")

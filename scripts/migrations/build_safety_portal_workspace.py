@@ -149,6 +149,7 @@ on the not-owned hard stop.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Any, NamedTuple
 
@@ -362,6 +363,13 @@ class LiveWriteGate:
     def allow(self, what: str) -> bool:
         if self.dry_run:
             return False
+        if self._answered is None and os.environ.get("STANDUP_NONINTERACTIVE") == "1":
+            # Orchestrated run (standup.py): its master gate is the control and
+            # stdin is CLOSED — auto-approve without touching stdin so any
+            # unexpected second prompt still fails loudly (EOFError).
+            print(f"\nFirst live create is: {what} "
+                  "[auto-approved: STANDUP_NONINTERACTIVE]")
+            self._answered = True
         if self._answered is None:
             context = self.workspace_context or (
                 f"a NEW workspace named {WORKSPACE_NAME!r} (none exists yet)"

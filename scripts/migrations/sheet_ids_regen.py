@@ -19,10 +19,16 @@ that duplicate the sheet-ID datum (HOUSE_REFLEXES §1 multi-surface fan-out):
   - safety_reports/week_folder.py  — TEMPLATE_DAILY_REPORTS_SHEET_ID /
                                      TEMPLATE_WEEKLY_ROLLUP_SHEET_ID (legacy
                                      email-path week-scaffold templates).
+  - docs/doctrine_manifest.yaml    — the canonical_sheets ids compared against
+                                     sheet_ids.py by check_doctrine_drift M4
+                                     (CI-BLOCKING); in the integer-remap scope
+                                     since 2026-07-23 (PR #670's proven miss).
 
 After rewriting, a repo-wide sweep greps every remaining occurrence of a REPLACED
-old id in *.py files and prints a report — an old id surviving anywhere else (a
-test pin, a doc example) is surfaced, never silent.
+old id in *.py + *.yaml/*.yml/*.md files and prints a report — an old id
+surviving anywhere else (a test pin, a runbook example, a doc) is surfaced,
+never silent. Non-Python sweep hits are REPORT-ONLY, never auto-rewritten
+(prose ids are sometimes deliberately historical).
 
 Resolution model
     A declarative REGISTRY maps each constant to its canonical (workspace,
@@ -78,6 +84,19 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 SHEET_IDS_PATH = REPO_ROOT / "shared" / "sheet_ids.py"
 WEEK_FOLDER_PATH = REPO_ROOT / "safety_reports" / "week_folder.py"
+# docs/doctrine_manifest.yaml pins canonical sheet ids that check_doctrine_drift
+# M4 (CI-BLOCKING --strict) compares against shared/sheet_ids.py — its own
+# header says the ids mirror sheet_ids.py, so the remap enforces the stated
+# contract. A rebuild that skips it RED-lights the landing PR until someone
+# remembers the hand-fix (PR #670 had to; proven miss, 2026-07-23 review).
+DOCTRINE_MANIFEST_PATH = REPO_ROOT / "docs" / "doctrine_manifest.yaml"
+
+# Report-only sweep scope: *.py (as always) plus yaml/markdown, so a runbook or
+# doc example pinning a replaced id is SURFACED in the same run instead of
+# surviving silently. Non-Python files are never auto-rewritten by the sweep —
+# prose ids are sometimes deliberately historical (session logs, audit records);
+# the one yaml WRITE target is DOCTRINE_MANIFEST_PATH via the remap list above.
+SWEEP_GLOBS: tuple[str, ...] = ("*.py", "*.yaml", "*.yml", "*.md")
 
 # ---- canonical names (byte-exact; builder canon, em-dash discipline) ------
 
@@ -427,13 +446,23 @@ def rewrite_integer_remap(text: str, remap: dict[int, int]) -> tuple[str, int]:
     return text, n
 
 
-def sweep_repo_for_old_ids(remap: dict[int, int], skip: set[pathlib.Path]) -> list[str]:
-    """file:line hits of REPLACED old ids still present in tracked *.py files."""
+def sweep_repo_for_old_ids(remap: dict[int, int], skip: set[pathlib.Path],
+                           root: pathlib.Path | None = None) -> list[str]:
+    """file:line hits of REPLACED old ids still present in tracked files.
+
+    Report-only, across SWEEP_GLOBS (*.py + yaml/markdown — the doc scope added
+    2026-07-23 after PR #670's hand-fixed manifest miss). `root` is a test seam;
+    production sweeps always walk REPO_ROOT.
+    """
     stale = {old for old, new in remap.items() if old != new}
     if not stale:
         return []
+    root = root if root is not None else REPO_ROOT
+    paths: set[pathlib.Path] = set()
+    for pattern in SWEEP_GLOBS:
+        paths.update(root.rglob(pattern))
     hits: list[str] = []
-    for path in sorted(REPO_ROOT.rglob("*.py")):
+    for path in sorted(paths):
         if any(part in {".venv", ".venv-wt", "node_modules", ".git"} for part in path.parts):
             continue
         if path.resolve() in skip:
@@ -445,11 +474,27 @@ def sweep_repo_for_old_ids(remap: dict[int, int], skip: set[pathlib.Path]) -> li
         for i, line in enumerate(text.splitlines(), 1):
             for old in stale:
                 if re.search(rf"(?<!\d){old}(?!\d)", line):
-                    hits.append(f"{path.relative_to(REPO_ROOT)}:{i}: {line.strip()[:100]}")
+                    hits.append(f"{path.relative_to(root)}:{i}: {line.strip()[:100]}")
     return hits
 
 
 # ---- orchestration --------------------------------------------------------
+
+
+def remap_file_paths() -> list[pathlib.Path]:
+    """Files whose integer literals are REWRITTEN by --write (the satellite remap).
+
+    scripts/migrations + tests (*.py), plus docs/doctrine_manifest.yaml — the
+    two-phase integer remap (`rewrite_integer_remap`) is plain-text and
+    word-boundary-safe, so the format doesn't matter. The wipe tool + self are
+    excluded at the call site (see the exemption comment in main()).
+    test_remap_scope_includes_doctrine_manifest is the parity teeth.
+    """
+    paths: list[pathlib.Path] = []
+    paths += sorted((REPO_ROOT / "scripts" / "migrations").glob("*.py"))
+    paths += sorted((REPO_ROOT / "tests").glob("*.py"))
+    paths.append(DOCTRINE_MANIFEST_PATH)
+    return paths
 
 
 def missing_required(
@@ -688,14 +733,13 @@ def main() -> int:
     # Integer-literal remap across every surface that pins the same datum:
     # system_map MapNodes, builder-local pins (build_wsr_human_review_sheet.py
     # hard-pins FOLDER_SAFETY_PORTAL — the standup interleave depends on this
-    # rewrite landing BEFORE that builder runs), and test pins.
+    # rewrite landing BEFORE that builder runs), test pins, and the doctrine
+    # manifest's canonical_sheets ids (check_doctrine_drift M4 parity).
     # wipe_tenant.py is EXEMPT: its allowlist pins the wipe TARGETS (historical,
     # deleted ids) — remapping them to the rebuilt tenant's ids would arm a
     # re-run against the fresh workspaces; updating that allowlist must stay a
     # deliberate, reviewed code change (learned 2026-07-23, first rebuild).
-    remap_files: list[pathlib.Path] = []
-    remap_files += sorted((REPO_ROOT / "scripts" / "migrations").glob("*.py"))
-    remap_files += sorted((REPO_ROOT / "tests").glob("*.py"))
+    remap_files = remap_file_paths()
     self_path = pathlib.Path(__file__).resolve()
     wipe_tool = (REPO_ROOT / "scripts" / "migrations" / "wipe_tenant.py").resolve()
     for remap_path in remap_files:
