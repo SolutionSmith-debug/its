@@ -476,6 +476,13 @@ td a.cell-link:hover { color: var(--brand-gold-soft); border-bottom-style: solid
   background: var(--panel); color: var(--text);
   border: 1px solid var(--border); border-radius: 6px;
   font: inherit; min-width: 0;
+  /* Positive stacking layer — load-bearing for clickability. The Box
+     spanner's transparent 5-band container (a LATER sibling sharing the
+     records grid column) and the z-index:1 SVG edge strokes both painted
+     above the chips, silently swallowing clicks on every records-column
+     sheet tile (2026-07-22 unclickable-tiles incident). Positioned chips
+     at z-index 2 win the hit-test over both. */
+  position: relative; z-index: 2;
 }
 .sm-node:hover { border-color: var(--brand-gold); }
 .sm-node.is-focus { border-color: var(--brand-gold); box-shadow: 0 0 0 1px var(--brand-gold), 0 0 12px rgba(201, 162, 39, .25); }

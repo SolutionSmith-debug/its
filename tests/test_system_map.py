@@ -498,3 +498,16 @@ def test_pulse_renders_chips(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.status_code == 200
     for name in ("daemons", "watchdog", "breaker", "criticals", "review", "sends"):
         assert name in r.text
+
+
+def test_map_chips_sit_above_the_spanner_and_edge_layers() -> None:
+    """Hit-target regression (2026-07-22): the Box spanner's transparent
+    container and the z-index:1 SVG edge layer painted above the chips,
+    swallowing clicks on every records-column sheet tile. The chips must stay
+    in a positive stacking layer. (True hit-testing needs a real browser — the
+    live elementFromPoint sweep is the bite test; this pins the load-bearing
+    CSS so it can't silently vanish.)"""
+    css = (_REPO / "operator_dashboard" / "static" / "app.css").read_text()
+    node_block = css.split(".sm-node {", 1)[1].split("}", 1)[0]
+    assert "position: relative" in node_block, "chips lost their positioned stacking layer"
+    assert "z-index: 2" in node_block, "chips lost their z-index over the spanner/SVG layers"
