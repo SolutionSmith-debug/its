@@ -19,9 +19,12 @@ Not gated behind @require_active (works while PAUSED/MAINTENANCE).
 """
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import hmac
+import json
 import os
+import pathlib
 import threading
 import time
 from urllib.parse import urlsplit
@@ -36,6 +39,21 @@ _MAX_PIN_FAILS = 5
 _LOCKOUT_SECONDS = 60.0
 _FAIL_SLEEP_SECONDS = 0.5  # monkeypatched to 0 in tests
 
+# ---- tenant stand-up ACT fence -------------------------------------------
+# scripts/migrations/wipe_tenant.py sets this marker at --commit and a
+# SUCCESSFUL standup.py run clears it. While the marker is FRESH, every ACT
+# verb is refused: the dashboard stays UP for observability during a tenant
+# wipe/rebuild (it is exempt from the tools' daemon-down guard), but a
+# Class-A/B/C actuation against a half-provisioned tenant — or a KeepAlive
+# restart re-binding half-flipped sheet_ids constants and then writing — must
+# not be reachable from a browser. Fail-OPEN by design on a STALE (> max age)
+# or corrupt marker: a crashed stand-up must never brick the dashboard, and
+# the max age bounds how long a forgotten marker can fence (manual unfence:
+# delete the marker file). Polarity: false fence-open risks one operator write
+# against a dead sheet id (loud 404); false fence-closed bricks every verb.
+STANDUP_MARKER_PATH = pathlib.Path.home() / "its" / "state" / "standup_in_progress.json"
+STANDUP_MARKER_MAX_AGE_HOURS = 6.0
+
 
 class AuthError(Exception):
     """Base for an ACT-surface auth denial (the message is operator-facing)."""
@@ -45,8 +63,42 @@ class PinError(AuthError):
     """The PIN / elevated confirmation is missing, wrong, or unreadable (fail-closed)."""
 
 
+class StandupFenceError(PinError):
+    """A tenant stand-up is in progress — ACT verbs are fenced (subclass of
+    PinError so every router error path renders the reason without changes)."""
+
+
 class OriginError(AuthError):
     """The request Origin/Referer is not on the allowlist (CSRF defense)."""
+
+
+def _standup_block_reason() -> str | None:
+    """The fence message while a FRESH stand-up marker exists, else None.
+
+    Every failure mode of reading the marker resolves to None (fail-open —
+    see the marker-path comment for the polarity argument).
+    """
+    try:
+        raw = STANDUP_MARKER_PATH.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        data = json.loads(raw)
+        started = _dt.datetime.fromisoformat(str(data["started_at_utc"]))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=_dt.UTC)
+    except Exception:  # noqa: BLE001 — corrupt marker must not brick ACT
+        return None
+    age_hours = (_dt.datetime.now(_dt.UTC) - started).total_seconds() / 3600.0
+    if age_hours > STANDUP_MARKER_MAX_AGE_HOURS:
+        return None
+    tool = data.get("tool", "stand-up")
+    return (
+        f"tenant stand-up in progress ({tool} started {started.isoformat()}) — "
+        "ACT verbs are fenced until the stand-up completes (or the marker "
+        f"exceeds {STANDUP_MARKER_MAX_AGE_HOURS:g}h / is deleted: "
+        f"{STANDUP_MARKER_PATH})"
+    )
 
 
 class _Throttle:
@@ -140,12 +192,21 @@ def _verify_pin_throttled(submitted: str | None, throttle: _Throttle) -> None:
 
 def verify_pin(submitted: str | None) -> None:
     """Class-A gate: raise PinError unless `submitted` matches the operator PIN."""
+    # Stand-up fence FIRST — a fence refusal is availability, not auth, so it
+    # must never consume a throttle guess or sleep the failure penalty.
+    reason = _standup_block_reason()
+    if reason:
+        raise StandupFenceError(reason)
     _verify_pin_throttled(submitted, _pin_throttle)
 
 
 def verify_elevated(pin: str | None, typed_confirm: str | None, expected: str) -> None:
     """Elevated-confirm ceremony (Class B/C): the operator RE-ENTERS the PIN AND
     types `expected` exactly. Both must match — fail-closed. Separate throttle."""
+    # Stand-up fence FIRST (same rationale as verify_pin).
+    reason = _standup_block_reason()
+    if reason:
+        raise StandupFenceError(reason)
     # 1. the typed confirmation must exactly match the target (constant-time)
     matches_confirm = bool(typed_confirm) and hmac.compare_digest(
         (typed_confirm or "").strip().encode("utf-8"), expected.strip().encode("utf-8")

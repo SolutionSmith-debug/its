@@ -4,7 +4,7 @@ date: 2026-07-04
 status: active
 related_prs: []
 workstream: field_ops
-tags: [runbook, successor-remediation, fieldops_sync, hours-log, equipment-status, material-list, tier-2, track-2, archive-on-closure]
+tags: [runbook, successor-remediation, fieldops_sync, hours-log, equipment-status, material-list, material-incidents, tier-2, track-2, archive-on-closure]
 ---
 
 # Runbook — Hours Log up-sync (P7, the `fieldops_sync` hours pass) (Successor-Remediation, Op Stds §43)
@@ -108,9 +108,10 @@ Projects** folder of the `ITS — Archive` workspace. There may be an `ITS_Error
 `Script=field_ops.fieldops_sync`, `Error=fieldops_archive_on_closure_failed`.
 
 **What it is (design).** When `fieldops_sync` mirrors a job whose `lifecycle=archived` (§51
-archive-on-closure), it MOVES the job's standing tracker sheets — the `<Job> — Hours Log` **and** the
-`<Job> — Equipment` (P7 Slice 2) — into the Archive workspace's Closed Projects folder. Each tracker
-is resolved + moved INDEPENDENTLY (one failing never blocks the other). It is a pure **relocation**
+archive-on-closure), it MOVES the job's standing tracker sheets — ALL FOUR: the `<Job> — Hours Log`,
+the `<Job> — Equipment` (P7 Slice 2), the `<Job> — Material List` (P7 M2), AND the `<Job> — Material
+Incidents` (P7 M3 Slice 2) — into the Archive workspace's Closed Projects folder. Each tracker
+is resolved + moved INDEPENDENTLY (one failing never blocks the others). It is a pure **relocation**
 (never a delete: the sheet, rows, and history are preserved) and it is **best-effort** — a move
 failure WARNs and never fails or un-does the mirror itself. Note the move runs AFTER the job's
 watermarks advance, so a failed move does **not** auto-retry (the job is already `mark-synced` → no
@@ -136,6 +137,9 @@ re-dirty, hand Claude the `job_id`: *"the fieldops_sync archive-on-closure move 
 the archive hook, the workspace/folder IDs, or the Archive-workspace **permissions/sharing** is a
 **code / secrets change → high-class → escalate**. Repeated failures after the cause looks fixed, or a
 novel symptom, escalate.
+
+> The whole-job view — what Inactive vs Archived actually do, and what closure leaves in place —
+> is in [project_closure.md](project_closure.md).
 
 ## Fault M — repeating `Task`/KeyError after a code deploy (Task-column migration not run)
 
@@ -229,9 +233,10 @@ see `fieldops_sync.md` Symptom B/E). Do not attempt a Tier-2 fix.
 
 ### Fault (archive) — a closed job's Equipment sheet didn't move
 
-Same as **Fault F** above (archive-on-closure now moves BOTH the Hours Log AND the Equipment sheet).
-The guaranteed Tier-2 fix is a one-off manual drag of `<Job> — Equipment` into `ITS — Archive / Closed
-Projects`; the `move_sheet_to_folder` method / workspace IDs / permissions are high-class → escalate.
+Same as **Fault F** above (archive-on-closure moves all four standing trackers — Hours Log,
+Equipment, Material List, Material Incidents). The guaranteed Tier-2 fix is a one-off manual drag of
+`<Job> — Equipment` into `ITS — Archive / Closed Projects`; the `move_sheet_to_folder` method /
+workspace IDs / permissions are high-class → escalate.
 
 ## Material List tracker (P7 M2)
 
@@ -298,10 +303,11 @@ Seth** (same token as the job/hours/equipment passes, so a 401 here usually mean
 
 ### Fault (archive) — a closed job's Material List sheet didn't move
 
-Same as **Fault F** above (archive-on-closure moves the Hours Log, Equipment, AND Material List sheets).
-The guaranteed Tier-2 fix is a one-off manual drag of `<Job> — Material List` into `ITS — Archive /
-Closed Projects`; the `move_sheet_to_folder` method / workspace IDs / permissions are high-class →
-escalate.
+Same as **Fault F** above (archive-on-closure moves all four standing trackers — Hours Log,
+Equipment, Material List, Material Incidents; the Material Incidents ledger's own fault catalogue
+lives in [fieldops_sync.md](fieldops_sync.md) Symptom F). The guaranteed Tier-2 fix is a one-off
+manual drag of `<Job> — Material List` into `ITS — Archive / Closed Projects`; the
+`move_sheet_to_folder` method / workspace IDs / permissions are high-class → escalate.
 
 ## Escalate-to-Seth boundary (observable terms)
 
