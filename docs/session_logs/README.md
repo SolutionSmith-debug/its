@@ -192,6 +192,7 @@ outside the sentinel block.
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Markdown doc conventions + index generation + lint](2026-05-24_doc_conventions.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Execution-repo doctrine version drift cleanup](2026-05-24_doctrine-version-drift-cleanup.md) | _–_ |
 | 2026-07-23 | session_log | complete | infrastructure | [Session log — 2026-07-23 · Stand-up process optimization (Brief A)](2026-07-23_standup-process-optimization.md) | #673, #675, #676, #679, #680, #683, #685, #686, #687 |
+| 2026-07-23 | session_log | complete | infrastructure | [Session log — 2026-07-23 · Independent verify pass over Briefs A/B + tail + drill prep](2026-07-23_verify-pass-tail-and-drill.md) | #690, #691 |
 | 2026-07-13 | _–_ | _–_ | _–_ | [2026-07-13 — PO/SC config + subcontract/PO builder hardening](2026-07-13_po-sc-config-and-builder-hardening.md) | _–_ |
 | 2026-07-10 | session_log | complete | docs | [Session — WS3 D2-2: enablement content authoring + ITS_Config data dictionary generator (PR #515)](2026-07-10_ws3-docs-d2-2-guides-and-config-dictionary.md) | #515 |
 | 2026-07-06 | session_log | complete | field_ops | [Session 2026-07-06 (extended, operator-driven continuation) — Op Stds v20 consolidation + 2B progress-logging + #336 REQUIRED_CONFIG + M3 Slice 1 (PRs #478–#482, blueprint #62–#63)](2026-07-06_doctrine-v20-2b-progress-log-required-config-m3-slice1.md) | #478, #479, #480, #481, #482 |
