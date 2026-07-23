@@ -1,0 +1,59 @@
+{
+  "comment": "CL-11/CL-37 production F22 approver-share manifest — the operator-reviewed DATA file behind scripts/migrations/seed_production_shares.py (guarded ADD-only applier) and scripts/verify_cutover.py VC-10 (approver-shares check). F22 approval authority = each send-bearing workspace's individual USER share list (GROUP shares do NOT count — a group-only share yields an EMPTY authorized set that silently fail-closes every send). Seth reviews/edits this file directly: per-workspace narrowing and per-approver access levels are data edits here, never code changes. CAUTION (Ezra typo): the domain is evergreenrenewables.com (re-NEW-ables); the original contact sheet carried a 'renwables' typo for Ezra — the seeder's validator refuses any email not ending exactly '@' + production_domain, and each approver must exist as a real Smartsheet user under that exact email or the share add fails (WARNed loudly, pending admin asks E1/E2). Workspace names are byte-exact builder canon from sheet_ids_regen.py — the Safety Portal name uses TWO EN DASHes (U+2013 U+2013), the others one EM dash (U+2014). This tool NEVER unshares: mirror-account residue (any @mirror_domain USER share) is reported with a manual removal instruction.",
+  "production_domain": "evergreenrenewables.com",
+  "mirror_domain": "evergreenmirror.com",
+  "workspaces": [
+    {
+      "constant": "WORKSPACE_SAFETY_PORTAL",
+      "name": "ITS –– Safety Portal",
+      "approvers": [
+        {"email": "jacobs@evergreenrenewables.com", "person": "Jacob Stephens", "role": "CEO", "access_level": "EDITOR"},
+        {"email": "ezraj@evergreenrenewables.com", "person": "Ezra Jones", "role": "CFO", "access_level": "EDITOR"},
+        {"email": "jechiahs@evergreenrenewables.com", "person": "Jechiah Stephens", "role": "Head of Engineering", "access_level": "EDITOR"},
+        {"email": "benf@evergreenrenewables.com", "person": "Ben Finkhousen", "role": "Senior PM", "access_level": "EDITOR"},
+        {"email": "tiffanym@evergreenrenewables.com", "person": "Tiffany Montastirsky", "role": "Head of Permitting", "access_level": "EDITOR"},
+        {"email": "tealap@evergreenrenewables.com", "person": "Teala Paradise", "role": "Procurement & Subcontracting", "access_level": "EDITOR"},
+        {"email": "samr@evergreenrenewables.com", "person": "Sam Rigney", "role": "Head of Field Operations", "access_level": "EDITOR"}
+      ]
+    },
+    {
+      "constant": "WORKSPACE_PROGRESS_REPORTING",
+      "name": "ITS — Progress Reporting",
+      "approvers": [
+        {"email": "jacobs@evergreenrenewables.com", "person": "Jacob Stephens", "role": "CEO", "access_level": "EDITOR"},
+        {"email": "ezraj@evergreenrenewables.com", "person": "Ezra Jones", "role": "CFO", "access_level": "EDITOR"},
+        {"email": "jechiahs@evergreenrenewables.com", "person": "Jechiah Stephens", "role": "Head of Engineering", "access_level": "EDITOR"},
+        {"email": "benf@evergreenrenewables.com", "person": "Ben Finkhousen", "role": "Senior PM", "access_level": "EDITOR"},
+        {"email": "tiffanym@evergreenrenewables.com", "person": "Tiffany Montastirsky", "role": "Head of Permitting", "access_level": "EDITOR"},
+        {"email": "tealap@evergreenrenewables.com", "person": "Teala Paradise", "role": "Procurement & Subcontracting", "access_level": "EDITOR"},
+        {"email": "samr@evergreenrenewables.com", "person": "Sam Rigney", "role": "Head of Field Operations", "access_level": "EDITOR"}
+      ]
+    },
+    {
+      "constant": "WORKSPACE_PURCHASE_ORDERS",
+      "name": "ITS — Purchase Orders",
+      "approvers": [
+        {"email": "jacobs@evergreenrenewables.com", "person": "Jacob Stephens", "role": "CEO", "access_level": "EDITOR"},
+        {"email": "ezraj@evergreenrenewables.com", "person": "Ezra Jones", "role": "CFO", "access_level": "EDITOR"},
+        {"email": "jechiahs@evergreenrenewables.com", "person": "Jechiah Stephens", "role": "Head of Engineering", "access_level": "EDITOR"},
+        {"email": "benf@evergreenrenewables.com", "person": "Ben Finkhousen", "role": "Senior PM", "access_level": "EDITOR"},
+        {"email": "tiffanym@evergreenrenewables.com", "person": "Tiffany Montastirsky", "role": "Head of Permitting", "access_level": "EDITOR"},
+        {"email": "tealap@evergreenrenewables.com", "person": "Teala Paradise", "role": "Procurement & Subcontracting", "access_level": "EDITOR"},
+        {"email": "samr@evergreenrenewables.com", "person": "Sam Rigney", "role": "Head of Field Operations", "access_level": "EDITOR"}
+      ]
+    },
+    {
+      "constant": "WORKSPACE_SUBCONTRACTS",
+      "name": "ITS — Subcontracts",
+      "approvers": [
+        {"email": "jacobs@evergreenrenewables.com", "person": "Jacob Stephens", "role": "CEO", "access_level": "EDITOR"},
+        {"email": "ezraj@evergreenrenewables.com", "person": "Ezra Jones", "role": "CFO", "access_level": "EDITOR"},
+        {"email": "jechiahs@evergreenrenewables.com", "person": "Jechiah Stephens", "role": "Head of Engineering", "access_level": "EDITOR"},
+        {"email": "benf@evergreenrenewables.com", "person": "Ben Finkhousen", "role": "Senior PM", "access_level": "EDITOR"},
+        {"email": "tiffanym@evergreenrenewables.com", "person": "Tiffany Montastirsky", "role": "Head of Permitting", "access_level": "EDITOR"},
+        {"email": "tealap@evergreenrenewables.com", "person": "Teala Paradise", "role": "Procurement & Subcontracting", "access_level": "EDITOR"},
+        {"email": "samr@evergreenrenewables.com", "person": "Sam Rigney", "role": "Head of Field Operations", "access_level": "EDITOR"}
+      ]
+    }
+  ]
+}
