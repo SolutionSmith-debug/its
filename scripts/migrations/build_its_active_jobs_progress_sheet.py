@@ -15,14 +15,14 @@ Stakeholder columns — with two deliberate changes:
     add the SAME "Portal Job Key" TEXT column to the existing ITS_Active_Jobs — see the
     runbook; both columns must exist before the Slice-5 mirror daemon's first run.)
 
-Job ID column type (§42 — why TEXT, not AUTO_NUMBER): the safety ITS_Active_Jobs `Job ID`
-is an AUTO_NUMBER (UI-converted; AUTO_NUMBER is not creatable via the API — errorCode 1008).
-The progress sheet is a PURE DOWNSTREAM MIRROR (never read back into D1); its rows are
-find-or-created by Portal Job Key, not by Job ID. So we create `Job ID` as TEXT_NUMBER and
-the Slice-5 mirror daemon writes the canonical JOB-#### (the safety sheet's read-back
-`canonical_job_id`) into it — both sheets then SHOW the same human-readable Job ID, which an
-independent AUTO_NUMBER counter could not guarantee. (If the operator prefers an independent
-AUTO_NUMBER here, it is a UI conversion; flag at Slice-5 review.)
+Job ID column type (§42 — why TEXT): plain TEXT_NUMBER on BOTH Active-Jobs sheets
+since P2.5 Slice 6 — the portal assigns the canonical JOB-###### (Worker job_counter,
+migration 0022) and shared/active_jobs_writer.py WRITES it into the cell on every mirror
+upsert; an AUTO_NUMBER would reject those writes and assign a conflicting sequence.
+(The original rationale here — safety-side AUTO_NUMBER with mirror read-back — was the
+pre-Slice-6 design; the TEXT choice it argued for stands, the premise is superseded.)
+The progress sheet remains a PURE DOWNSTREAM MIRROR (never read back into D1); rows are
+find-or-created by Portal Job Key, not by Job ID.
 
 Cutover sequence (FLIP precedes SEED):
   1. build_progress_reporting_workspace.py → flip WORKSPACE_PROGRESS_REPORTING.

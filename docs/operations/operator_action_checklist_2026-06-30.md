@@ -62,6 +62,9 @@ unmerged** as premature — see [Not on this list](#not-on-this-list).
   *(tech_debt: "ITS_Active_Jobs Address cells blank — office PM fill required")*
 - [ ] **Confirm the `ITS_Active_Jobs` AUTO_NUMBER `Job ID` column exists**, then close the entry.
   *(tech_debt: "ITS_Active_Jobs AUTO_NUMBER `Job ID` column — manual operator UI step pending")*
+  — **[SUPERSEDED same-day by P2.5 Slice 6: `Job ID` is now plain TEXT — the portal assigns
+  `JOB-######` (`job_counter`, migration 0022) and the mirror writes it; retyped per that
+  cutover, confirmed 2026-07-23.]**
 - [ ] **Build the "New Job" Smartsheet form** on `ITS_Active_Jobs` (~15 min, UI-only). *(tech_debt:
   "New Job Smartsheet form on ITS_Active_Jobs")* — **NOTE:** confirm this is still wanted; the
   **job-tracker pivot** (Stage-2 plan) moves authoritative job creation into the **portal Job

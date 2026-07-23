@@ -23,8 +23,9 @@ the units it runs, and each is still independently runnable.
    `operator_dashboard/system_map.py` literals, and `safety_reports/week_folder.py`
    template ids) is flipped automatically — FLIP still precedes SEED, the flip is
    just mechanical now. Restores data-bearing SoR rows + workspace share lists
-   from the pre-wipe dump, auto-pastes the Box-root ids into ITS_Config, pauses
-   at the two UI-only manual gates (AUTO_NUMBER `Job ID`, `Portal Job Key`), and
+   from the pre-wipe dump, auto-pastes the Box-root ids into ITS_Config, runs
+   unattended end-to-end (`Job ID` + `Portal Job Key` are plain TEXT columns the
+   API creates — the portal assigns the JOB-###### number, P2.5 Slice 6), and
    finishes with `sheet_ids_regen.py --check` + `verify_cutover --only config`.
    `--list` shows stages; `--start-at <stage>` resumes a failed run.
 3. `sheet_ids_regen.py` — the circle-closer, also useful standalone:

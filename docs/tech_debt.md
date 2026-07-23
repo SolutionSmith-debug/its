@@ -41,7 +41,7 @@ Every open entry below was triaged against live HEAD on 2026-07-14 (8-agent veri
 - Cross-leg dedupe activation — Sentry/Smartsheet stay record-only, so no push-leg dedupe needed; correlation_id already wired. Trigger: operator configures Sentry/Smartsheet alert rules.
 - Doc-conventions lint strict-mode flip after retrofit window closes — Scheduled: bulk frontmatter retrofit sweep + one-line --strict CI flip; trigger 2026-07-24 (not yet reached) or operator opens a retrofit session / accepts permanent grandfather.
 - ITS_Active_Jobs Address cells blank — office PM fill required — Live Smartsheet data-fill by office PM (no code); revisit at portal production go-live before enabling Work-Location autofill.
-- ITS_Active_Jobs AUTO_NUMBER Job ID column — manual operator UI step pending — UI-only AUTO_NUMBER add on live sheet (API can't create it); active_jobs reads Job ID (Job Slug RETIRED), re-done per tenant at cutover.
+- ITS_Active_Jobs AUTO_NUMBER Job ID column — manual operator UI step pending — SUPERSEDED by P2.5 Slice 6: the portal assigns JOB-###### (Worker job_counter, migration 0022) and the column is plain TEXT; no manual UI step exists (entry closed 2026-07-23).
 - ITS_Active_Jobs column order cosmetically scrambled — Cosmetic UI drag-reorder; not load-bearing (active_jobs looks up by title), convenience-only.
 - ITS_Daemon_Health sheet observability drift — Partially eased (publish daemon now self-provisions its row) but stale live rows (retired intake_poll etc.) need operator UI deletion + Last-Error-clear. Trigger: next daemon-health pass; before cutover.
 - Operator-UI Shortcuts for trusted-contacts workflows — Half-day tooling nicety, no functional gap. Trigger: tooling-track session bandwidth.
@@ -1573,7 +1573,7 @@ Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Related: `tests/te
 
 Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
 
-## ITS_Active_Jobs AUTO_NUMBER `Job ID` column — manual operator UI step pending [OPEN 2026-06-05]
+## ITS_Active_Jobs AUTO_NUMBER `Job ID` column — manual operator UI step pending [SUPERSEDED 2026-06-30, closed 2026-07-23]
 
 The Smartsheet REST API cannot create `AUTO_NUMBER` columns (verified: bare `type:AUTO_NUMBER` → `errorCode 1008`; UI-only type). The Phase 3 migration (PR #160) did the API-doable parts (4 contact columns + rename `Job ID`→`Job Slug`, freeing the title) and detects-or-instructs if the `Job ID` AUTO_NUMBER column is missing. Operator must add the `Job ID` AUTO_NUMBER column in the Smartsheet UI to complete the schema: prefix `JOB-`, 4-digit fill, start 1. `shared/active_jobs.py` reads it the moment it exists.
 
@@ -1589,9 +1589,11 @@ The Smartsheet REST API cannot create `AUTO_NUMBER` columns (verified: bare `typ
 
 Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160). Session log: `docs/session_logs/2026-06-05_safety-portal-phase3-job-model.md`.
 
+**Closed 2026-07-23:** P2.5 Slice 6 (2026-06-30) moved number allocation to the Worker `job_counter` (migration 0022) and retyped the column to plain TEXT — the portal assigns `JOB-######` and `shared/active_jobs_writer.py` writes it into the cell on every mirror upsert. `extend_its_active_jobs_phase3.py` now creates the TEXT column directly (2026-07-23 stand-up rehearsal fix); no manual UI step exists.
+
 ## "New Job" Smartsheet form on ITS_Active_Jobs — operator-UI creation pending [OPEN 2026-06-05]
 
-Smartsheet forms are UI-configured (not API-creatable). A "New Job" form on ITS_Active_Jobs is needed so office PM can add jobs without opening the sheet directly. Required fields: Project Name, Address, Stakeholder Name / Email / Phone (email required), Safety Reports Contact Email (required), Active. Job ID auto-fills from the AUTO_NUMBER column (off the form).
+Smartsheet forms are UI-configured (not API-creatable). A "New Job" form on ITS_Active_Jobs is needed so office PM can add jobs without opening the sheet directly. Required fields: Project Name, Address, Stakeholder Name / Email / Phone (email required), Safety Reports Contact Email (required), Active. Job ID is portal-assigned (P2.5 Slice 6, off the form) — a form-created row would have NO Job ID until it is synced/keyed by the portal; the portal Job Tracker is the intake surface that assigns numbers.
 
 **Required operator steps (Smartsheet UI):**
 1. Open ITS_Active_Jobs → Forms → Create New Form.
@@ -1603,7 +1605,7 @@ Smartsheet forms are UI-configured (not API-creatable). A "New Job" form on ITS_
 
 **Effort:** ~15 minutes (UI-only).
 
-**Revisit when:** deploy session, after the AUTO_NUMBER column entry above is complete.
+**Revisit when:** deploy session. (The AUTO_NUMBER column entry above is SUPERSEDED — Job ID is portal-assigned per Slice 6, so a Smartsheet form cannot produce a numbered row; the portal Job Tracker is the number-assigning intake surface.)
 
 Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160). Related: `docs/tech_debt.md` AUTO_NUMBER entry above.
 

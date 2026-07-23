@@ -26,8 +26,9 @@ Invariants
   BOX_PROJECT_FOLDERS), so a read failure surfaces resolutions rather than guessing.
 - Deny-by-default: a row missing Job ID or Project Name is skipped; a blank Active
   status is treated as not-Active.
-- Join key is the `Job ID` column (a Smartsheet AUTO_NUMBER per the Phase-3
-  decision), with a fallback to the `Portal Job Key` TEXT column — the P2.5
+- Join key is the `Job ID` column (plain TEXT holding the portal-assigned
+  JOB-###### — P2.5 Slice 6; formerly a Phase-3 AUTO_NUMBER, retyped at the
+  2026-06-30 cutover), with a fallback to the `Portal Job Key` TEXT column — the P2.5
   cross-sheet identity bridge the mirror daemon writes. `get_job` OR-matches
   **Job ID first**, then (only if no Job ID matched) `Portal Job Key`; an empty
   `Portal Job Key` never matches. The former kebab `Job Slug` key is RETIRED (no
@@ -118,7 +119,7 @@ PROGRESS_ACTIVE_JOBS_CONFIG = ActiveJobsConfig(
 class ActiveJob:
     """One Active-Jobs row projected to typed form."""
 
-    job_id: str          # AUTO_NUMBER immutable key (e.g. "JOB-0001"); the join key
+    job_id: str          # portal-assigned JOB-###### TEXT key (Slice 6); the join key
     project_name: str    # primary; portal dropdown display; == ITS_Project_Routing key
     address: str
     stakeholder_name: str

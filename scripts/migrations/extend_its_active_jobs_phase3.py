@@ -9,18 +9,23 @@ What it does (in this order — the order is load-bearing):
        Safety Reports Contact Email   (the weekly-rollup TO recipient)
   2. RENAME the existing kebab `Job ID` column → `Job Slug` (human-readable
      secondary key; e.g. "bradley-1"). Done in step 2 so the title `Job ID` is
-     free for the AUTO_NUMBER column.
-  3. Confirm / instruct the AUTO_NUMBER `Job ID` column. NOTE: the Smartsheet
-     REST API CANNOT create AUTO_NUMBER columns (POST /columns → errorCode 1008;
-     it is a UI-only column type). This step DETECTS the column and, if absent,
-     prints the exact one-time manual UI step for the operator. Once added in the
-     UI (format JOB-0001…), existing rows backfill and shared/active_jobs.py reads
-     it as the immutable join key the portal payload carries.
+     free for the portal-written key column.
+  3. Create the plain TEXT `Job ID` column (right after `Project Name`) and the
+     plain TEXT `Portal Job Key` column (before the system columns). BOTH are
+     API-creatable — no manual UI step.
 
-Phase-3 decision (operator, 2026-06-05): switch the immutable Job-ID key from
-the seeded kebab string to a Smartsheet AUTO_NUMBER — collision-proof at
-creation (obviates a Python uniqueness guard), and the kebab lives on as
-`Job Slug`. `shared/active_jobs.py` reads the `Job ID` column as the join key.
+Job-ID model (P2.5 Slice 6, 2026-06-30 — supersedes the Phase-3 AUTO_NUMBER
+decision of 2026-06-05): THE PORTAL ASSIGNS the canonical JOB-###### from the
+Worker's `job_counter` (migration 0022), and `shared/active_jobs_writer.py`
+WRITES it into the `Job ID` cell on every mirror upsert (Job ID == Portal Job
+Key == D1 job_id). The column must therefore be a plain writable TEXT_NUMBER —
+a Smartsheet AUTO_NUMBER would REJECT every mirror write and assign its own
+conflicting sequence. (This script's original AUTO_NUMBER manual-UI instruction
+was the pre-Slice-6 design; it survived here unexercised until the 2026-07-23
+tenant stand-up rehearsal first re-ran the script on a fresh tenant, where the
+operator caught it — verified against the live pre-wipe dump: TEXT_NUMBER,
+portal-allocated values JOB-000017/18/27/28.) `shared/active_jobs.py` reads the
+`Job ID` column as the join key, exactly as before.
 
 Uses the Smartsheet REST API directly: add/rename column ops aren't surfaced
 through `shared/smartsheet_client.py`, and REST keeps the migration
@@ -57,8 +62,8 @@ CONTACT_COLUMNS = [
 ]
 KEBAB_OLD_TITLE = "Job ID"
 KEBAB_NEW_TITLE = "Job Slug"
-AUTONUM_TITLE = "Job ID"
-AUTONUM_FORMAT = {"prefix": "JOB-", "fill": "0000", "startingNumber": 1}
+JOB_ID_TITLE = "Job ID"       # plain TEXT — portal-assigned JOB-###### (Slice 6)
+PORTAL_JOB_KEY_TITLE = "Portal Job Key"  # plain TEXT — the mirror's find-or-create key
 
 
 def _headers() -> dict[str, str]:
@@ -141,8 +146,10 @@ def rename_kebab_to_slug(columns: list[dict[str, Any]], *, dry_run: bool) -> str
         print(f"[warn] no {KEBAB_OLD_TITLE!r} column found to rename.")
         return "absent"
     if job_id_col.get("type") == "AUTO_NUMBER":
-        # Already the auto-number key; nothing to rename (shouldn't happen pre-slug).
-        print(f"[skip] {KEBAB_OLD_TITLE!r} is already AUTO_NUMBER.")
+        # A legacy pre-Slice-6 AUTO_NUMBER key — do not rename it into Job Slug;
+        # the 0022 cutover retype (AUTO_NUMBER -> TEXT, UI-only) applies instead.
+        print(f"[skip] {KEBAB_OLD_TITLE!r} is AUTO_NUMBER (legacy pre-Slice-6) — "
+              "see ensure_job_id_column for the retype instruction.")
         return "exists"
     if dry_run:
         print(f"[dry-run] would rename {KEBAB_OLD_TITLE!r} (id={job_id_col['id']}) "
@@ -154,42 +161,71 @@ def rename_kebab_to_slug(columns: list[dict[str, Any]], *, dry_run: bool) -> str
     return "renamed"
 
 
-_MANUAL_INSTRUCTION = (
-    "\n[MANUAL STEP REQUIRED] The Smartsheet API CANNOT create AUTO_NUMBER columns\n"
-    "(POST /columns returns errorCode 1008 for type AUTO_NUMBER — it is a UI-only\n"
-    "column type). In the Smartsheet UI, add a column to ITS_Active_Jobs:\n"
-    f"    Name:     {AUTONUM_TITLE}\n"
-    "    Type:     System Columns → Auto-Number\n"
-    f"    Format:   prefix {AUTONUM_FORMAT['prefix']!r}, "
-    f"{len(str(AUTONUM_FORMAT['fill']))}-digit fill, starting number "
-    f"{AUTONUM_FORMAT['startingNumber']}  (→ JOB-0001, JOB-0002, …)\n"
-    "    Position: right after 'Project Name'\n"
-    "This is the immutable join key the portal payload carries; existing rows\n"
-    "backfill JOB-0001…JOB-0006. shared/active_jobs.py reads this column as the key.\n"
-)
+def ensure_job_id_column(*, dry_run: bool) -> str:
+    """Create the plain TEXT `Job ID` column (portal-written key). Idempotent.
 
-
-def ensure_autonumber_job_id(*, dry_run: bool) -> str:
-    """Confirm the AUTO_NUMBER `Job ID` column, or print the manual UI step.
-
-    AUTO_NUMBER columns cannot be created through the REST API (verified: bare
-    `type: AUTO_NUMBER` → 1008). The migration renames the kebab key out of the
-    way (freeing the title) and hands the operator the one manual UI step. Never
-    fails the run — returns "exists", "manual_required", or "conflict".
+    Slice-6 model: the portal assigns the canonical JOB-###### (Worker
+    `job_counter`, migration 0022) and `active_jobs_writer.upsert_job` WRITES it
+    into this cell on every mirror pass — so the column is a plain TEXT_NUMBER
+    the API can create directly. A surviving legacy AUTO_NUMBER column gets the
+    0022 cutover instruction instead (retype is UI-only): an AUTO_NUMBER here
+    would REJECT every mirror write. Returns "exists", "created", or
+    "retype_required".
     """
     columns = _get_columns()
-    by_title = {c["title"]: c for c in columns}
-    existing = by_title.get(AUTONUM_TITLE)
-    if existing is not None and existing.get("type") == "AUTO_NUMBER":
-        print(f"[ok] AUTO_NUMBER {AUTONUM_TITLE!r} present (id={existing['id']}).")
-        return "exists"
+    existing = next((c for c in columns if c["title"] == JOB_ID_TITLE), None)
     if existing is not None:
-        print(f"[warn] a non-AUTO_NUMBER column titled {AUTONUM_TITLE!r} exists "
-              f"(type={existing.get('type')}); rename it before adding the "
-              "AUTO_NUMBER column in the UI.")
-        return "conflict"
-    print(_MANUAL_INSTRUCTION)
-    return "manual_required"
+        if existing.get("type") == "AUTO_NUMBER":
+            print(f"[WARN] {JOB_ID_TITLE!r} is a legacy AUTO_NUMBER column — the "
+                  "mirror's writes will be rejected until it is retyped. In the "
+                  "Smartsheet UI: edit the column, change type to Text/Number "
+                  "(existing values persist as text — migration 0022 cutover step 2).")
+            return "retype_required"
+        print(f"[skip] {JOB_ID_TITLE!r} already present as {existing.get('type')} "
+              f"(id={existing['id']}).")
+        return "exists"
+    if dry_run:
+        print(f"[dry-run] would create TEXT column {JOB_ID_TITLE!r} at index 1 "
+              "(right after 'Project Name').")
+        return "created"
+    result = _post(f"/sheets/{SHEET}/columns",
+                   [{"title": JOB_ID_TITLE, "type": "TEXT_NUMBER", "index": 1}])
+    created = result.get("result", [])
+    if not created:
+        raise RuntimeError(f"Unexpected column-create response: {result!r}")
+    print(f"[ok] created TEXT column {JOB_ID_TITLE!r} "
+          f"(id={created[0]['id']}, index={created[0]['index']}) — the portal-"
+          "assigned JOB-###### key; the fieldops mirror writes it on every upsert.")
+    return "created"
+
+
+def ensure_portal_job_key_column(*, dry_run: bool) -> str:
+    """Create the plain TEXT `Portal Job Key` column. Idempotent.
+
+    The mirror's find-or-create join key (holds the same JOB-###### value as
+    `Job ID` for portal-origin rows). Previously a documented manual step in the
+    progress-sheet builder's docstring; API-creatable all along.
+    """
+    columns = _get_columns()
+    existing = next((c for c in columns if c["title"] == PORTAL_JOB_KEY_TITLE), None)
+    if existing is not None:
+        print(f"[skip] {PORTAL_JOB_KEY_TITLE!r} already present "
+              f"(id={existing['id']}, type={existing.get('type')}).")
+        return "exists"
+    if dry_run:
+        print(f"[dry-run] would create TEXT column {PORTAL_JOB_KEY_TITLE!r} "
+              "before the system columns.")
+        return "created"
+    result = _post(
+        f"/sheets/{SHEET}/columns",
+        [{"title": PORTAL_JOB_KEY_TITLE, "type": "TEXT_NUMBER",
+          "index": _pre_system_index(_get_columns())}])
+    created = result.get("result", [])
+    if not created:
+        raise RuntimeError(f"Unexpected column-create response: {result!r}")
+    print(f"[ok] created TEXT column {PORTAL_JOB_KEY_TITLE!r} "
+          f"(id={created[0]['id']}, index={created[0]['index']}).")
+    return "created"
 
 
 def verify() -> None:
@@ -213,15 +249,16 @@ def main() -> int:
     columns = _get_columns()
     add_contact_columns(columns, dry_run=args.dry_run)
     rename_kebab_to_slug(columns, dry_run=args.dry_run)
-    status = ensure_autonumber_job_id(dry_run=args.dry_run)
+    job_id_status = ensure_job_id_column(dry_run=args.dry_run)
+    ensure_portal_job_key_column(dry_run=args.dry_run)
 
     if not args.dry_run:
         verify()
-    if status == "manual_required":
-        print("\n[done] API-doable schema landed; complete the AUTO_NUMBER 'Job ID' "
-              "column in the Smartsheet UI (see MANUAL STEP above).")
-    else:
-        print("\n[done]")
+    if job_id_status == "retype_required":
+        print("\n[done] Schema landed, but the legacy AUTO_NUMBER 'Job ID' still needs "
+              "its UI retype to Text/Number (see WARN above) before the mirror can write.")
+        return 1
+    print("\n[done]")
     return 0
 
 
