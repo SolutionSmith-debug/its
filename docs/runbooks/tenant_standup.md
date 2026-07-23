@@ -141,6 +141,15 @@ anything touching the landing PR, git conflicts, or Keychain.
 - `finish --posture dark` (default) excludes ALL send-dispatch plists
   (po-send, rfq-send, subcontract-send, weekly-send, progress-send). Loading
   them is `--posture full` + a typed confirmation, or per-plist by hand — a
-  FIXED External-Send-Gate action either way.
+  FIXED External-Send-Gate action either way. At a PRODUCTION cutover the
+  checklist's bridge step then loads exactly the three established lanes
+  (weekly/progress/subcontract-send) per-plist — `--posture full` is NOT the
+  bridge (it would load po/rfq-send too).
+- Run-branch mode (#687, default ON): every run gets a `standup/run-<UTC>`
+  branch with per-stage checkpoints; a dirty-tree refusal names REPO files
+  only (`logs/` never counts); `--resume` merges `origin/main` onto the run
+  branch (conflicts STOP — the operator owns the merge, and git conflicts are
+  escalate-to-Seth territory for the Successor-Operator); completion pushes
+  the branch and prints the landing-PR command.
 - The per-run transcript (`standup_<runid>.log`) and `standup_state.json` sit
   beside the dump — attach both to any escalation.
