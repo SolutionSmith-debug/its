@@ -500,14 +500,18 @@ def test_pulse_renders_chips(monkeypatch: pytest.MonkeyPatch) -> None:
         assert name in r.text
 
 
-def test_map_chips_sit_above_the_spanner_and_edge_layers() -> None:
+def test_spanner_containers_pass_clicks_through() -> None:
     """Hit-target regression (2026-07-22): the Box spanner's transparent
-    container and the z-index:1 SVG edge layer painted above the chips,
-    swallowing clicks on every records-column sheet tile. The chips must stay
-    in a positive stacking layer. (True hit-testing needs a real browser — the
-    live elementFromPoint sweep is the bite test; this pins the load-bearing
-    CSS so it can't silently vanish.)"""
+    container overlays every per-band cell in its grid column (same grid-item
+    z-index, later in DOM — a chip-level z-index cannot out-stack it) and
+    swallowed clicks on all nine records-column sheet tiles. The fix is the
+    pointer-events pass-through pair: the container ignores clicks, its own
+    chip re-enables them. (True hit-testing needs a real browser — the live
+    elementFromPoint sweep, 55/55 chips, is the bite test; this pins the
+    load-bearing CSS so it can't silently vanish.)"""
     css = (_REPO / "operator_dashboard" / "static" / "app.css").read_text()
-    node_block = css.split(".sm-node {", 1)[1].split("}", 1)[0]
-    assert "position: relative" in node_block, "chips lost their positioned stacking layer"
-    assert "z-index: 2" in node_block, "chips lost their z-index over the spanner/SVG layers"
+    span_rules = css.split(".sm-cell-span {", 1)[1].split("}", 1)[0]
+    assert "pointer-events: none" in span_rules, "spanner container intercepts clicks again"
+    assert ".sm-cell-span .sm-node { pointer-events: auto; }" in css, (
+        "the spanner's own chip lost its pointer-events re-enable"
+    )
