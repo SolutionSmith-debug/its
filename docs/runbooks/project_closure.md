@@ -69,10 +69,11 @@ What actually happens:
    jobs only. No further WSR/WPR rows, packets, or week sheets are produced for the job.
 4. **Mirror rows stay**: the job's rows in `ITS_Active_Jobs` and `ITS_Active_Jobs_Progress` remain
    in-sheet with `Active = Inactive` — the historical record. **Never delete the row.**
-5. **D1 hygiene (automatic, delayed)**: 30 days after the job goes inactive, its already-filed
-   portal submission rows are pruned from the Worker's D1 cache (Box + the week sheet remain the
-   record). The D1 job row itself is deleted only if the job holds no records at all. This prune
-   is monitored by watchdog Check V.
+5. **D1 hygiene (automatic, delayed)**: once the job is inactive, each of its already-filed
+   portal submission rows is pruned from the Worker's D1 cache when that row is 30+ days past
+   its own filing date — old filings go on the next daily run, recent ones age out
+   individually (Box + the week sheet remain the record). The D1 job row itself is deleted
+   only if the job holds no records at all. This prune is monitored by watchdog Check V.
 
 What does **not** happen: no sheet is moved or archived, no Box folder changes, no flat-log or
 review rows change. See "What closure leaves in place" below.
