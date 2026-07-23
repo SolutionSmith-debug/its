@@ -140,14 +140,68 @@ def _run_many(*rel_paths: str) -> None:
         _run_script(rel_path)
 
 
+# The builder->flip contract: each interleaved regen names the constants its
+# preceding builder stage JUST created and retries until THOSE resolve —
+# Smartsheet's create->read propagation lag can outlast any fixed number of
+# retries' heuristics (the 2026-07-23 run saw a >3s window leave
+# WORKSPACE_SAFETY_PORTAL stale-dead), so the expected set is explicit and an
+# unresolved expected constant FAILS the stage instead of drifting.
+_HR_FOLDERS = tuple(f"FOLDER_HR_{s}" for s in (
+    "SAFETY_REPORTS", "SUBCONTRACTS", "PURCHASE_ORDERS_AND_MATERIALS",
+    "EMAIL_TRIAGE", "AI_EMPLOYEE", "PERSONNEL"))
+_PROJECTS = ("BRADLEY_1", "BRADLEY_2", "BRIMFIELD_1", "BRIMFIELD_2",
+             "HUNTLEY", "ROCKFORD")
+REGEN_EXPECT: dict[str, tuple[str, ...]] = {
+    "regen-system": ("WORKSPACE_SYSTEM", "FOLDER_SYSTEM_CONFIG",
+                     "FOLDER_SYSTEM_LOGS", "FOLDER_SYSTEM_QUEUES",
+                     "FOLDER_SYSTEM_DAEMONS"),
+    "regen-system-sheets": ("SHEET_CONFIG", "SHEET_ERRORS", "SHEET_QUARANTINE",
+                            "SHEET_REVIEW_QUEUE", "SHEET_DAEMON_HEALTH"),
+    "regen-safety-portal": ("WORKSPACE_SAFETY_PORTAL", "FOLDER_SAFETY_PORTAL",
+                            "FOLDER_FORM_CATALOG"),
+    "regen-safety-sheets": ("SHEET_ACTIVE_JOBS", "SHEET_FORMS_CATALOG",
+                            "SHEET_WSR_HUMAN_REVIEW", "SHEET_ORPHANED_REPORTS"),
+    "regen-progress": ("WORKSPACE_PROGRESS_REPORTING", "FOLDER_PROGRESS_CONTROL"),
+    "regen-progress-sheets": ("SHEET_WPR_HUMAN_REVIEW", "SHEET_ACTIVE_JOBS_PROGRESS"),
+    "regen-po": ("WORKSPACE_PURCHASE_ORDERS", "FOLDER_PO_CONTROL"),
+    "regen-po-sheets": ("SHEET_ITS_VENDORS", "SHEET_PO_LOG",
+                        "SHEET_PO_PENDING_REVIEW", "SHEET_ESTIMATE_LOG",
+                        "SHEET_RFQ_LOG", "SHEET_RFQ_PENDING_REVIEW"),
+    "regen-subcontracts": ("WORKSPACE_SUBCONTRACTS", "FOLDER_SC_CONTROL"),
+    "regen-subcontract-sheets": ("SHEET_ITS_SUBCONTRACTORS", "SHEET_SUBCONTRACT_LOG",
+                                 "SHEET_SUBCONTRACT_PENDING_REVIEW"),
+    "regen-job-folders": ("FOLDER_PO_JOBS", "FOLDER_SC_JOBS"),
+    "regen-legacy": (
+        "WORKSPACE_HUMAN_REVIEW", "WORKSPACE_OPERATIONS", "WORKSPACE_ARCHIVE",
+        "WORKSPACE_DEMO", *_HR_FOLDERS, "FOLDER_OPERATIONS_MASTER_DBS",
+        "FOLDER_ARCHIVE_CLOSED_PROJECTS", "FOLDER_ACTIVE_PROJECTS",
+        "FOLDER_PORTFOLIO_ROLLUPS", "FOLDER_FIELD_REPORTS",
+        *(f"FOLDER_PROJECT_{p}" for p in _PROJECTS),
+        *(f"FOLDER_FIELD_REPORTS_{p}" for p in _PROJECTS),
+        "SHEET_TIME_OFF", "SHEET_WPR_PENDING_REVIEW", "SHEET_SUBCONTRACTOR_DB",
+        "SHEET_VENDOR_DB", "SHEET_EQUIPMENT_MASTER",
+        "safety_reports/week_folder.py:TEMPLATE_DAILY_REPORTS_SHEET_ID",
+        "safety_reports/week_folder.py:TEMPLATE_WEEKLY_ROLLUP_SHEET_ID",
+    ),
+    "regen-config-sheets": ("SHEET_PROJECT_ROUTING", "SHEET_PICKLIST_SYNC_CONFIG"),
+}
+
+
+def _regen_stage(stage_name: str) -> None:
+    expect_args: list[str] = []
+    for const in REGEN_EXPECT[stage_name]:
+        expect_args += ["--expect", const]
+    _run_script(f"{MIGRATIONS}/sheet_ids_regen.py", "--write",
+                "--retry-missing", "10", *expect_args)
+
+
 def _regen(*args: str) -> None:
-    # --retry-missing absorbs Smartsheet's create->read propagation window when a
-    # regen runs seconds after its builder stage (§45; without it, a just-created
-    # workspace can be absent from the listing and NOTHING gets flipped — the
-    # 2026-07-23 first-run failure mode).
-    if "--check" not in args:
-        args = (*args, "--retry-missing", "5")
     _run_script(f"{MIGRATIONS}/sheet_ids_regen.py", *args)
+
+
+def _regen_entry(stage_name: str) -> Stage:
+    return (stage_name, lambda: _regen_stage(stage_name))
+
 
 
 def _fresh_sheet_ids() -> Any:
@@ -408,19 +462,19 @@ def build_stages(dump_dir: pathlib.Path | None, *, skip_shares: bool) -> list[St
 
     stages: list[Stage] = [
         ("system-workspace", run(f"{MIGRATIONS}/build_system_workspace.py")),
-        ("regen-system", lambda: _regen("--write")),
+        _regen_entry("regen-system"),
         ("system-sheets", run(f"{MIGRATIONS}/build_system_sheets.py")),
-        ("regen-system-sheets", lambda: _regen("--write")),
+        _regen_entry("regen-system-sheets"),
         ("seed-config-baseline", run("scripts/seed_its_config.py")),
         ("safety-portal-workspace", run(f"{MIGRATIONS}/build_safety_portal_workspace.py")),
-        ("regen-safety-portal", lambda: _regen("--write")),
+        _regen_entry("regen-safety-portal"),
         ("safety-portal-sheets", lambda: _run_many(
             f"{MIGRATIONS}/build_its_active_jobs_sheet.py",
             f"{MIGRATIONS}/build_its_forms_catalog_sheet.py",
             f"{MIGRATIONS}/build_wsr_human_review_sheet.py",
             f"{MIGRATIONS}/build_orphaned_reports_sheet.py",
         )),
-        ("regen-safety-sheets", lambda: _regen("--write")),
+        _regen_entry("regen-safety-sheets"),
         ("active-jobs-phase3", run(f"{MIGRATIONS}/extend_its_active_jobs_phase3.py")),
         ("manual-active-jobs-columns", lambda: _manual_gate(
             "In the Smartsheet UI, on the NEW ITS_Active_Jobs sheet:\n"
@@ -432,14 +486,14 @@ def build_stages(dump_dir: pathlib.Path | None, *, skip_shares: bool) -> list[St
         ("active-jobs-contact-cols",
          run(f"{MIGRATIONS}/add_active_jobs_contact_routing_columns.py")),
         ("progress-workspace", run(f"{MIGRATIONS}/build_progress_reporting_workspace.py")),
-        ("regen-progress", lambda: _regen("--write")),
+        _regen_entry("regen-progress"),
         ("progress-sheets", lambda: _run_many(
             f"{MIGRATIONS}/build_wpr_human_review_sheet.py",
             f"{MIGRATIONS}/build_its_active_jobs_progress_sheet.py",
         )),
-        ("regen-progress-sheets", lambda: _regen("--write")),
+        _regen_entry("regen-progress-sheets"),
         ("po-workspace", run(f"{MIGRATIONS}/build_purchase_orders_workspace.py")),
-        ("regen-po", lambda: _regen("--write")),
+        _regen_entry("regen-po"),
         ("po-sheets", lambda: _run_many(
             f"{MIGRATIONS}/build_its_vendors_sheet.py",
             f"{MIGRATIONS}/build_po_log_sheet.py",
@@ -448,24 +502,24 @@ def build_stages(dump_dir: pathlib.Path | None, *, skip_shares: bool) -> list[St
             f"{MIGRATIONS}/build_rfq_log_sheet.py",
             f"{MIGRATIONS}/build_rfq_pending_review_sheet.py",
         )),
-        ("regen-po-sheets", lambda: _regen("--write")),
+        _regen_entry("regen-po-sheets"),
         ("subcontracts-workspace", run(f"{MIGRATIONS}/build_subcontracts_workspace.py")),
-        ("regen-subcontracts", lambda: _regen("--write")),
+        _regen_entry("regen-subcontracts"),
         ("subcontract-sheets", lambda: _run_many(
             f"{MIGRATIONS}/build_its_subcontractors_sheet.py",
             f"{MIGRATIONS}/build_subcontract_log_sheet.py",
             f"{MIGRATIONS}/build_subcontract_pending_review_sheet.py",
         )),
-        ("regen-subcontract-sheets", lambda: _regen("--write")),
+        _regen_entry("regen-subcontract-sheets"),
         ("job-folders", run(f"{MIGRATIONS}/build_job_folders.py")),
-        ("regen-job-folders", lambda: _regen("--write")),
+        _regen_entry("regen-job-folders"),
         ("legacy-workspaces", run(f"{MIGRATIONS}/build_legacy_workspaces.py")),
-        ("regen-legacy", lambda: _regen("--write")),
+        _regen_entry("regen-legacy"),
         ("system-config-sheets", lambda: _run_many(
             f"{MIGRATIONS}/build_its_project_routing_sheet.py",
             f"{MIGRATIONS}/create_picklist_sync_config.py",
         )),
-        ("regen-config-sheets", lambda: _regen("--write")),
+        _regen_entry("regen-config-sheets"),
         ("box-roots", _stage_box_roots),
         ("docs-index", run(f"{MIGRATIONS}/build_docs_index_sheet.py")),
     ]
