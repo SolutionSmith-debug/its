@@ -73,9 +73,9 @@ titles + sha256s). Audience is drawn from each guide's intended reader.
 
 ## Tier 3 — Successor-remediation runbooks
 
-<!-- src: docs/runbooks/*.md — 46 files = 45 §43 runbooks + README.md | verified 2026-07-23 -->
+<!-- src: docs/runbooks/*.md — 47 files = 46 §43 runbooks + README.md | verified 2026-07-23 (post-#679 tenant_standup.md) -->
 
-The §43 successor-remediation runbooks live in [`docs/runbooks/`](../runbooks/README.md) — **45**
+The §43 successor-remediation runbooks live in [`docs/runbooks/`](../runbooks/README.md) — **46**
 of them today, plus the README index — one per capability with a Tier-2-reachable failure mode,
 each written as *symptom → low-class repair steps → explicit escalate-to-Seth boundary*. They
 are the resolution targets the

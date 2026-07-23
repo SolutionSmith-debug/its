@@ -34,6 +34,14 @@ the units it runs, and each is still independently runnable.
    output to a per-run transcript, persists run state (`--resume` restarts at
    the first incomplete stage; `--start-at` stays the manual override), and
    finishes with `sheet_ids_regen.py --check` + `verify_cutover --only config`.
+   **Run-branch mode (default ON; `--no-run-branch` opts out):** each run
+   checks out `standup/run-<UTC>` (refusing a dirty tree — repo files only,
+   `logs/` never counts), commits a checkpoint after every stage that changes
+   repo files (`:(exclude)logs` — the prewipe dumps are untracked-not-ignored
+   and must never land on the branch), `--resume` fetches+merges `origin/main`
+   so a mid-run fix PR is picked up (conflicts surface and STOP, never
+   auto-resolved), and completion pushes the branch + prints the landing
+   `gh pr create` command.
    `standup.py finish` is the post-merge epilogue (state cleanup → DARK fleet
    reload → heartbeat wait → error sweep → read-only gate-flip worksheet →
    dashboard restart LAST) — see `docs/runbooks/tenant_standup.md`.
@@ -114,7 +122,10 @@ Ran 2026-05-21. Idempotent per row.
 ### `seed_safety_intake_polling_config.py`
 
 Seeds 3 `safety_reports.intake.*` polling-daemon rows in `ITS_Config` (workstream
-`safety_reports`) consumed by `safety_reports/intake_poll.py` + the install script:
+`safety_reports`) originally consumed by `safety_reports/intake_poll.py` (the email
+poller, RETIRED 2026-06-05 and DELETED 2026-07-03) + the install script. The rows are
+kept — and the seeder stays in `standup.py`'s seeders stage — for install-script plist
+substitution and restore/row-shape parity; a resurrected email poller re-reads them:
 `poll_interval_seconds` (read at install time and substituted into the launchd
 plist's `StartInterval`), `mailbox` (Graph mailbox to poll), and `polling_enabled`
 (per-workstream kill switch, distinct from the global `system.state`). Companion

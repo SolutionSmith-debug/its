@@ -292,10 +292,10 @@ Two scripts enforce + automate the convention:
 
 - **`scripts/regen_doc_indexes.py`** — walks `docs/`, parses YAML
   frontmatter, regenerates the AUTO-INDEX section in each subdirectory's
-  README between sentinel markers. Idempotent. `--check` mode for CI
-  (exits non-zero if any README would change). Wired into
-  `scripts/watchdog.py::TRACKED_JOBS` as `doc_index_regen` for nightly
-  freshness.
+  README between sentinel markers. Idempotent. `--check` mode runs in CI
+  (warn-only, `.github/workflows/ci.yml`); regen itself is operator-run.
+  (A `TRACKED_JOBS` watchdog wiring was directed but never built — the open
+  plan lives in `docs/tech_debt.md`; this doc previously claimed it existed.)
 - **`scripts/lint_doc_conventions.py`** — validates frontmatter +
   section headers + filename per type. Warn-only default. CI integration
   in `.github/workflows/ci.yml`. Strict mode is the post-retrofit

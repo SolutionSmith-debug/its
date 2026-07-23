@@ -174,7 +174,7 @@ docs:
     title: "ITS Documentation Index"
     version: v1
     source: docs/references/documentation_index.md
-    sha256: b6e9325bb69bec95c25e141798992d140eee128dca0634066ff2397dff042bd3
+    sha256: 643090b3dd1c376727864418fcafc3c55f8db35dc17c592537fbc71c3faf212a
     audience: all
 
   # ── Troubleshooting guide (documentation-corpus, Tranche B). GENERATED from

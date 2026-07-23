@@ -63,7 +63,9 @@ through Phase C go/no-go BEFORE this list starts),
   and subcontract-poll (`ITS_PORTAL_SUB_TOKEN`) daemon bearers + the operator-dashboard
   PIN (`ITS_OPERATOR_PIN`)).
   Verify: `python -m scripts.verify_cutover --only keychain` → PASS. (VC-01)
-- [ ] **CL-03 — the 14 loaded daemons run on the production host only.** `po-send` **and
+- [ ] **CL-03 — every must-load daemon runs on the production host only** (the shipped
+  plist set minus `DARK_UNLOADED_LABELS` — VC-02 derives the exact set; 18 of the 20
+  shipped plists at last count, don't trust a hardcoded number). `po-send` **and
   `rfq-send`** (both SEND daemons) stay **UNLOADED** — send-gate defense-in-depth; VC-02
   excludes them from the must-load set (both in `DARK_UNLOADED_LABELS`) and FAILS if either
   IS loaded. `subcontract-poll`, `rfq-poll`, and the other generation daemons load but are
@@ -120,6 +122,16 @@ through Phase C go/no-go BEFORE this list starts),
 > prints the gate-flip worksheet (`docs/runbooks/tenant_standup.md`). The
 > hand-FLIP builder walk is retired to a per-builder appendix in
 > `scripts/migrations/README.md`.
+>
+> **Bridge step (required before VC-02/CL-30):** finish's `dark` posture leaves ALL FIVE
+> send-dispatch plists unloaded, but the must-load set (CL-03/VC-02) expects the three
+> ESTABLISHED send lanes loaded — after `finish`, load exactly `weekly-send`,
+> `progress-send`, and `subcontract-send` per-plist (`./install.sh load
+> org.solutionsmith.its.<label>` each; a §44 operator action — these lanes are already
+> production-approved send paths). `po-send` + `rfq-send` STAY unloaded
+> (`DARK_UNLOADED_LABELS`). Skipping this step fails CL-03, CL-24, CL-28 and CL-30
+> verbatim-by-design; `--posture full` is NOT the bridge (it would load po/rfq-send too —
+> VC-02 FAIL the other direction).
 
 - [ ] **CL-11 — F22 approver authority = workspace membership (all three
   send-bearing workspaces).** The authorized-approver set is each workspace's
@@ -283,22 +295,25 @@ Order: intake → mirrors/trackers → compile → **send paths last**.
   payload secret (domain-separated `sub:v1`, not key-separated).
 - [ ] **CL-36 — subcontract poll gate rows seeded** (`seed_subcontracts_config.py` ran):
   the three `subcontracts.subcontract_poll.{polling_enabled,subcontractors_sync_enabled,status_sync_enabled}`
-  rows exist (seeded `false`, dark). Verify: VC-03 asserts presence. The daemon ships dark —
-  activation is a later operator cell-flip after the SC-S3c live smoke.
+  rows exist. Verify: VC-03 asserts presence (never a forced value — ITS_Config is the
+  single source of live gate state). The rows are the daemon's pause/activate switches;
+  flipping them is a later operator cell-flip decision.
 - [ ] **CL-37 — subcontract review + registry shares (F22 = §46 membership).** The
   `Subcontract_Pending_Review` review-twin sheet and the `ITS — Subcontracts` workspace
   share list carry the production approver identities (send/execute approval authority is
   workspace membership, not a portal capability). `ITS_Subcontractors` seeded
   (`seed_its_subcontractors.py`).
-- [ ] **CL-38 — subcontract SEND half (SC-S4) — best-effort Aug-7 target, NOT a blocker.**
-  Subcontract *generation* ships dark-ready regardless; the *send* half (`subcontract_send.py`
-  + F22 approval + executed-countersign + send-poller plist) is **not yet built** (only a
-  commented stub in `tests/test_capability_gating.py`). Operator directive 2026-07-12: **try
-  to build SC-S4 before Aug 7, but it does NOT gate cutover** — if it doesn't land, generation
-  ships and subcontract SEND defers gracefully post-delivery. Its send-config rows are
-  deliberately NOT enrolled in VC-03 until SC-S4 lands. (Separate SC-S4 engineering brief,
-  Seth.) **Do NOT gate Aug-7 done on this item.**
-- [ ] **CL-38b — RFQ SEND half (ADR-0004 R3-R4) — BUILT, ships DARK, NOT a blocker.** The
+- [ ] **CL-38 — subcontract SEND half (SC-S4) — BUILT (landed 2026-07-15), a must-load
+  lane, NOT a blocker.** `subcontract_send.py`/`subcontract_send_poll.py` are enrolled in
+  the capability-gating SEND list, the `org.solutionsmith.its.subcontract-send` plist
+  ships in the must-load set (NOT dark-unloaded — CL-03/VC-02 count it), and its config
+  rows (`subcontracts.subcontract_send.from_mailbox`/`polling_enabled`/
+  `scheduled_send_local`) are VC-03-enrolled (`seed_subcontracts_send_config.py`).
+  ITS_Config is the single source of the gate's live value; changing a send gate is a
+  FIXED External-Send-Gate action (Seth). Runbook: `docs/runbooks/subcontract_send.md`.
+  **Do NOT gate Aug-7 done on this item.**
+- [ ] **CL-38b — RFQ SEND half (ADR-0004 R3-R4) — BUILT, dark-unloaded plist class, NOT a
+  blocker.** The
   outbound-RFQ send lane (`rfq_send.py`/`rfq_send_poll.py`, plist `org.solutionsmith.its.rfq-send`)
   is built and its config rows are seeded present (`seed_rfq_send_config.py`: `from_mailbox`
   sandbox-scanned, `polling_enabled`/`scheduled_send_local`/`poll_interval_seconds` seeded —

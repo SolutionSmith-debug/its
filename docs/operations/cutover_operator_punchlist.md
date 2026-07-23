@@ -54,7 +54,8 @@ Teala recipient + vendor lists, the 7 approver accounts, Box production account,
 
 ## ② Jul 13 — Phase B one-way flip (~30-min ORDERED window; do NOT parallelize)
 Ref: `host_migration_runbook.md` Phase B. #1 hazard = daemon double-run. **Must not slip past Jul 14.**
-- [ ] (1) dev box: unload all 15 daemons.
+- [ ] (1) dev box: unload EVERY loaded `org.solutionsmith.its.*` daemon (the count is
+  whatever `launchctl list | grep -c solutionsmith` says — don't trust a hardcoded number).
 - [ ] (2) verify `launchctl list | grep solutionsmith` prints **nothing** on the dev box.
 - [ ] (3) verify plists REMOVED from `~/Library/LaunchAgents`.
 - [ ] (4) rsync `state/` + `.watchdog/` markers to the new host.
@@ -93,17 +94,28 @@ Hardening-gate items (Jul 14-16):
 
 ## ④ Aug 3 — CUTOVER DAY (verify_cutover green)
 Ref: `cutover_checklist.md` + `production_rollback.md`. Gated by the Jul-31 go/no-go.
+- [ ] **(Seth schedules) EARLY real production stand-up — days BEFORE Aug 3.** The one-step
+  stand-up (`standup.py --no-restore`) can run against the production tenant early: objects
+  build dark (every gate row seeds to its safe value; nothing sends), the regenerated
+  ID-surface landing PR is simply HELD unmerged until cutover day, and Aug-3 shrinks to
+  merge + `finish` + bridge. **Sequencing caveat:** the production `ITS_SMARTSHEET_TOKEN`
+  swap must slot inside the phase1-hybrid window — never stand next to a mirror-pointed
+  fleet with a production token in Keychain (host_migration_runbook.md hazards).
 - [ ] **Production tenant STAND-UP (one step — rehearsal-proven 2026-07-23).** From a
   per-task worktree with its OWN venv (worktree_discipline.md), daemons down:
   `python3 scripts/migrations/standup.py --no-restore`
   (builders + auto-FLIP + seeds end-to-end; a failed stage prints its resume hint —
-  `--resume` restarts at the first incomplete stage; a mid-run fix-PR is: land it on
-  main, `git merge origin/main` in the worktree, `--resume`). Then land the regenerated
-  ID-surface PR; after merge + `git -C ~/its pull`:
+  `--resume` restarts at the first incomplete stage AND fetches+merges `origin/main`
+  onto the run branch itself, so a mid-run fix-PR is just: land it on main, re-run
+  `--resume` — conflicts surface and STOP, never auto-resolved). Then land the
+  regenerated ID-surface PR (run-branch mode pushes the branch + prints the
+  `gh pr create` command); after merge + `git -C ~/its pull`:
   `python3 scripts/migrations/standup.py finish`
   (state cleanup → DARK fleet reload [send-dispatch plists stay unloaded] → heartbeat
-  wait → error sweep → the read-only gate-flip worksheet → dashboard restart LAST).
-  Runbook: `docs/runbooks/tenant_standup.md`.
+  wait → error sweep → the read-only gate-flip worksheet → dashboard restart LAST),
+  **then the bridge step** — load `weekly-send`/`progress-send`/`subcontract-send`
+  per-plist (the established lanes; see the checklist stand-up callout) before any
+  VC-02-bearing gate. Runbook: `docs/runbooks/tenant_standup.md`.
 - [ ] **CL-31 (ordering: FIRST) sealed mirror-secret backup** — `security find-generic-password … -w`
   each secret → offline medium (never repo/log/Smartsheet/cloud), BEFORE any secret is overwritten.
   Box caveat: the sealed token is valid only while UNUSED. Verify: `curl -sI https://safety.evergreenmirror.com/`
@@ -120,7 +132,11 @@ Ref: `cutover_checklist.md` + `production_rollback.md`. Gated by the Jul-31 go/n
   `seed_production_shares.py` PLAN → `--commit` (Seth; ADD-only — the 3 mirror-account
   unshares stay a manual UI step, named loudly by the plan). Verify:
   `verify_cutover --only approver-shares` → PASS (VC-10; the Ezra-typo class is
-  refused mechanically at manifest load).
+  refused mechanically at manifest load). Expect a ONE-TIME watchdog Check U
+  approver-drift WARN after the seed + manual mirror unshares — confirm the +/- lists
+  match the manifest edits (`state/approver_set_baseline.json` self-persists on the
+  next sweep); an unexplained delta beyond the manifest is escalation evidence, not
+  noise.
 - [ ] **CL-12 ITS_Config production sweep (mechanized)** — apply
   `production_repoint_changeset.md` §A–D via `production_repoint.py` PLAN → `--commit`
   (Seth; typed phrase; DRIFTED rows refuse the whole sweep; §E gates structurally
@@ -149,7 +165,9 @@ Ref: `aug7_delivery_runbook.md`. Thu Aug 6 = T-1 buffer (no build work). HARD CO
 - [ ] Transport window: enter `system.state=MAINTENANCE` + UptimeRobot maintenance window; graceful
   shutdown after portal_poll quiets.
 - [ ] On-site: the **7 ordered install gates** (do not demo past a red gate) — power/placement, network
-  (outbound 443), boot+login → `launchctl list | grep -c solutionsmith` = **14** (po-send unloaded — send-gate), Tailscale reverse
+  (outbound 443), boot+login → `launchctl list | grep -c solutionsmith` matches the must-load count (the
+  shipped plist set minus `po-send` + `rfq-send`, both dark-unloaded — send-gate; VC-02
+  derives it, 18 at last count), Tailscale reverse
   access over hotspot, clear MAINTENANCE→ACTIVE, `verify_cutover` re-run on-site (exit 0, paste to log),
   fresh Check-C markers.
 - [ ] Demo (~40 min, mind the Friday-14:00 `weekly_generate` rule — narrate it live or pre-empt via

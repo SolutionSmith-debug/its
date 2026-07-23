@@ -156,7 +156,8 @@ Four-part verify (`pr-landed-verifier`, quoted verbatim):
 - The pre-existing drifts noted in Decision 5 (`doc_conventions.md` watchdog-wiring claim,
   `CLAUDE.md`/`MEMORY.md` stale #336 reference, the 2026-07-04 log's non-canonical status field) —
   flagged, not fixed; out of this session's lane.
-- its#462 was not closed — see Decision 2.
+- its#462 was not re-blessed with new evidence — see Decision 2 (the issue itself has been
+  CLOSED since 2026-07-06; what stays open is the live-smoke debt).
 
 ## Cross-references
 
@@ -165,8 +166,10 @@ Four-part verify (`pr-landed-verifier`, quoted verbatim):
   (issue #682) awaiting planning-layer ratification.
 - `logs/reviews/2026-07-23_arch_*.json` — the audit dossiers this session's pre-flight verification
   ran against.
-- `its#462` — P7 archive-on-closure follow-up; still open, prove-the-control-bites debt not yet
-  retired.
+- `its#462` — P7 archive-on-closure follow-up; the ISSUE is CLOSED (2026-07-06, on mocked
+  tests — see the pre-flight note above), but its prove-the-control-bites debt is not yet
+  retired; the live-smoke evidence gets commented onto the closed issue when the attended
+  proof runs. *(Corrected 2026-07-23 verify pass — this line originally said "still open".)*
 - `docs/session_logs/2026-07-04_smartsheet-verify-hours-smoke-archive-on-closure.md` — the session
   that built + merged the archive-on-closure slice (PR #465) this session audited.
 - `docs/HOUSE_REFLEXES.md` §1 (trust live code, never the claim) and §2 (prove the control bites) —
