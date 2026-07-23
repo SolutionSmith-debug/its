@@ -23,10 +23,11 @@ read code or touch secrets. The §42 code-reader rationale lives in
 
 ## Purpose
 
-Jobs are added and retired entirely by editing **ITS_Active_Jobs** (ITS —
-Operations / Safety Portal). Nothing else needs touching — the portal dropdown
-syncs from this sheet (the sync ships in a later phase), and `intake.py` resolves
-each submission to its job via the **Job ID**.
+**ITS_Active_Jobs** (ITS — Operations / Safety Portal) is the operator's window onto the job
+roster; `intake.py` resolves each submission to its job via the **Job ID**. Since the field-ops
+portal became the authoritative job writer, the normal add/retire path for portal-created jobs is
+**the portal itself** (the mirror daemon syncs the sheet from it); direct sheet edits remain the
+lever only for legacy sheet-created rows — Task A/B below distinguish the two.
 
 **Key columns (Phase 3):**
 
@@ -63,9 +64,22 @@ each submission to its job via the **Job ID**.
 
 ### Task B — Retire a job
 
-- Set **Active = Inactive** (temporarily off the dropdown) or **Archived**
-  (permanently; the row stays as the historical record). The job leaves the portal
-  dropdown on the next sync. **Never delete the row** — it is the history.
+**Which lever depends on where the job was created:**
+
+- **Portal-created jobs** (the normal case — the portal assigned its `JOB-######`): retire it **in
+  the portal**, not in the sheet. An admin sets the job's lifecycle to **Inactive** (temporarily
+  closed) or **Archived** (permanently; also moves the job's four standing progress tracker sheets
+  to `ITS — Archive / Closed Projects`) on the Job Tracker page. A sheet-side `Active` flip on a
+  portal-created job is **overwritten from the portal** by the mirror daemon on the job's next
+  portal edit — it silently un-does itself.
+- **Sheet-created (legacy) rows** (added directly in `ITS_Active_Jobs`, never went through the
+  portal): set **Active = Inactive** or **Archived** in the sheet. The job leaves the portal
+  dropdown on the next sync. For these rows `Archived` is purely a label — it never triggers the
+  tracker archive move.
+- Either way the row **stays as the historical record**. **Never delete the row** — it is the
+  history.
+- The full closure picture (what Inactive/Archived actually do and what stays in place) is in
+  [project_closure.md](project_closure.md).
 - **Deleting the `Job Slug` COLUMN is operator-manual, never from code.** The legacy
   kebab `Job Slug` is retained for readability; if it is ever removed, the operator
   does it by hand in the Smartsheet UI after confirming nothing reads it. Claude must
@@ -81,21 +95,20 @@ add or convert it to an Auto-Number column in the Smartsheet UI — that was the
 old (pre-2026-06-30) model. If the column is ever missing, escalate to Seth
 (fixing the schema is code, not a sheet edit).
 
-### Task D — Retiring the legacy safety email-intake daemon (operator-manual)
+### Task D — The legacy safety email-intake daemon (historical; retirement COMPLETE)
 
-The safety **mailbox poller** (`safety_reports/intake_poll.py`) is **RETIRED** as of
-2026-06-05 — superseded by the Safety Portal **PULL** model (`portal_poll.py`, PLANNED;
-`decision_phase5-portal-transport`). The module is now a tombstone.
+The safety **mailbox poller** (`safety_reports/intake_poll.py`) was retired 2026-06-05,
+superseded by the Safety Portal **PULL** model (`portal_poll.py`, **live since 2026-06-08**;
+`decision_phase5-portal-transport`). The retirement is finished: the launchd job was unloaded,
+the tombstone module was deleted 2026-07-03 after `launchctl list` verified no `safety-intake`
+job or plist remained, and the uninstall helper script has since been removed too. There is
+nothing left for an operator to do here.
 
-- **Unload the launchd job** (low-class, operator-manual, never from code):
-  `scripts/uninstall_safety_intake_daemon.sh` (or `launchctl bootout` the
-  `org.solutionsmith.its.safety-intake` job). Until you do, an orphan-loaded job runs
-  every 60s as a harmless WARNING-logging no-op (no alerts).
 - The Graph email **plumbing** (`shared/graph_client.py` etc.) is **preserved** — the
-  future **Email Triage** workstream reuses it. This retire is the safety email-intake
+  future **Email Triage** workstream reuses it. The retire was the safety email-intake
   *path* only, not an email-infrastructure teardown.
-- Escalate to Seth if the safety-intake job won't unload or if portal submissions stop
-  arriving after the pull daemon is built.
+- Escalate to Seth if an `org.solutionsmith.its.safety-intake` job ever re-appears in
+  `launchctl list`, or if portal submissions stop arriving.
 
 ## Escalate to Seth (Tier 3) when
 
