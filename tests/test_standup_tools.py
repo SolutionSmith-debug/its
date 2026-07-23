@@ -317,6 +317,86 @@ def test_sweep_covers_yaml_and_md_report_only(tmp_path: Path) -> None:
     assert "111222333" in (tmp_path / "conf.yaml").read_text()
 
 
+# ---- sheet_ids_regen: scoped propagation-probe retry ------------------------
+
+
+def test_constant_workspaces_resolves_plain_and_external() -> None:
+    out = regen._constant_workspaces({
+        "WORKSPACE_SYSTEM",
+        "safety_reports/week_folder.py:TEMPLATE_DAILY_REPORTS_SHEET_ID",
+        "NOT_A_REAL_CONSTANT",
+    })
+    assert out == {"ITS — System", "Forefront Portfolio — ITS Demo"}
+
+
+def test_filtered_retry_never_degrades_unfetched_constants() -> None:
+    """The overlay teeth: a workspace-filtered re-resolve reports MISSING for
+    every unfetched workspace's constants — merging it naively would flip
+    already-resolved constants back to MISSING. Only refetched workspaces may
+    take fresh values."""
+    old_res: dict[str, int | str] = {c: 1000 + i for i, c in enumerate(regen.REGISTRY)}
+    old_ext: dict[str, dict[str, int | str]] = {
+        path: {c: 2000 for c in consts}
+        for path, consts in regen.EXTERNAL_CONSTANTS.items()}
+    old_cols = {"daemon_name": 42}
+    fresh_res: dict[str, int | str] = {
+        c: (7777 if t.workspace == "ITS — System" else regen.MISSING)
+        for c, t in regen.REGISTRY.items()}
+    fresh_ext: dict[str, dict[str, int | str]] = {
+        path: {c: regen.MISSING for c in consts}
+        for path, consts in regen.EXTERNAL_CONSTANTS.items()}
+    fresh_cols = {"daemon_name": 99}
+    merged_res, merged_ext, merged_cols = regen._overlay_resolutions(
+        (old_res, old_ext, old_cols),
+        (fresh_res, fresh_ext, fresh_cols),
+        refetched={"ITS — System"})
+    # System-workspace constants take the fresh value...
+    assert merged_res["WORKSPACE_SYSTEM"] == 7777
+    assert merged_res["SHEET_CONFIG"] == 7777
+    # ...every other workspace's constants KEEP their prior resolution.
+    assert merged_res["WORKSPACE_SAFETY_PORTAL"] == old_res["WORKSPACE_SAFETY_PORTAL"]
+    assert all(v == 2000 for cmap in merged_ext.values() for v in cmap.values())
+    # DAEMON_HEALTH columns ride the System workspace -> fresh here.
+    assert merged_cols == {"daemon_name": 99}
+    # ...and stay OLD when System was not refetched.
+    _, _, cols_kept = regen._overlay_resolutions(
+        (old_res, old_ext, old_cols),
+        (fresh_res, fresh_ext, fresh_cols),
+        refetched={"ITS — Purchase Orders"})
+    assert cols_kept == {"daemon_name": 42}
+
+
+def test_retry_loop_scopes_resolve_to_expected_workspaces(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Wiring: attempt 1 resolves FULL (drift-self-heal); the retry burst calls
+    _resolve_live with exactly the unresolved --expect constants' workspaces."""
+    calls: list[set[str] | None] = []
+    all_missing: dict[str, int | str] = dict.fromkeys(regen.REGISTRY, regen.MISSING)
+    resolved_system = dict(all_missing) | {
+        c: 5000 + i for i, (c, t) in enumerate(regen.REGISTRY.items())
+        if t.workspace == "ITS — System"}
+    ext_missing = {path: dict.fromkeys(consts, regen.MISSING)
+                   for path, consts in regen.EXTERNAL_CONSTANTS.items()}
+
+    def _fake_resolve(workspace_filter: set[str] | None = None) -> Any:
+        calls.append(workspace_filter)
+        res = all_missing if workspace_filter is None else resolved_system
+        return dict(res), {p: dict(c) for p, c in ext_missing.items()}, {}
+
+    monkeypatch.setattr(regen, "_resolve_live", _fake_resolve)
+    monkeypatch.setattr(regen.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["sheet_ids_regen.py", "--retry-missing", "3",
+         "--expect", "WORKSPACE_SYSTEM", "--expect", "SHEET_CONFIG"])
+    rc = regen.main()
+    assert rc == 0  # plan mode; the expected constants resolved on the retry
+    assert calls[0] is None                     # initial resolve is FULL
+    assert calls[1] == {"ITS — System"}         # retry scoped to the expect set
+    assert len(calls) == 2                      # resolved -> no further attempts
+    assert "re-resolving 1 workspace(s)" in capsys.readouterr().out
+
+
 # ---- build_legacy_workspaces ----------------------------------------------
 
 
