@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -20,7 +20,9 @@ _MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "scripts" / "migrations"
 if str(_MIGRATIONS_DIR) not in sys.path:
     sys.path.insert(0, str(_MIGRATIONS_DIR))
 
+import _rest_retry  # noqa: E402
 import build_legacy_workspaces as legacy  # noqa: E402
+import requests  # noqa: E402
 import sheet_ids_regen as regen  # noqa: E402
 import standup  # noqa: E402
 import wipe_tenant as wipe  # noqa: E402
@@ -270,6 +272,51 @@ def test_registry_daemon_health_keys_match_sheet_ids_dict() -> None:
     assert keys == set(regen.DAEMON_HEALTH_TITLE_BY_KEY)
 
 
+def test_remap_scope_includes_doctrine_manifest() -> None:
+    """docs/doctrine_manifest.yaml MUST stay in the --write remap scope: its
+    canonical_sheets ids are what check_doctrine_drift M4 (CI-BLOCKING)
+    compares against sheet_ids.py, and the *.py-only remap missed it on the
+    2026-07-23 rebuild (PR #670 hand-fixed it). Same parity-teeth pattern as
+    test_regen_expect_table_matches_registry_and_stages."""
+    paths = regen.remap_file_paths()
+    assert regen.DOCTRINE_MANIFEST_PATH in paths
+    assert regen.DOCTRINE_MANIFEST_PATH.is_file()
+    # The wipe tool must ALSO be in the list (its exclusion happens at the
+    # write loop, never by dropping it from the glob — a reordering that
+    # silently removed the exemption comment's anchor would be invisible).
+    assert (REPO_ROOT / "scripts" / "migrations" / "wipe_tenant.py") in paths
+
+
+def test_integer_remap_rewrites_yaml_content() -> None:
+    """The two-phase remap is format-agnostic — prove it flips a manifest-shaped
+    yaml fragment (the PR #670 miss, synthetically re-created)."""
+    yaml_text = (
+        "canonical_sheets:\n"
+        "  SHEET_CONFIG:\n"
+        "    id: 8933909738770308\n"
+        "    source: \"shared/sheet_ids.py:SHEET_CONFIG\"\n"
+    )
+    out, n = regen.rewrite_integer_remap(yaml_text, {8933909738770308: 12345})
+    assert "id: 12345" in out
+    assert n == 1
+
+
+def test_sweep_covers_yaml_and_md_report_only(tmp_path: Path) -> None:
+    """The widened sweep surfaces replaced ids in yaml/yml/md (report-only) —
+    and never rewrites them (file content asserted unchanged)."""
+    (tmp_path / "runbook.md").write_text("old sheet id 111222333 lives here\n")
+    (tmp_path / "conf.yaml").write_text("sheet_id: 111222333\n")
+    (tmp_path / "pin.py").write_text("SHEET = 111222333\n")
+    (tmp_path / "other.txt").write_text("111222333\n")  # outside SWEEP_GLOBS
+    hits = regen.sweep_repo_for_old_ids(
+        {111222333: 999}, skip=set(), root=tmp_path)
+    hit_files = {h.split(":")[0] for h in hits}
+    assert hit_files == {"runbook.md", "conf.yaml", "pin.py"}
+    # report-only: nothing rewritten
+    assert "111222333" in (tmp_path / "runbook.md").read_text()
+    assert "111222333" in (tmp_path / "conf.yaml").read_text()
+
+
 # ---- build_legacy_workspaces ----------------------------------------------
 
 
@@ -434,3 +481,351 @@ def test_resolve_dump_dir_refusals(tmp_path: Path,
     assert standup._resolve_dump_dir(tmp_path / "prewipe_B") == tmp_path / "prewipe_B"
     with pytest.raises(standup.StageFailedError, match="does not exist"):
         standup._resolve_dump_dir(tmp_path / "prewipe_missing")
+
+
+# ---- _rest_retry: transient-vs-permanent + the wipe-dump fail-closed fix ----
+#
+# The 2026-07-23 review finding: dump_workspace classified 429/5xx/timeouts and
+# the sheet_dump_truncated RuntimeError as "unreadable — skip and delete anyway"
+# (a fail-open data-loss path; the dump is the sole row-restore source). These
+# tests prove the new polarity BITES: transient exhaustion ABORTS the wipe,
+# while the genuinely-permanent signatures (404 / errorCode 1006/1115 — the
+# four broken ITS_Errors shells) still classify unreadable-and-continue.
+
+
+class _FakeResponse:
+    def __init__(self, status: int, body: dict[str, Any] | None = None,
+                 headers: dict[str, str] | None = None) -> None:
+        self.status_code = status
+        self._body = body if body is not None else {}
+        self.headers = headers or {}
+        self.text = str(self._body)
+
+    def json(self) -> dict[str, Any]:
+        return self._body
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise _http_error(f"{self.status_code} Client Error", self)
+
+
+def _http_error(message: str, response: _FakeResponse) -> requests.HTTPError:
+    """Typed shim — types-requests pins HTTPError.response to Response | None."""
+    return requests.HTTPError(message, response=cast(Any, response))
+
+
+def _scripted_requests(monkeypatch: pytest.MonkeyPatch,
+                       responses: list[Any]) -> list[float]:
+    """Feed request_with_retry a scripted response sequence; capture sleeps.
+
+    Each entry is a _FakeResponse (returned) or an Exception (raised).
+    """
+    sleeps: list[float] = []
+    calls = iter(responses)
+
+    def _fake_request(method: str, url: str, **kwargs: Any) -> Any:
+        item = next(calls)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(_rest_retry.requests, "request", _fake_request)
+    monkeypatch.setattr(_rest_retry.time, "sleep", sleeps.append)
+    return sleeps
+
+
+def test_retry_429_then_success_honors_retry_after(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps = _scripted_requests(monkeypatch, [
+        _FakeResponse(429, headers={"Retry-After": "7"}),
+        _FakeResponse(200, {"data": []}),
+    ])
+    r = _rest_retry.request_with_retry("get", "https://x/sheets/1")
+    assert r.status_code == 200
+    assert sleeps == [7.0]
+
+
+def test_retry_persistent_429_raises_after_budget(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps = _scripted_requests(monkeypatch, [_FakeResponse(429)] * 3)
+    with pytest.raises(requests.HTTPError, match="429 transient"):
+        _rest_retry.request_with_retry("get", "https://x/sheets/1", attempts=3)
+    assert len(sleeps) == 2  # no sleep after the final attempt
+
+
+def test_retry_permanent_404_raises_immediately_no_retries(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps = _scripted_requests(monkeypatch, [_FakeResponse(404)])
+    with pytest.raises(requests.HTTPError):
+        _rest_retry.request_with_retry("get", "https://x/sheets/1")
+    assert sleeps == []  # a permanent 4xx must never burn the retry budget
+
+
+def test_retry_timeout_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps = _scripted_requests(monkeypatch, [
+        requests.Timeout("read timed out"),
+        _FakeResponse(200, {"ok": True}),
+    ])
+    r = _rest_retry.request_with_retry("get", "https://x/ws", backoff_seconds=1.5)
+    assert r.json() == {"ok": True}
+    assert sleeps == [1.5]
+
+
+def test_retry_no_raise_mode_returns_permanent_but_raises_transient(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """raise_for_status=False hands a permanent 4xx back for caller inspection
+    (the shares-POST already-shared WARN path) — but transient exhaustion STILL
+    raises, so a 429 can never masquerade as a caller-visible non-200."""
+    _scripted_requests(monkeypatch, [_FakeResponse(400, {"errorCode": 1025})])
+    r = _rest_retry.request_with_retry(
+        "post", "https://x/shares", raise_for_status=False)
+    assert r.status_code == 400
+    _scripted_requests(monkeypatch, [_FakeResponse(503)] * 2)
+    with pytest.raises(requests.HTTPError, match="503 transient"):
+        _rest_retry.request_with_retry(
+            "post", "https://x/shares", attempts=2, raise_for_status=False)
+
+
+def test_is_permanent_read_failure_classification() -> None:
+    perm_404 = _http_error("404", _FakeResponse(404))
+    perm_1115 = _http_error("400", _FakeResponse(400, {"errorCode": 1115}))
+    perm_1006 = _http_error("400", _FakeResponse(400, {"errorCode": 1006}))
+    transient_429 = _http_error("429", _FakeResponse(429))
+    no_response = requests.ConnectionError("boom")
+    assert _rest_retry.is_permanent_read_failure(perm_404)
+    assert _rest_retry.is_permanent_read_failure(perm_1115)
+    assert _rest_retry.is_permanent_read_failure(perm_1006)
+    assert not _rest_retry.is_permanent_read_failure(transient_429)
+    assert not _rest_retry.is_permanent_read_failure(no_response)
+
+
+_WS_FIXTURE = {"id": 1, "name": "ITS — System"}
+
+
+def _dumpable_workspace(monkeypatch: pytest.MonkeyPatch,
+                        sheet_dump: Any) -> None:
+    """Wire dump_workspace's collaborators so only _sheet_dump varies."""
+    monkeypatch.setattr(wipe, "_workspace_tree", lambda ws_id: {
+        "id": 1, "name": "ITS — System", "folders": [],
+        "sheets": [{"id": 42, "name": "ITS_Config"}]})
+    monkeypatch.setattr(wipe, "_workspace_shares", lambda ws_id: [])
+    monkeypatch.setattr(wipe, "_sheet_dump", sheet_dump)
+
+
+def test_dump_workspace_permanent_failure_classified_unreadable(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def _raise_404(sheet_id: int) -> dict[str, Any]:
+        raise _http_error("404 Client Error", _FakeResponse(404))
+
+    _dumpable_workspace(monkeypatch, _raise_404)
+    dumped, unreadable = wipe.dump_workspace(_WS_FIXTURE, tmp_path)
+    assert dumped == 0
+    assert len(unreadable) == 1 and "id=42" in unreadable[0]
+
+
+def test_dump_workspace_transient_exhaustion_propagates(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An exhausted 429 must ABORT (guard 4), never classify-and-proceed."""
+    def _raise_429(sheet_id: int) -> dict[str, Any]:
+        raise _http_error("429 transient error", _FakeResponse(429))
+
+    _dumpable_workspace(monkeypatch, _raise_429)
+    with pytest.raises(requests.HTTPError, match="429"):
+        wipe.dump_workspace(_WS_FIXTURE, tmp_path)
+
+
+def test_dump_workspace_truncation_propagates(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """sheet_dump_truncated is a transient pagination artifact — it was
+    misclassified as 'unreadable' before 2026-07-23; now it aborts."""
+    def _raise_truncated(sheet_id: int) -> dict[str, Any]:
+        raise RuntimeError("sheet_dump_truncated: sheet 42 totalRowCount=10 "
+                           "but 7 rows fetched — refusing a lossy dump")
+
+    _dumpable_workspace(monkeypatch, _raise_truncated)
+    with pytest.raises(RuntimeError, match="sheet_dump_truncated"):
+        wipe.dump_workspace(_WS_FIXTURE, tmp_path)
+
+
+def test_wipe_main_aborts_on_transient_dump_failure(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """End-to-end polarity proof: a transient dump failure aborts the WHOLE
+    wipe with nothing deleted (exit 1, no delete call reachable)."""
+    monkeypatch.setattr(wipe, "require_daemons_down", lambda: None)
+    monkeypatch.setattr(wipe, "_list_workspaces",
+                        lambda: [dict(zip(("name", "id"),
+                                          wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0],
+                                          strict=True))])
+    monkeypatch.setattr(wipe, "_box_root_items", lambda: [])
+    monkeypatch.setattr(wipe, "_confirm_phrase", lambda: True)
+    monkeypatch.setattr(wipe, "DUMP_ROOT", tmp_path)
+
+    def _transient_dump(ws: dict[str, Any], dump_dir: Path) -> tuple[int, list[str]]:
+        raise _http_error("503 transient error", _FakeResponse(503))
+
+    monkeypatch.setattr(wipe, "dump_workspace", _transient_dump)
+
+    def _boom(*a: Any, **k: Any) -> None:
+        raise AssertionError("delete reached despite a failed dump")
+
+    monkeypatch.setattr(wipe, "_delete_workspace", _boom)
+    monkeypatch.setattr(wipe, "_delete_box_folder", _boom)
+    monkeypatch.setattr(sys, "argv", ["wipe_tenant.py", "--commit"])
+    assert wipe.main() == 1
+
+
+# ---- standup: non-interactive contract + streamed output + run-state -------
+#
+# 2026-07-23 review items 2/3/4: the blind `input="y\n"*8` feed would silently
+# confirm ANY prompt a builder grows later (including a destructive one); child
+# output block-buffered illegibly (the mid-run PYTHONUNBUFFERED fix lived only
+# in the operator's shell); and 5 resume points meant 5 hand-typed --start-at
+# values. These tests prove the replacement contract BITES.
+
+
+def _child_script(tmp_path: Path, name: str, body: str) -> str:
+    (tmp_path / name).write_text(body, encoding="utf-8")
+    return name
+
+
+def test_run_script_streams_prefixed_output(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(standup, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(standup, "_current_stage", "tstage")
+    rel = _child_script(tmp_path, "child.py", "print('hello')\nprint('world')\n")
+    standup._run_script(rel)
+    out = capsys.readouterr().out
+    assert "[tstage/child] hello" in out
+    assert "[tstage/child] world" in out
+
+
+def test_run_script_sets_contract_env(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(standup, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(standup, "_current_stage", "env")
+    rel = _child_script(
+        tmp_path, "env_child.py",
+        "import os\nprint(os.environ.get('STANDUP_NONINTERACTIVE'),"
+        " os.environ.get('PYTHONUNBUFFERED'))\n")
+    standup._run_script(rel)
+    assert "[env/env_child] 1 1" in capsys.readouterr().out
+
+
+def test_run_script_unexpected_prompt_fails_loudly(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """THE contract's teeth: a brand-new prompt in a child (here, a synthetic
+    destructive one) hits the CLOSED stdin, raises EOFError, and FAILS the
+    stage — under the old blind y-feed it would have been silently confirmed."""
+    monkeypatch.setattr(standup, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(standup, "_current_stage", "prompt")
+    rel = _child_script(
+        tmp_path, "prompt_child.py",
+        "answer = input('Delete conflicting sheet? [y/N] ')\n"
+        "print('CONFIRMED', answer)\n")
+    with pytest.raises(standup.StageFailedError, match="exited"):
+        standup._run_script(rel)
+    assert "CONFIRMED" not in capsys.readouterr().out
+
+
+def test_run_script_tees_to_run_log(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(standup, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(standup, "_current_stage", "tee")
+    monkeypatch.setattr(standup, "_run_log_path", tmp_path / "run.log")
+    rel = _child_script(tmp_path, "tee_child.py", "print('logged-line')\n")
+    standup._run_script(rel)
+    assert "logged-line" in (tmp_path / "run.log").read_text(encoding="utf-8")
+
+
+def test_confirm_seams_auto_approve_only_under_env(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each of the six builder gates auto-approves ONLY under
+    STANDUP_NONINTERACTIVE=1 and NEVER touches stdin while doing so (input is
+    booby-trapped); without the env var the prompt remains the control."""
+    import build_box_roots as bbr
+    import build_safety_portal_workspace as bspw
+    import build_system_sheets as bss
+    import build_system_workspace as bsw
+    scripts_dir = REPO_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import seed_its_config as sic
+
+    def _boom(*a: Any, **k: Any) -> str:
+        raise AssertionError("stdin touched under STANDUP_NONINTERACTIVE")
+
+    monkeypatch.setenv("STANDUP_NONINTERACTIVE", "1")
+    monkeypatch.setattr("builtins.input", _boom)
+    assert bsw._confirm("x") is True
+    assert bss._confirm("x") is True
+    assert legacy._confirm("x") is True
+    assert sic._confirm("x") is True
+    assert bbr._confirm_live_writes(["A"], "its@example.com") is True
+    gate = bspw.LiveWriteGate(dry_run=False)
+    assert gate.allow("create X") is True
+    # dry-run stays dry even under the env var — auto-approve must never
+    # convert a dry run into live writes.
+    dry_gate = bspw.LiveWriteGate(dry_run=True)
+    assert dry_gate.allow("create X") is False
+
+    # Without the env var the prompt is the control again.
+    monkeypatch.delenv("STANDUP_NONINTERACTIVE")
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+    assert bsw._confirm("x") is True
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+    assert bsw._confirm("x") is False
+    assert sic._confirm("x") is False
+
+
+def test_resume_derives_first_incomplete_stage(tmp_path: Path) -> None:
+    names = ["a", "b", "c", "d"]
+    standup._write_state({
+        "run_id": "r1", "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False,
+                  "dump_dir": str(tmp_path)},
+        "completed": ["a", "b"], "stage_names": names, "stages": {},
+    }, tmp_path)
+    assert standup._resume_start_stage(
+        tmp_path, no_restore=False, skip_shares=False, stage_names=names) == "c"
+
+
+def test_resume_refusals(tmp_path: Path) -> None:
+    names = ["a", "b"]
+    # no state file
+    with pytest.raises(standup.StageFailedError, match="no run state"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=False, stage_names=names)
+    # completed run
+    standup._write_state({
+        "status": "complete",
+        "flags": {"no_restore": False, "skip_shares": False},
+        "completed": names,
+    }, tmp_path)
+    with pytest.raises(standup.StageFailedError, match="COMPLETE"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=False, stage_names=names)
+    # conflicting flags (recorded skip_shares=False, supplied True)
+    standup._write_state({
+        "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False},
+        "completed": ["a"],
+    }, tmp_path)
+    with pytest.raises(standup.StageFailedError, match="conflict"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=True, stage_names=names)
+
+
+def test_write_state_is_best_effort(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """A state-write failure WARNs and continues — bookkeeping must never kill
+    an otherwise-healthy attended run."""
+    def _oser(*a: Any, **k: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(standup.state_io, "atomic_write_json", _oser)
+    standup._write_state({"status": "running"}, tmp_path)  # must not raise
+    assert "run_state_write_failed" in capsys.readouterr().out

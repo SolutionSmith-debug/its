@@ -8,11 +8,14 @@ ever hand-pasted. FLIP still precedes SEED; the flip is just mechanical now.
 
 How the interleave works
     Builders run as SUBPROCESSES (each fresh import of shared/sheet_ids.py picks up
-    the values the preceding regen stage wrote — zero builder refactoring), with an
-    auto-fed "y" for their single LiveWriteGate prompt. THIS process gives ONE master
-    y/N gate up front; the per-builder prompts remain the control when scripts run
-    standalone, and the master gate is the control here. sheet_ids_regen runs with
-    --write (non-strict) between stages: it flips what exists, leaves later-stage
+    the values the preceding regen stage wrote — zero builder refactoring) under the
+    STANDUP_NONINTERACTIVE=1 contract: their confirm seams auto-approve, stdin is
+    CLOSED, and any unexpected prompt fails the stage loudly (see NONINTERACTIVE_ENV).
+    THIS process gives ONE master y/N gate up front; the per-builder prompts remain
+    the control when scripts run standalone, and the master gate is the control here.
+    Child output is line-streamed with a [stage/script] prefix (PYTHONUNBUFFERED
+    baked in) and teed to a per-run transcript beside the dump. sheet_ids_regen runs
+    with --write (non-strict) between stages: it flips what exists, leaves later-stage
     constants untouched, and the FINAL stage runs it with --check (strict parity).
 
 What is deliberately SKIPPED (with reasons, so nobody hunts for a phantom):
@@ -43,12 +46,15 @@ Keychain. Post-run: commit the regenerated ID surfaces via PR, delete
 Run from ~/its while daemons are down:
     python3 scripts/migrations/standup.py --list
     python3 scripts/migrations/standup.py [--dump DIR] [--start-at STAGE] [--skip-shares]
+    python3 scripts/migrations/standup.py --resume      # restart from the run state
 """
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import importlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -57,14 +63,36 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-import requests  # type: ignore[import-untyped]  # noqa: E402
+# Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
+# it explicitly — the test_standup_tools.py import pattern).
+from _rest_retry import request_with_retry  # noqa: E402
 
-from shared import keychain  # noqa: E402
+from shared import keychain, state_io  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MIGRATIONS = "scripts/migrations"
 DUMP_ROOT = pathlib.Path.home() / "its" / "logs" / "migrations"
 BASE = "https://api.smartsheet.com/2.0"
+
+# The non-interactive contract with the builder family (2026-07-23 review):
+# _run_script sets this env var and closes the child's stdin. The six builder
+# confirm seams auto-approve ONLY under it (this process's master y/N gate is
+# the documented control for orchestrated runs), and any UNEXPECTED prompt — a
+# second gate in a gated builder, a brand-new input() in a promptless seeder —
+# hits EOF on the closed stdin and fails the stage LOUDLY. The old blind
+# `input="y\n"*8` feed would have silently confirmed a future destructive
+# prompt ("delete conflicting sheet? [y/N]" being the feared class).
+NONINTERACTIVE_ENV = "STANDUP_NONINTERACTIVE"
+
+# Run-state file (--resume bookkeeping + per-stage run forensics). Lives INSIDE
+# the prewipe dump dir — a run is 1:1 with a dump, so it rides the same
+# ambiguity guards _resolve_dump_dir enforces and stays out of ~/its/state/
+# (it is orchestrator bookkeeping, not daemon state; state_io is used anyway —
+# costs nothing, crash-safe). A --no-restore run has no dump; its state lives
+# at one well-known DUMP_ROOT path (a fresh-tenant stand-up happens ~once per
+# tenant, and the refuse-on-complete rule covers staleness).
+STATE_FILE_NAME = "standup_state.json"
+NORESTORE_STATE_PATH = DUMP_ROOT / "standup_norestore_state.json"
 
 # Sheets whose ROWS are restored from the pre-wipe dump (workspace name, sheet name,
 # sheet_ids constant of the rebuilt target). Everything else restarts empty by design
@@ -125,13 +153,48 @@ def _manual_gate(instruction: str) -> None:
         print("Waiting — complete the step above, then answer y.")
 
 
+# Streaming context, set by the stage loop / run setup. `_current_stage` rides
+# every child-output prefix; `_run_log_path` (when set) tees emitted lines to
+# the per-run transcript beside the dump — the 2026-07-23 retro's evidence was
+# scrollback, and the mid-run PYTHONUNBUFFERED discovery lived only in the
+# operator's shell. Both fixes now live in the tool.
+_current_stage: str = "?"
+_run_log_path: pathlib.Path | None = None
+
+
+def _emit(line: str) -> None:
+    """Print + tee to the per-run log (tee is best-effort, never fatal)."""
+    print(line)
+    if _run_log_path is not None:
+        try:
+            with _run_log_path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass  # the console stream is primary; a full disk must not kill the run
+
+
 def _run_script(rel_path: str, *args: str) -> None:
-    """Run a builder/seeder subprocess, auto-answering its y/N gate(s)."""
+    """Run a builder/seeder subprocess under the non-interactive contract.
+
+    - ``STANDUP_NONINTERACTIVE=1`` + ``stdin=DEVNULL``: the six builder confirm
+      seams auto-approve (the master gate above is the control); any UNEXPECTED
+      ``input()`` in a child raises EOFError -> nonzero exit -> StageFailedError,
+      loud instead of silently fed a 'y' (see NONINTERACTIVE_ENV).
+    - ``PYTHONUNBUFFERED=1`` + line-streamed output, each line prefixed
+      ``[stage/script]`` and teed to the per-run log.
+    """
     cmd = [sys.executable, str(REPO_ROOT / rel_path), *args]
-    print(f"\n--- $ {' '.join(cmd[1:])}")
-    result = subprocess.run(cmd, input="y\n" * 8, text=True, cwd=REPO_ROOT, check=False)
-    if result.returncode != 0:
-        raise StageFailedError(f"{rel_path} exited {result.returncode}")
+    base = pathlib.Path(rel_path).stem
+    _emit(f"\n--- $ {' '.join(cmd[1:])}")
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", NONINTERACTIVE_ENV: "1"}
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, cwd=REPO_ROOT, env=env)
+    assert proc.stdout is not None  # PIPE above guarantees it; narrows the type
+    for line in proc.stdout:
+        _emit(f"[{_current_stage}/{base}] {line.rstrip()}")
+    returncode = proc.wait()
+    if returncode != 0:
+        raise StageFailedError(f"{rel_path} exited {returncode}")
 
 
 class StageFailedError(RuntimeError):
@@ -338,8 +401,12 @@ def _stage_restore_rows(dump_dir: pathlib.Path) -> None:
                   f"({len(dump.get('rows', []))} dumped, all present or empty).")
             continue
         for i in range(0, len(payload), 300):
-            r = requests.post(f"{BASE}/sheets/{target_id}/rows", headers=_headers(),
-                              json=payload[i:i + 300], timeout=120)
+            # raise_for_status=False: transient 429/5xx are retried inside the
+            # helper (exhaustion propagates -> stage fails with its resume
+            # hint); a non-transient failure surfaces WITH the response body.
+            r = request_with_retry(
+                "post", f"{BASE}/sheets/{target_id}/rows", headers=_headers(),
+                json=payload[i:i + 300], timeout=120, raise_for_status=False)
             if r.status_code != 200:
                 raise StageFailedError(
                     f"restore add-rows failed for {sheet_name!r}: "
@@ -396,9 +463,8 @@ def _stage_restore_shares(dump_dir: pathlib.Path) -> None:
     set on Purchase Orders / Subcontracts would fail-close the send gates with
     no explanation.
     """
-    ws_listing = requests.get(f"{BASE}/workspaces?includeAll=true",
-                              headers=_headers(), timeout=30)
-    ws_listing.raise_for_status()
+    ws_listing = request_with_retry("get", f"{BASE}/workspaces?includeAll=true",
+                                    headers=_headers(), timeout=30)
     live_by_name: dict[str, list[dict[str, Any]]] = {}
     for ws in ws_listing.json().get("data", []):
         live_by_name.setdefault(str(ws.get("name")), []).append(ws)
@@ -431,10 +497,16 @@ def _stage_restore_shares(dump_dir: pathlib.Path) -> None:
                       f"accessLevel={level}) — GROUP shares must be re-added by hand "
                       "or the approver set is narrower than pre-wipe.")
                 continue
-            r = requests.post(
-                f"{BASE}/workspaces/{int(target['id'])}/shares?sendEmail=false",
+            # raise_for_status=False: a permanent 4xx (already-shared dup,
+            # invalid user) keeps the loud-but-non-fatal WARN below, but a
+            # transient 429/5xx is retried and PROPAGATES on exhaustion — it
+            # must never ride the WARN path, or the F22 approver set silently
+            # narrows behind a rate-limit blip.
+            r = request_with_retry(
+                "post", f"{BASE}/workspaces/{int(target['id'])}/shares?sendEmail=false",
                 headers=_headers(),
-                json=[{"email": email, "accessLevel": level}], timeout=30)
+                json=[{"email": email, "accessLevel": level}], timeout=30,
+                raise_for_status=False)
             if r.status_code == 200:
                 added += 1
             else:
@@ -592,7 +664,60 @@ def _require_daemons_down() -> bool:
     return True
 
 
+# ---- run-state + --resume -------------------------------------------------
+
+
+def _state_path(dump_dir: pathlib.Path | None) -> pathlib.Path:
+    return (dump_dir / STATE_FILE_NAME) if dump_dir is not None else NORESTORE_STATE_PATH
+
+
+def _write_state(state: dict[str, Any], dump_dir: pathlib.Path | None) -> None:
+    """Persist run state after every transition. Best-effort — bookkeeping must
+    never kill an otherwise-healthy attended run; a failed write just means
+    --resume is unavailable (the operator falls back to --start-at)."""
+    try:
+        state_io.atomic_write_json(_state_path(dump_dir), state)
+    except OSError as exc:
+        print(f"[WARN] run_state_write_failed: {exc} — run continues; "
+              "--resume will not see this transition (use --start-at).")
+
+
+def _resume_start_stage(dump_dir: pathlib.Path | None, *, no_restore: bool,
+                        skip_shares: bool, stage_names: list[str]) -> str:
+    """Derive the restart stage from the persisted run state, refusing LOUDLY on
+    every ambiguous case: no state, a completed run, or flags that conflict with
+    the recorded run (a different flag set produces a different stage list, so
+    'first incomplete stage' would silently skip or re-run work)."""
+    path = _state_path(dump_dir)
+    if not path.is_file():
+        raise StageFailedError(
+            f"--resume: no run state at {path} — nothing to resume (a run older "
+            "than the state feature, or a fresh tenant): use --start-at explicitly")
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if state.get("status") == "complete":
+        raise StageFailedError(
+            "--resume: the recorded run is COMPLETE — start a fresh run, or pass "
+            "--start-at explicitly to re-run a stage")
+    recorded = state.get("flags", {})
+    supplied = {"no_restore": no_restore, "skip_shares": skip_shares}
+    conflicts = {k: (recorded.get(k), v) for k, v in supplied.items()
+                 if recorded.get(k) != v}
+    if conflicts:
+        raise StageFailedError(
+            f"--resume: supplied flags conflict with the recorded run "
+            f"({conflicts}, recorded->supplied) — rerun with the recorded flags "
+            "or start fresh")
+    completed = set(state.get("completed", []))
+    for name in stage_names:
+        if name not in completed:
+            return name
+    raise StageFailedError(
+        "--resume: every stage is recorded complete but status != complete — "
+        "inspect the state file before resuming")
+
+
 def main() -> int:
+    global _current_stage, _run_log_path
     parser = argparse.ArgumentParser(
         description="Orchestrated tenant stand-up: builders + auto-FLIP + seeds.")
     parser.add_argument("--dump", type=pathlib.Path, default=None,
@@ -603,7 +728,12 @@ def main() -> int:
     parser.add_argument("--skip-shares", action="store_true",
                         help="Skip the workspace share restore stage.")
     parser.add_argument("--start-at", default=None, metavar="STAGE",
-                        help="Resume from a named stage (see --list).")
+                        help="Resume from a named stage (see --list). The explicit "
+                             "manual override — wins over --resume.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Derive the restart stage from the persisted run state "
+                             "(standup_state.json beside the dump). Refuses on a "
+                             "completed run or conflicting flags.")
     parser.add_argument("--list", action="store_true", help="Print stages and exit.")
     args = parser.parse_args()
 
@@ -628,6 +758,20 @@ def main() -> int:
             print(f"[abort] unknown stage {args.start_at!r}. --list shows stages.")
             return 1
         start = names.index(args.start_at)
+        if args.resume:
+            print(f"[info] --start-at {args.start_at!r} OVERRIDES --resume "
+                  "(explicit wins).")
+    elif args.resume:
+        try:
+            resume_stage = _resume_start_stage(
+                dump_dir, no_restore=args.no_restore,
+                skip_shares=args.skip_shares, stage_names=names)
+        except StageFailedError as exc:
+            print(f"[abort] {exc}")
+            return 1
+        start = names.index(resume_stage)
+        print(f"[info] --resume: run state says the first incomplete stage is "
+              f"{resume_stage!r}.")
 
     if not _require_daemons_down():
         return 1
@@ -637,19 +781,59 @@ def main() -> int:
         print("[skip] Operator declined; nothing run.")
         return 0
 
+    run_id = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    log_dir = dump_dir if dump_dir is not None else DUMP_ROOT
+    _run_log_path = log_dir / (f"standup_{run_id}.log" if dump_dir is not None
+                               else f"standup_norestore_{run_id}.log")
+    print(f"[info] per-run transcript: {_run_log_path}")
+    # Positional truth: stages run strictly in order, so 'completed' is always
+    # the prefix before the start index (a --start-at override treats earlier
+    # stages as done — the operator's explicit call).
+    state: dict[str, Any] = {
+        "run_id": run_id,
+        "status": "running",
+        "started_utc": run_id,
+        "flags": {"no_restore": args.no_restore, "skip_shares": args.skip_shares,
+                  "dump_dir": str(dump_dir) if dump_dir else None},
+        "stage_names": names,
+        "completed": names[:start],
+        "current_stage": None,
+        "stages": {},
+        "log_file": str(_run_log_path),
+    }
+    _write_state(state, dump_dir)
+
     for name, fn in stages[start:]:
-        print(f"\n=== STAGE {name} ===")
+        _current_stage = name
+        state["current_stage"] = name
+        state["stages"][name] = {
+            "started_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds")}
+        _write_state(state, dump_dir)
+        _emit(f"\n=== STAGE {name} ===")
         try:
             fn()
         except KeyboardInterrupt:
-            print(f"\n[abort] interrupted during stage {name!r}. Every builder is "
-                  f"idempotent — resume: python3 {MIGRATIONS}/standup.py --start-at {name}")
+            state["status"] = "failed"
+            _write_state(state, dump_dir)
+            _emit(f"\n[abort] interrupted during stage {name!r}. Every builder is "
+                  f"idempotent — resume: python3 {MIGRATIONS}/standup.py --resume "
+                  f"(or --start-at {name})")
             return 1
         except Exception as exc:  # noqa: BLE001 — ANY stage failure gets the resume hint
+            state["status"] = "failed"
+            _write_state(state, dump_dir)
             label = type(exc).__name__ if not isinstance(exc, StageFailedError) else "stage"
-            print(f"\n[abort] stage {name!r} failed ({label}): {exc}\n"
-                  f"Fix, then resume: python3 {MIGRATIONS}/standup.py --start-at {name}")
+            _emit(f"\n[abort] stage {name!r} failed ({label}): {exc}\n"
+                  f"Fix, then resume: python3 {MIGRATIONS}/standup.py --resume "
+                  f"(or --start-at {name})")
             return 1
+        state["completed"].append(name)
+        state["stages"][name]["finished_utc"] = dt.datetime.now(
+            dt.UTC).isoformat(timespec="seconds")
+        _write_state(state, dump_dir)
+    state["status"] = "complete"
+    state["current_stage"] = None
+    _write_state(state, dump_dir)
     print(
         "\n[ok] Stand-up complete. Epilogue (in order):\n"
         "  1. git diff — review the regenerated ID surfaces (sheet_ids.py, "
