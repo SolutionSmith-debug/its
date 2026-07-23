@@ -106,6 +106,10 @@ class GenerateConfig:
     rollup_page_provider: (
         Callable[[ActiveJob, safety_week.SafetyWeek], bytes | None] | None
     ) = None
+    # The cover page's report title (2026-07-23). The old hardcoded cover title
+    # mislabeled every PROGRESS packet cover "WEEKLY SAFETY REPORT"; each binding now
+    # names its packet. Default preserves the safety wording (§14: unset = unchanged).
+    cover_title: str = "WEEKLY SAFETY REPORT"
 
     @property
     def watchdog_marker_dir(self) -> Path:
@@ -345,7 +349,8 @@ def _build_weekly_packet(
         week_label = _week_label(week)
         compiled_display = compiled_dt.strftime("%b %-d, %Y %-I:%M %p %Z").strip()
         cover = form_pdf.render_weekly_cover(
-            project_name, week_label, len(pdfs), compiled_display=compiled_display
+            project_name, week_label, len(pdfs), compiled_display=compiled_display,
+            title=config.cover_title,
         )
         cover_pages = form_pdf.page_count(cover)
         # P6: optional rollup-numbers page after the cover, before the index (progress only).

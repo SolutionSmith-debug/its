@@ -30,7 +30,7 @@ follow. It is one page inside the same one-attachment, one-approval packet — n
 | **Labor hours** | Total crew hours logged against the job for the Saturday→Friday week. Corrected entries are collapsed to their latest value (an edited timesheet counts once, at its corrected number — never double-counted). |
 | **Equipment on site** | The distinct pieces of equipment that reported a location on this job during the week (name + type). A machine that reported many times shows once. |
 | **Open tasks** | How many assigned tasks are **not yet done** for this job right now. This is a current snapshot, not a "closed this week" count — the system deliberately does not claim a completion number it cannot prove. |
-| **Materials** | A **"coming soon"** placeholder. Materials tracking arrives in a later phase (M2); until then this line is intentionally blank. |
+| **Materials** | A placeholder — the page prints **"Materials reporting is not yet included in this packet."** Materials tracking arrives in a later phase (M2); until then this line is intentionally a placeholder. |
 
 There is **no "percent complete"** on this page. A single overall progress-percent is a guess, not
 a measurement, so it was deliberately left off — the numbers above are things the crew actually

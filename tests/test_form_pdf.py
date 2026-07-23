@@ -476,7 +476,7 @@ def test_progress_rollup_renders_all_sections() -> None:
     assert "Labor hours" in text and "42.5" in text
     assert "Equipment on site" in text and "Skid Steer 3" in text and "Telehandler A" in text
     assert "Open tasks" in text and "4 open" in text
-    assert "Materials" in text and "coming soon" in text
+    assert "Materials" in text and "not yet included" in text
     # NO progress-% anywhere (operator decision 2026-06-30).
     assert "% complete" not in text.lower() and "progress %" not in text.lower()
 

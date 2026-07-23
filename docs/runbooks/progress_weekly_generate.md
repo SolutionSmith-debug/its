@@ -93,7 +93,8 @@ may be hung holding the lock — check for a stuck compile process and have it t
 
 **What it is.** Each compiled **progress** packet carries a **rollup-numbers page** (P6) right
 after the cover, before the contents index: **Labor hours / Equipment on site / Open tasks /
-Materials (coming soon)**. Those numbers come from the structured field-ops data (crews logging
+Materials** (the Materials section prints "not yet included" until material data is wired into
+the rollup numbers). Those numbers come from the structured field-ops data (crews logging
 time, equipment, and tasks in the portal) — **NOT** from the Daily Field Report narrative.
 
 **Symptom.** The compiled packet PDF opens with the cover, then jumps straight to the contents

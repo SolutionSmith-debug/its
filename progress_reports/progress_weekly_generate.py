@@ -167,6 +167,9 @@ PROGRESS_GENERATE_CONFIG = generate_core.GenerateConfig(
     default_evergreen_contact="the Evergreen Renewables office",
     # P6: the optional rollup-numbers page (progress only). Safety binds nothing → byte-identical.
     rollup_page_provider=_rollup_page_provider,
+    # The progress packet's cover names itself (the shared default is the SAFETY title —
+    # unbound, every progress cover was mislabeled "WEEKLY SAFETY REPORT").
+    cover_title="WEEKLY PROGRESS REPORT",
 )
 
 # #336 — every ITS_Config key the progress compile resolves at RUNTIME: the four carried on the
