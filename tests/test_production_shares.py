@@ -158,6 +158,34 @@ def test_validator_refuses_schema_violations(tmp_path, mutate):
         sps.load_manifest(_write_manifest(tmp_path, manifest))
 
 
+def test_validator_rejects_wrong_mirror_domain(tmp_path):
+    """The mirror-domain PIN bites (2026-07-23 adversarial-review finding): a
+    manifest typo in mirror_domain would silently BLIND both residue checks —
+    the seeder refuses it at load, same pattern as the production-domain pin."""
+    manifest = _manifest()
+    manifest["mirror_domain"] = "evergreenmirrors.com"  # one-letter typo
+    with pytest.raises(sps.ManifestError, match="mirror_domain"):
+        sps.load_manifest(_write_manifest(tmp_path, manifest))
+
+
+def test_vc10_refuses_wrong_mirror_domain(monkeypatch, tmp_path):
+    """VC-10's residue leg pins the manifest mirror_domain against the
+    SANDBOX_DOMAIN_MARKER single source — a typo FAILS the check instead of
+    silently blinding it."""
+    manifest = _manifest()
+    manifest["mirror_domain"] = "evergreenmirrors.com"
+    path = _write_manifest(tmp_path, manifest)
+    monkeypatch.setattr(vc, "APPROVER_SHARES_MANIFEST", path)
+
+    def _boom(*a, **k):
+        raise AssertionError("live share call reached despite a corrupt manifest")
+
+    monkeypatch.setattr(vc.smartsheet_client, "list_workspace_shares", _boom)
+    outcome = vc._check_approver_shares(vc.Options())
+    assert not outcome.passed
+    assert "BLIND" in outcome.summary
+
+
 # ---- seeder plumbing ------------------------------------------------------
 
 

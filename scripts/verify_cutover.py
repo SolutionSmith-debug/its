@@ -881,13 +881,27 @@ def _check_approver_shares(opts: Options) -> CheckOutcome:
     try:
         manifest = _load_shares_manifest()
         workspaces = manifest["workspaces"]
-        mirror_suffix = "@" + str(manifest["mirror_domain"]).strip().lower()
+        mirror_domain = str(manifest["mirror_domain"]).strip().lower()
     except (OSError, ValueError, KeyError) as exc:
         return CheckOutcome(
             passed=False,
             summary=f"approver-share manifest unreadable ({APPROVER_SHARES_MANIFEST}).",
             details=f"{type(exc).__name__}: {exc}",
         )
+    # The residue leg keys off the manifest's mirror_domain — pin it to the
+    # SANDBOX_DOMAIN_MARKER single source so a manifest typo cannot silently
+    # blind the check (adversarial review 2026-07-23; the seeder pins the same
+    # value as EXPECTED_MIRROR_DOMAIN).
+    if mirror_domain != f"{SANDBOX_DOMAIN_MARKER}.com":
+        return CheckOutcome(
+            passed=False,
+            summary=(
+                f"manifest mirror_domain {mirror_domain!r} != "
+                f"'{SANDBOX_DOMAIN_MARKER}.com' — a typo here would BLIND the "
+                "mirror-residue leg; fix the manifest."
+            ),
+        )
+    mirror_suffix = "@" + mirror_domain
     if not isinstance(workspaces, list) or not workspaces:
         return CheckOutcome(
             passed=False,

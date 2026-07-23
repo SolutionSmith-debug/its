@@ -74,6 +74,15 @@ MANIFEST_PATH = pathlib.Path(__file__).with_name("production_shares_manifest.jso
 # domain, and every approver email must end with "@" + it.
 EXPECTED_PRODUCTION_DOMAIN = "evergreenrenewables.com"
 
+# The mirror domain is pinned too (adversarial review 2026-07-23): the residue
+# checks — the seeder's [RESIDUE] print AND VC-10's mirror-residue FAIL — key
+# entirely off manifest["mirror_domain"], and a leftover mirror USER share on a
+# production send-bearing workspace GRANTS that account live F22 authority. A
+# manifest typo here would silently blind the one control that catches it.
+# verify_cutover derives the same pin from SANDBOX_DOMAIN_MARKER (single source
+# of the marker string); this constant must stay in lock-step.
+EXPECTED_MIRROR_DOMAIN = "evergreenmirror.com"
+
 # Workspace-share access levels Smartsheet accepts on POST /workspaces/{id}/shares.
 # OWNER is deliberately absent — ownership is not grantable via a share add.
 KNOWN_ACCESS_LEVELS = frozenset({"VIEWER", "COMMENTER", "EDITOR", "EDITOR_SHARE", "ADMIN"})
@@ -121,8 +130,12 @@ def load_manifest(path: pathlib.Path = MANIFEST_PATH) -> dict[str, Any]:
             "— refusing (the Ezra-typo guard pins the reviewed domain in code)"
         )
     mirror = str(manifest["mirror_domain"]).strip().lower()
-    if not mirror or mirror == domain:
-        raise ManifestError("mirror_domain must be nonempty and differ from production_domain")
+    if mirror != EXPECTED_MIRROR_DOMAIN:
+        raise ManifestError(
+            f"mirror_domain {mirror!r} != pinned {EXPECTED_MIRROR_DOMAIN!r} — refusing "
+            "(a typo here silently BLINDS both mirror-residue checks; the pin is the "
+            "same guard pattern as EXPECTED_PRODUCTION_DOMAIN)"
+        )
     workspaces = manifest["workspaces"]
     if not isinstance(workspaces, list) or not workspaces:
         raise ManifestError("workspaces must be a nonempty list")
