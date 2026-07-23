@@ -38,7 +38,10 @@ Projects`. Nothing else moves, anywhere.
   page** is the *authoritative* lifecycle writer. An admin with the job-management capability
   selects **Active / Inactive / Archived** in the job's lifecycle selector. Do **not** flip the
   `Active` cell in `ITS_Active_Jobs` for these jobs — the mirror daemon **overwrites the sheet from
-  the portal** on the job's next portal edit, so a sheet-side flip silently un-does itself.
+  the portal** on the job's next portal edit, and until then the flip is **worse than a no-op**:
+  crews still see the job in the portal dropdown (the portal side never learned of the flip), but
+  every submission they file routes to Orphaned Reports, and the weekly compiles skip the job — a
+  split-brain that lasts until the sheet is overwritten or corrected.
 - **Sheet-created (legacy) jobs** (rows added directly in `ITS_Active_Jobs` that never went through
   the portal): the sheet-side `Active` flip is the lever, per
   [safety_portal_job_management.md](safety_portal_job_management.md) Task B. Note for these jobs a
@@ -55,8 +58,10 @@ Projects`. Nothing else moves, anywhere.
 
 ### Task A — Normal close: set the job **Inactive**
 
-Use for a finished, paused, or on-hold job. Everything below is passive drop-out; it is all
-reversible by setting the job back to Active.
+Use for a finished, paused, or on-hold job. Everything below is passive drop-out, and it is
+reversible by setting the job back to Active — with one exception: submission rows already
+pruned from D1 (step 5) do not return on reactivation. Box and the week sheet are unaffected;
+the portal just can no longer list/serve those older forms.
 
 What actually happens:
 
@@ -73,7 +78,9 @@ What actually happens:
    portal submission rows is pruned from the Worker's D1 cache when that row is 30+ days past
    its own filing date — old filings go on the next daily run, recent ones age out
    individually (Box + the week sheet remain the record). The D1 job row itself is deleted
-   only if the job holds no records at all. This prune is monitored by watchdog Check V.
+   only if it holds none of the guarded record types (submissions, time entries, tasks,
+   inspections, daily requirements, expected materials, checklist instances,
+   equipment-location history). This prune is monitored by watchdog Check V.
 
 What does **not** happen: no sheet is moved or archived, no Box folder changes, no flat-log or
 review rows change. See "What closure leaves in place" below.
@@ -93,7 +100,8 @@ automated archival in the system:
 Caveats you must know:
 
 - **Portal-origin jobs only.** Typing `Archived` into `ITS_Active_Jobs` for a sheet-created job
-  changes the cell and nothing else — the move automation structurally never sees it.
+  gives you exactly the Inactive drop-out and nothing more — the tracker-move automation
+  structurally never sees it.
 - **Best-effort, no auto-retry.** If a move fails (e.g. a transient Smartsheet error), the system
   WARNs (`fieldops_archive_on_closure_failed` in `ITS_Errors`) and does **not** retry on its own —
   the job is already marked synced. The guaranteed repair is a one-off manual drag of the sheet

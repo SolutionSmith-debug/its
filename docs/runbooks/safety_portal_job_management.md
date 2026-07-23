@@ -25,9 +25,10 @@ read code or touch secrets. The §42 code-reader rationale lives in
 
 **ITS_Active_Jobs** (ITS — Operations / Safety Portal) is the operator's window onto the job
 roster; `intake.py` resolves each submission to its job via the **Job ID**. Since the field-ops
-portal became the authoritative job writer, the normal add/retire path for portal-created jobs is
-**the portal itself** (the mirror daemon syncs the sheet from it); direct sheet edits remain the
-lever only for legacy sheet-created rows — Task A/B below distinguish the two.
+portal became the authoritative job writer, **adding a job is portal-only** (Task A — the mirror
+daemon then creates the sheet row); retirement splits by origin (Task B — portal lifecycle for
+portal-created jobs, sheet-side flip only for legacy sheet-created rows). Contact/recipient
+details for portal jobs are portal job-form fields the mirror writes into the sheet.
 
 **Key columns (Phase 3):**
 
@@ -47,16 +48,22 @@ lever only for legacy sheet-created rows — Task A/B below distinguish the two.
 
 ## Procedure
 
-### Task A — Add a new job
+### Task A — Add a new job (portal-only)
 
-1. Open **ITS_Active_Jobs** → use the **New Job** form (or add a row directly).
-2. Fill: Project Name, Address, Stakeholder Name/Email/Phone, **Safety Reports
-   Contact Email** (required), and set **Active = Active**.
-3. **Do not touch Job ID** — the portal assigns the next `JOB-######` and the
-   sync writes it into the row. A row added directly in the sheet stays blank
-   until the job has synced through the portal (the portal is the number
-   authority).
-4. The job appears in the portal dropdown on the next sync (cron/manual).
+1. **Create the job in the portal** — the Job Tracker "new job" form (admin, job-management
+   capability). The portal assigns the `JOB-######` and the mirror daemon creates the job's
+   row in **ITS_Active_Jobs** (and the progress twin) within a few minutes.
+2. **Set the contact/recipient details in the portal job form** — stakeholder,
+   **Safety Reports Contact Email** (required for the weekly send), contact name, CC list.
+   The mirror writes them into the sheet row (Job ID, Project Name, Address, stakeholder,
+   reports-contact, CC 1–5, Active are all portal-written columns). A sheet-side edit to
+   one of these columns holds only until the portal next supplies that field — treat the
+   sheet as the display, the portal as the writer.
+3. **Do not add job rows directly in the sheet.** A hand-added row has no Job ID, and no
+   code path back-fills one (the portal is the number authority) — the row never syncs to
+   the portal dropdown and submissions can never resolve to it. If a row like this exists,
+   escalate to Seth rather than typing a Job ID by hand (hand-typed numbers collide with
+   the portal's allocator).
 
 > A job with **Active = Active but no Safety Reports Contact Email** will be
 > flagged (the weekly send refuses an empty recipient). Fill the contact before
