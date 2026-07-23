@@ -15,48 +15,73 @@ the units it runs, and each is still independently runnable.
 
 1. `wipe_tenant.py` — name-guarded sandbox wipe (Smartsheet workspaces + Box
    roots, hard-coded name+id allowlist, daemon-down precondition, typed-phrase
-   gate, dump-before-delete to `~/its/logs/migrations/prewipe_<UTC>/`). Plan-only
-   by default; `--commit` to execute.
+   gate, dump-before-delete to `~/its/logs/migrations/prewipe_<UTC>/`; transient
+   fetch errors retry via `_rest_retry` and ABORT on exhaustion — only permanent
+   404/1006/1115 shells classify "unreadable"). Plan-only by default; `--commit`
+   to execute. **There is deliberately NO production wipe variant**: rollback is
+   repoint-back (`production_rollback.md` — the mirror Worker + workspaces stay
+   intact), a botched partial stand-up RESUMES (idempotent builders +
+   `--resume`), and the rare malformed-object deletion is a one-off name-guarded
+   SDK script with a hard-coded allowlist, PR-reviewed — exactly the friction a
+   destructive tool against production should carry.
 2. `standup.py` — the orchestrator: runs every builder in dependency order as
-   subprocesses, interleaves `sheet_ids_regen.py --write` between stages so
-   every `shared/sheet_ids.py` constant (plus `DAEMON_HEALTH_COLUMNS`,
-   `operator_dashboard/system_map.py` literals, and `safety_reports/week_folder.py`
-   template ids) is flipped automatically — FLIP still precedes SEED, the flip is
-   just mechanical now. Restores data-bearing SoR rows + workspace share lists
-   from the pre-wipe dump, auto-pastes the Box-root ids into ITS_Config, runs
-   unattended end-to-end (`Job ID` + `Portal Job Key` are plain TEXT columns the
-   API creates — the portal assigns the JOB-###### number, P2.5 Slice 6), and
+   subprocesses (under the `STANDUP_NONINTERACTIVE` contract — closed stdin, an
+   unexpected prompt fails the stage loudly), interleaves
+   `sheet_ids_regen.py --write` between stages so every ID surface is flipped
+   automatically — FLIP still precedes SEED, the flip is just mechanical.
+   Restores data-bearing SoR rows + workspace share lists from the pre-wipe
+   dump, auto-pastes the Box-root ids into ITS_Config, streams prefixed child
+   output to a per-run transcript, persists run state (`--resume` restarts at
+   the first incomplete stage; `--start-at` stays the manual override), and
    finishes with `sheet_ids_regen.py --check` + `verify_cutover --only config`.
-   `--list` shows stages; `--start-at <stage>` resumes a failed run.
+   `standup.py finish` is the post-merge epilogue (state cleanup → DARK fleet
+   reload → heartbeat wait → error sweep → read-only gate-flip worksheet →
+   dashboard restart LAST) — see `docs/runbooks/tenant_standup.md`.
 3. `sheet_ids_regen.py` — the circle-closer, also useful standalone:
    `--check` is a read-only parity probe (every constant resolves live to an
-   object of the expected name); `--write` regenerates the ID surfaces.
+   object of the expected name); `--write` regenerates the ID surfaces
+   (incl. `docs/doctrine_manifest.yaml`'s canonical ids) and sweeps
+   *.py/yaml/md for surviving old ids (report-only outside the remap scope).
 4. `build_legacy_workspaces.py` — builders for the four hand-created workspaces
    that never had one (Human Review, Operations master DBs, Archive, the
    Forefront demo skeleton + week-folder template sheets).
 
-### Phase-1 cutover builder sequence
+### Production cutover tools (Aug-3 family — build-tested, Seth-attended to run)
 
-The four gap-builders that stand up a fresh PRODUCTION tenant run in this order.
-No individual docstring states the cross-script ordering, so it lives here:
+- `seed_production_shares.py` + `production_shares_manifest.json` — the CL-11
+  F22 approver-share applier: manifest-driven (data file; the emails live there
+  because the CI identity guard blocks them in .py), PLAN default, ADD-only
+  (never unshares), OWNER-check, y/N gate; the Ezra-typo class refuses at
+  manifest load. Verify half: `verify_cutover --only approver-shares` (VC-10).
+- `production_repoint.py` + `production_repoint_map.json` — the CL-12 repoint
+  actuator: applies `production_repoint_changeset.md` §A–D from reviewed data,
+  PLAN default, typed-phrase `--commit`, DRIFTED-row refusal before the first
+  write, §E gates structurally excluded (an allowlist of the reviewed A–D
+  setting classes — the tool cannot carry a gate flip). Box roots resolved
+  live, never typed.
 
-1. `build_system_workspace.py` — the "ITS — System" workspace + its four folders.
-2. **FLIP** the printed WORKSPACE/FOLDER ids into `shared/sheet_ids.py` (FLIP precedes
-   SEED — the seeders read those constants).
-3. `build_system_sheets.py` — the five System sheets. It resolves its folders by NAME,
-   so it is order-independent with the flip, but run it after step 1 either way: the
-   folders must exist.
-4. `build_safety_portal_workspace.py` — the "ITS –– Safety Portal" workspace +
-   `00_Safety Portal` / `00_Form Catalog`, then flip those ids too.
-5. `build_box_roots.py` — the two Box mirror-tree roots. **Its output does NOT go into
-   `shared/sheet_ids.py`**: the two folder ids are pasted into the ITS_Config rows
-   `safety_reports.box.portal_root_folder_id` and
-   `progress_reports.box.portal_root_folder_id` (consumers read them at runtime via
-   `get_setting`). Requires Box OAuth as the dedicated ITS identity first
-   (`scripts/setup_box_oauth.py`).
+### Appendix — standalone builder reference (superseded as a SEQUENCE by standup.py)
 
-Each builder is create-only, idempotent, live-by-default with a y/N confirmation, and
-takes `--dry-run`. Reconcile any `[WARN]` duplicate-name ambiguity BEFORE flipping an id.
+**The manual walk below is RETIRED as the cutover procedure** — `standup.py`
+runs the full dependency order with the FLIP mechanized (`sheet_ids_regen.py
+--write` between stages; the old "hand-paste the printed ids" steps are dead).
+Each builder remains independently runnable for a one-off repair; this appendix
+records the standalone semantics:
+
+- `build_system_workspace.py` — the "ITS — System" workspace + its four folders.
+- `build_system_sheets.py` — the five System sheets (resolves folders by NAME).
+- `build_safety_portal_workspace.py` — the "ITS –– Safety Portal" workspace +
+  `00_Safety Portal` / `00_Form Catalog`.
+- `build_box_roots.py` — the two Box roots. Its output does NOT go into
+  `shared/sheet_ids.py`: the two folder ids land in the ITS_Config
+  `*.box.portal_root_folder_id` rows — AUTO-PASTED by standup's box-roots
+  stage when orchestrated (a standalone run pastes them by hand). Requires Box
+  OAuth as the dedicated ITS identity first (`scripts/setup_box_oauth.py`).
+
+Each builder is create-only, idempotent, live-by-default with a y/N confirmation
+(auto-approved ONLY under standup's `STANDUP_NONINTERACTIVE` contract), and
+takes `--dry-run`. Reconcile any `[WARN]` duplicate-name ambiguity BEFORE
+resuming an orchestrated run.
 
 ### `box_clone_1111a_to_projects.py`
 

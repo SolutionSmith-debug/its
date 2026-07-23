@@ -16,6 +16,17 @@ production value, for the Aug-3 tenant cutover. **This artifact is not applied �
 Aug-3 cutover (operator + Seth).** It is the CL-12 sweep's worksheet, gated afterward by
 `python -m scripts.verify_cutover --only config` with **NO** `--allow-sandbox` (VC-03 must PASS).
 
+> **Mechanized (2026-07-23):** §A–D are applied by
+> `scripts/migrations/production_repoint.py` from its reviewed data file
+> `production_repoint_map.json` (PLAN default; typed-phrase `--commit`; DRIFTED
+> rows refuse the sweep; §E structurally excluded). The map ADDS two §B rows
+> built after this doc was authored — `subcontracts.subcontract_send.from_mailbox`
+> and `po_materials.rfq_send.from_mailbox` (both VC-03 sandbox-scan-enrolled) —
+> and EXCLUDES the LEGACY `safety_reports.intake.mailbox` row. The §Approver-model
+> share swap is applied by `seed_production_shares.py` (+ its manifest) and
+> verified by `verify_cutover --only approver-shares` (VC-10), replacing the
+> hand `python -c` diff below.
+
 Every row/read-site below was ground-truthed against live HEAD `a638fc5`. The code holds only
 mirror-domain **fallback defaults**; the live ITS_Config rows override at runtime — so the sweep is a
 Smartsheet + Box edit, **not a code change**.

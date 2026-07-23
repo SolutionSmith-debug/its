@@ -47,8 +47,9 @@ through Phase C go/no-go BEFORE this list starts),
 | VC-07 `git` | CL-04 |
 | VC-08 `d1-migrations` | CL-18 |
 | VC-09 `heartbeat-url` | CL-27 |
-| full run (all nine) | CL-30 |
-| (manual-only items) | CL-01, CL-05–CL-11, CL-13, CL-15–CL-17, CL-19–CL-23, CL-28, CL-29, CL-31–CL-35, CL-37–CL-39 |
+| VC-10 `approver-shares` | CL-11 (+ CL-37's subcontracts leg) |
+| full run (all ten) | CL-30 |
+| (manual-only items) | CL-01, CL-05–CL-10, CL-13, CL-15–CL-17, CL-19–CL-23, CL-28, CL-29, CL-31–CL-35, CL-37–CL-39 |
 
 ## Procedure
 
@@ -107,7 +108,18 @@ through Phase C go/no-go BEFORE this list starts),
   `grep -rn "onboarding@resend.dev" shared/ ITS_Config-sweep` shows the
   runtime sender comes from config, not the sandbox default.
 
-### Smartsheet — shares, purge, config sweep
+### Smartsheet — tenant stand-up, shares, config sweep
+
+> **The production Smartsheet/Box stand-up is ONE step** (rehearsal-proven,
+> 2026-07-23 full sandbox rebuild): from a per-task worktree with its own venv,
+> daemons down —
+> `python3 scripts/migrations/standup.py --no-restore`
+> — builders + auto-FLIP (`sheet_ids_regen`) + seeds run end-to-end; land the
+> regenerated ID surfaces via PR; after merge + pull,
+> `python3 scripts/migrations/standup.py finish` reloads the fleet DARK and
+> prints the gate-flip worksheet (`docs/runbooks/tenant_standup.md`). The
+> hand-FLIP builder walk is retired to a per-builder appendix in
+> `scripts/migrations/README.md`.
 
 - [ ] **CL-11 — F22 approver authority = workspace membership (all three
   send-bearing workspaces).** The authorized-approver set is each workspace's
@@ -135,15 +147,26 @@ through Phase C go/no-go BEFORE this list starts),
   > Smartsheet user whose account email matches exactly (cell-history
   > `modifiedBy` exposes email only).
 
-  Verify (mechanical): per workspace, list the USER shares and diff against
-  the seven emails — e.g.
-  `python -c "from shared import smartsheet_client as s; print(sorted(s.list_workspace_share_emails(<workspace_id>)))"`
-  → exactly the expected set, zero `evergreenmirror.com` residue.
+  Apply (mechanized): review/edit the approver manifest
+  (`scripts/migrations/production_shares_manifest.json` — data, per-workspace
+  narrowing + access levels are Seth's call), then
+  `python3 scripts/migrations/seed_production_shares.py` (PLAN) →
+  `--commit` (Seth-attended; ADD-only — mirror-account unshares stay a manual
+  UI step, named loudly by the plan output).
+  Verify (mechanical): `python -m scripts.verify_cutover --only approver-shares`
+  → PASS (manifest ⊆ live USER shares, zero `evergreenmirror.com` residue,
+  GROUP shares flagged as non-counting). (VC-10)
 - [ ] **CL-12 — ITS_Config production sweep.** All load-bearing rows point at
   production: `safety_reports.portal.worker_base_url` (the production custom
-  domain), `from_mailbox` rows (safety + progress; PO's when its send lands),
-  `scheduled_send_local` rows seeded, all `*_enabled` gates true, and **zero
-  `evergreenmirror` residue in any Value cell**.
+  domain), the `from_mailbox` rows, `scheduled_send_local` rows seeded, and
+  **zero `evergreenmirror` residue in any Value cell**. Gates are NOT part of
+  this sweep: every `*_enabled` flip follows the activation plan — read each
+  row's Description first (CL-13), send gates LAST + Seth (the earlier "all
+  gates true" wording contradicted CL-03's send-daemons-dark and is retired).
+  Apply (mechanized): `python3 scripts/migrations/production_repoint.py`
+  (PLAN; classifies already-production / will-repoint / DRIFTED-refuse) →
+  `--commit` (Seth-attended, typed phrase; §E gates structurally excluded —
+  the tool cannot carry a gate flip).
   Verify: `python -m scripts.verify_cutover --only config` (NO
   `--allow-sandbox`) → PASS. (VC-03)
   *Phase-gated cutovers* (a leg deliberately staying mirror, e.g. Phase-1's
@@ -175,9 +198,11 @@ through Phase C go/no-go BEFORE this list starts),
   `production_rollback.md`).
   Verify: `python -c "from shared import box_client; print(box_client.get_client().user().get().login)"`
   → `its@evergreenrenewables.com`.
-- [ ] **CL-17 — production folder roots + routing reseeded.** `BOX_PROJECT_FOLDERS`
-  overrides / `ITS_Project_Routing` rows / `progress_reports.box.portal_root_folder_id`
-  point at production folder IDs.
+- [ ] **CL-17 — production folder roots + routing reseeded.** The two
+  `*.box.portal_root_folder_id` rows are AUTO-PASTED by the stand-up's
+  box-roots stage (`standup._stage_box_roots`) — this item shrinks to the
+  CL-16 Box-OAuth prerequisite plus the resolve verify (plus
+  `BOX_PROJECT_FOLDERS` / `ITS_Project_Routing` when the routing lane wakes).
   Verify: a dry read of each configured root resolves
   (`box_client` `get_folder` per configured id — no 404).
 

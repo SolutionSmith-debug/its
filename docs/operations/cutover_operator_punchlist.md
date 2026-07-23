@@ -93,6 +93,17 @@ Hardening-gate items (Jul 14-16):
 
 ## ④ Aug 3 — CUTOVER DAY (verify_cutover green)
 Ref: `cutover_checklist.md` + `production_rollback.md`. Gated by the Jul-31 go/no-go.
+- [ ] **Production tenant STAND-UP (one step — rehearsal-proven 2026-07-23).** From a
+  per-task worktree with its OWN venv (worktree_discipline.md), daemons down:
+  `python3 scripts/migrations/standup.py --no-restore`
+  (builders + auto-FLIP + seeds end-to-end; a failed stage prints its resume hint —
+  `--resume` restarts at the first incomplete stage; a mid-run fix-PR is: land it on
+  main, `git merge origin/main` in the worktree, `--resume`). Then land the regenerated
+  ID-surface PR; after merge + `git -C ~/its pull`:
+  `python3 scripts/migrations/standup.py finish`
+  (state cleanup → DARK fleet reload [send-dispatch plists stay unloaded] → heartbeat
+  wait → error sweep → the read-only gate-flip worksheet → dashboard restart LAST).
+  Runbook: `docs/runbooks/tenant_standup.md`.
 - [ ] **CL-31 (ordering: FIRST) sealed mirror-secret backup** — `security find-generic-password … -w`
   each secret → offline medium (never repo/log/Smartsheet/cloud), BEFORE any secret is overwritten.
   Box caveat: the sealed token is valid only while UNUSED. Verify: `curl -sI https://safety.evergreenmirror.com/`
@@ -104,10 +115,17 @@ Ref: `cutover_checklist.md` + `production_rollback.md`. Gated by the Jul-31 go/n
 - [ ] CL-08 DKIM/SPF (`dig TXT`/`dig CNAME`).
 - [ ] CL-09 portal prod DNS live + serves Worker (`curl -sI` 200 + asset content-type).
 - [ ] CL-10 Resend sender domain Verified.
-- [ ] **CL-11 workspace approver shares** — apply `production_repoint_changeset.md` §Approver model
-  (unshare 3 mirror accounts; share the 7 prod approvers as INDIVIDUAL USER shares; heed the Ezra typo).
-- [ ] **CL-12 ITS_Config production sweep** — apply `production_repoint_changeset.md` §A–D. Verify:
-  `verify_cutover --only config` (NO `--allow-sandbox`) → PASS.
+- [ ] **CL-11 workspace approver shares (mechanized)** — review/edit
+  `scripts/migrations/production_shares_manifest.json`, then
+  `seed_production_shares.py` PLAN → `--commit` (Seth; ADD-only — the 3 mirror-account
+  unshares stay a manual UI step, named loudly by the plan). Verify:
+  `verify_cutover --only approver-shares` → PASS (VC-10; the Ezra-typo class is
+  refused mechanically at manifest load).
+- [ ] **CL-12 ITS_Config production sweep (mechanized)** — apply
+  `production_repoint_changeset.md` §A–D via `production_repoint.py` PLAN → `--commit`
+  (Seth; typed phrase; DRIFTED rows refuse the whole sweep; §E gates structurally
+  excluded — flips stay CL-13). Verify: `verify_cutover --only config` (NO
+  `--allow-sandbox`) → PASS.
 - [ ] CL-13 read each `*_enabled` row's Description before flipping (in-cell precondition = doctrine).
 - [ ] CL-15 (Smartsheet half) ITS_Review_Queue Workstream picklist column ⊇ live workstreams
   (REGISTRY code half already green).
