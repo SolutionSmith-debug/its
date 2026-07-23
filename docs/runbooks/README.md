@@ -9,15 +9,18 @@ entry to drive a Tier-2 repair; the operator sees the evidence and approves.
 These are the operator-facing counterpart to the code-reader `§42`
 docstrings/comments in the modules themselves — same capability, different
 audience (see [`../operations/doc_conventions.md`](../operations/doc_conventions.md)
-and Op Stds §43 vs §42). Each entry follows the §43 four-part shape
-(Symptom → What the Successor-Operator checks → The Claude prompt or UI
-action → Escalate-to-Seth condition); they use `type: operations`
-frontmatter (the conforming type for runbook/procedure docs — the
-convention has no separate `runbook` type).
+and Op Stds §43 vs §42). Fault-driven entries follow the §43 four-part
+shape (Symptom → What the Successor-Operator checks → The Claude prompt or
+UI action → Escalate-to-Seth condition); a few tree-exempt how-to entries
+(role guides, config-sheet setup, job management, project closure) follow
+the plain `type: operations` procedure shape instead. All use
+`type: operations` frontmatter (the conforming type for runbook/procedure
+docs — the convention has no separate `runbook` type).
 
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-23 | operations | active | _–_ | [Runbook — Close or archive a project (what actually happens today) (Successor-Remediation, Op Stds §43)](project_closure.md) | _–_ |
 | 2026-07-23 | operations | active | infrastructure | [Runbook — Tenant wipe / stand-up / finish lifecycle (Successor-Remediation, Op Stds §43)](tenant_standup.md) | _–_ |
 | 2026-07-22 | operations | active | infrastructure | [Runbook — ITS_Errors triage (reading the error log + the mark-resolved / clear verbs) (Successor-Remediation, Op Stds §43)](its_errors_triage.md) | _–_ |
 | 2026-07-22 | operations | active | _–_ | [Runbook — ITS_Review_Queue triage (working the human-review queue + the resolve verb) (Successor-Remediation, Op Stds §43)](review_queue_triage.md) | _–_ |

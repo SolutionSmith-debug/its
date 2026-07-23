@@ -120,7 +120,9 @@ base URL / bearer fails **closed** (Symptom B/C), never silently.
 Removed and has no retire path, so the count-drops-to-zero / zero-drop class simply does not exist
 here (unlike the Material List). A resolved incident stays on the ledger; only its `Line Status` cell
 flips (e.g. to `received`). An archived job's ledger is MOVED to the Archive workspace on closure
-(never deleted).
+(never deleted) — one of the four standing trackers the §51 archive-on-closure hook relocates; the
+whole-job closure picture is in [project_closure.md](project_closure.md), the move-failed repair in
+[hours_log_sync.md](hours_log_sync.md) Fault F.
 
 **Symptoms → repair (all LOW-class unless noted).**
 - `fieldops_incident_permanent` → a Review-Queue row (workstream `progress_reports`): a permanent
