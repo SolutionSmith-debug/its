@@ -32,7 +32,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from subcontracts import exhibit, governing_law, money, subcontract_generate, terms
@@ -141,23 +141,28 @@ def render_subcontract_docx(
         line = raw.rstrip()
         if not line.strip():
             continue
-        # The title line → centered heading, once.
+        # The title line → centered heading, once. Light-touch styling (2026-07-23):
+        # spacing attributes only — the TEXT is verbatim from the gate-checked body.
         if not first_seen and line.strip() == _TITLE_TEXT:
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_after = Pt(14)
             run = p.add_run(_TITLE_TEXT)
             run.bold = True
-            run.font.size = Pt(14)
+            run.font.size = Pt(15)
             first_seen = True
             continue
         first_seen = True
         if _ARTICLE_HEADING_RE.match(line):
             p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(10)
+            p.paragraph_format.space_after = Pt(3)
             run = p.add_run(line)
             run.bold = True
         else:
             p = doc.add_paragraph(line)
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.space_after = Pt(4)
 
     # Pin core-property timestamps to the agreement date (deterministic; no clock read).
     stamp = _agreement_datetime(subcontract)
@@ -226,21 +231,26 @@ def render_exhibit_a_docx(subcontract: dict[str, Any], contractor: dict[str, Any
         if not line.strip():
             continue
         # The very first content line is the Exhibit title → centered heading, once.
+        # Light-touch styling (2026-07-23): spacing attributes only — text verbatim.
         if first_line:
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_after = Pt(14)
             run = p.add_run(line)
             run.bold = True
-            run.font.size = Pt(14)
+            run.font.size = Pt(15)
             first_line = False
             continue
         if _EXHIBIT_HEADING_RE.match(line):
             p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(10)
+            p.paragraph_format.space_after = Pt(3)
             run = p.add_run(line)
             run.bold = True
         else:
             p = doc.add_paragraph(line)
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.space_after = Pt(4)
 
     # Pin core-property timestamps to the agreement date (deterministic; no clock read).
     stamp = _agreement_datetime(subcontract)
@@ -279,10 +289,14 @@ def render_sov_xlsx(subcontract: dict[str, Any], sov_lines: list[dict[str, Any]]
     ws.title = "Schedule of Values"
     money_fmt = '"$"#,##0.00'
     bold = Font(bold=True)
+    # House palette (2026-07-23 light-touch styling — fills/fonts only, no cell
+    # moves, no wording change; values still reconcile through the SOV guard).
+    brand_green = "FF1F4D2E"
+    tint_green = "FFE8F0E9"
 
     # Header block.
     ws["A1"] = "SCHEDULE OF VALUES (Annex C)"
-    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"].font = Font(bold=True, size=14, color=brand_green)
     ws["A2"] = "Project:"
     ws["B2"] = str(subcontract.get("project_name") or "")
     ws["A3"] = "Subcontractor:"
@@ -296,9 +310,12 @@ def render_sov_xlsx(subcontract: dict[str, Any], sov_lines: list[dict[str, Any]]
     # Table header.
     header_row = 6
     headers = ["#", "Scope of Work", "Quantity", "Unit Price", "Extended Value"]
+    header_fill = PatternFill(start_color=brand_green, end_color=brand_green,
+                              fill_type="solid")
     for col, text in enumerate(headers, start=1):
         c = ws.cell(row=header_row, column=col, value=text)
-        c.font = bold
+        c.font = Font(bold=True, color="FFFFFFFF")
+        c.fill = header_fill
         c.alignment = Alignment(horizontal="center")
 
     total = 0
@@ -328,10 +345,14 @@ def render_sov_xlsx(subcontract: dict[str, Any], sov_lines: list[dict[str, Any]]
         row += 1
 
     # TOTAL row (equals the Contract Price — the guard above proved total == price).
+    total_fill = PatternFill(start_color=tint_green, end_color=tint_green,
+                             fill_type="solid")
     tlabel = ws.cell(row=row, column=4, value="TOTAL")
     tlabel.font = bold
+    tlabel.fill = total_fill
     tcell = ws.cell(row=row, column=5, value=_dollars(total))
     tcell.font = bold
+    tcell.fill = total_fill
     tcell.number_format = money_fmt
 
     # Column widths for legibility.

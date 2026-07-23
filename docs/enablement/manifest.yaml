@@ -58,7 +58,7 @@ docs:
     title: "The Weekly Progress Rollup Numbers"
     version: v1
     source: docs/enablement/progress_rollup_numbers.md
-    sha256: e20fa5566999047bc71eb12aef6bf5ece58d0c94844cbfc8df211b54b8cb2c87
+    sha256: e95dd0c0ff74e0cb0cd2bc1c4bd2fcb224b663a632fccd58b83f8ba196004b97
 
   - key: crew_time_corrections
     title: "Office Guide — Crew Corrections + Time Amendments"

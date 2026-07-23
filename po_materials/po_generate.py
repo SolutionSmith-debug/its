@@ -64,11 +64,13 @@ from po_materials import vendors as vendors_mod
 from po_materials.po_log import format_total_cents as _money
 from safety_reports.form_pdf import (
     _CONTENT_W,
+    _FOOT,
     _GOLD,
     _LINE,
     _MARGIN,
     _TINT,
     _brand_header,
+    _callout,
     _canvas_maker,
     _p,
     _rich_body,
@@ -338,6 +340,9 @@ def _kv_block(title: str, rows: list[str], st: dict) -> Table:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
+    # A half-width block placed directly in the frame (the lone SELLER block) must
+    # hug the left grid line, not float platypus-centred (2026-07-23 polish fix).
+    t.hAlign = "LEFT"
     return t
 
 
@@ -423,6 +428,7 @@ def _totals_table(po: Mapping[str, Any], state_names: Mapping[str, str], st: dic
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
         ("LINEBELOW", (0, 0), (-1, -2), 0.4, _LINE),
         ("LINEABOVE", (0, -1), (-1, -1), 1.2, _GOLD),
+        ("BACKGROUND", (0, -1), (-1, -1), _TINT),  # the TOTAL row reads as the answer
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
@@ -430,24 +436,33 @@ def _totals_table(po: Mapping[str, Any], state_names: Mapping[str, str], st: dic
 
 
 def _signature_block(title: str, name: str, title_line: str, st: dict) -> Table:
-    """One signature block: party title, Date, NAME/TITLE (autofilled or blank),
-    SIGNATURE line. The corpus's dual blocks are two of these side-by-side."""
-    blank = "_" * 30
+    """One signature block: tinted party-title band, then labelled fill lines
+    (Date / NAME / TITLE / SIGNATURE) drawn as hairline RULES rather than typed
+    underscore runs (2026-07-23 polish). Autofilled values (the Purchaser
+    NAME/TITLE, D9) print ON their line; blank lines stay signable in print. The
+    corpus's dual blocks are two of these side-by-side."""
+    half = _CONTENT_W / 2 - 8
+    label_w = 0.95 * 72
     body: list[list[Any]] = [
-        [_p(title, st["colhead"])],
-        [_p(f"Date: {blank}", st["cell"])],
-        [_p(f"NAME: {name or blank}", st["cell"])],
-        [_p(f"TITLE: {title_line or blank}", st["cell"])],
-        [Spacer(1, 16)],
-        [_p(f"SIGNATURE: {blank}", st["cell"])],
+        [_p(title, st["colhead"]), ""],
+        [_p("Date", st["colhead"]), _p("", st["cell"])],
+        [_p("NAME", st["colhead"]), _p(name or "", st["cellb"])],
+        [_p("TITLE", st["colhead"]), _p(title_line or "", st["cell"])],
+        [Spacer(1, 18), ""],
+        [_p("SIGNATURE", st["colhead"]), _p("", st["cell"])],
     ]
-    t = Table(body, colWidths=[_CONTENT_W / 2 - 8])
+    t = Table(body, colWidths=[label_w, half - label_w])
     t.setStyle(TableStyle([
-        ("LINEBELOW", (0, 0), (0, 0), 0.8, _GOLD),
+        ("SPAN", (0, 0), (1, 0)),
+        ("LINEBELOW", (0, 0), (1, 0), 0.8, _GOLD),
+        ("BACKGROUND", (0, 0), (1, 0), _TINT),
+        # The fill lines: a visible grey rule under each value cell.
+        ("LINEBELOW", (1, 1), (1, 3), 0.6, _FOOT),
+        ("LINEBELOW", (1, 5), (1, 5), 0.6, _FOOT),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
     ]))
     return t
 
@@ -491,28 +506,21 @@ def render_po_pdf(
     st = _styles()
     names = state_names if state_names is not None else terms_lib.load_tax_config()["state_names"]
     entity = str(purchaser.get("entity") or "")
-    flow: list[Flowable] = _brand_header("PURCHASE ORDER", st)
+    # Second-gen letterhead (2026-07-23): the document identity — PURCHASE ORDER,
+    # PO number, date — rides the band's right column; the old separate DATE/PO
+    # NUMBER band below the masthead is retired. Same text layer, one band higher.
+    flow: list[Flowable] = _brand_header(
+        "", st, doc_label="PURCHASE ORDER",
+        meta_lines=[("PO NUMBER", str(po.get("po_number") or "")),
+                    ("DATE", po_date.strftime("%-m/%-d/%Y"))],
+    )
 
     # Purchaser identity under the masthead (D5 versioned config).
     for line in [entity, *purchaser.get("address_lines", []),
                  f"PH {purchaser.get('phone')}" if purchaser.get("phone") else ""]:
         if line:
             flow.append(_p(line, st["meta"]))
-    flow.append(Spacer(1, 6))
-
-    # DATE / PO NUMBER band.
-    meta = Table(
-        [[_p("DATE", st["colhead"]), _p(po_date.strftime("%-m/%-d/%Y"), st["cellb"]),
-          _p("PO NUMBER", st["colhead"]), _p(str(po.get("po_number") or ""), st["cellb"])]],
-        colWidths=[_CONTENT_W * 0.12, _CONTENT_W * 0.28, _CONTENT_W * 0.18, _CONTENT_W * 0.42],
-    )
-    meta.setStyle(TableStyle([
-        ("LINEBELOW", (0, 0), (-1, -1), 0.8, _GOLD),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    flow.append(meta)
-    flow.append(Spacer(1, 8))
+    flow.append(Spacer(1, 10))
 
     # SHIP TO + DELIVERY CONTACT side-by-side.
     ship_city_line = " ".join(
@@ -579,8 +587,8 @@ def render_po_pdf(
     if cc_list:
         routing_line += f", cc: {cc_list}"
     routing_line += f". Reference PO {po.get('po_number')} on all invoices."
-    flow.append(Spacer(1, 6))
-    flow.append(_p(routing_line, st["legal"]))
+    flow.append(Spacer(1, 8))
+    flow.append(_callout(routing_line, st))
 
     # In-body supersession clause (D7, corpus §4) — rendered ONLY when this PO
     # actually supersedes one.
@@ -603,8 +611,8 @@ def render_po_pdf(
                 f"ISSUED PURCHASE ORDER OF SERIES {family} FOR THIS PROJECT, RENDERING "
                 f"THE PRIOR PURCHASE ORDER NULL AND VOID."
             )
-        flow.append(Spacer(1, 6))
-        flow.append(_p(clause, st["legal"]))
+        flow.append(Spacer(1, 8))
+        flow.append(_callout(clause, st))
 
     # T&C statement + block (D6).
     flow.append(_section_header("TERMS AND CONDITIONS", st))

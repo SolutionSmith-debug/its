@@ -54,6 +54,7 @@ from safety_reports.form_pdf import (
     _MARGIN,
     _TINT,
     _brand_header,
+    _callout,
     _canvas_maker,
     _p,
     _rich_body,
@@ -136,31 +137,24 @@ def render_rfq_pdf(
     entity = str(purchaser.get("entity") or "")
     rfq_number = str(rfq.get("rfq_number") or "")
     vendor_name = str(vendor.get(vendors_mod.COL_VENDOR_NAME) or "")
-    flow: list[Flowable] = _brand_header("REQUEST FOR QUOTE", st)
+    # Second-gen letterhead (2026-07-23): the document identity — REQUEST FOR
+    # QUOTE, RFQ number, date, quotes-due — rides the band's right column; the old
+    # separate meta band below the masthead is retired. Same text layer, one band
+    # higher. QUOTES DUE stays the visually-last line (the one the vendor scans for).
+    due_display = due_date.strftime("%-m/%-d/%Y") if due_date is not None else "—"
+    flow: list[Flowable] = _brand_header(
+        "", st, doc_label="REQUEST FOR QUOTE",
+        meta_lines=[("RFQ NUMBER", rfq_number),
+                    ("DATE", rfq_date.strftime("%-m/%-d/%Y")),
+                    ("QUOTES DUE", due_display)],
+    )
 
     # Purchaser identity under the masthead (D5 versioned config).
     for line in [entity, *purchaser.get("address_lines", []),
                  f"PH {purchaser.get('phone')}" if purchaser.get("phone") else ""]:
         if line:
             flow.append(_p(line, st["meta"]))
-    flow.append(Spacer(1, 6))
-
-    # DATE / RFQ NUMBER / QUOTES DUE band (the PO meta band + the due-date slot).
-    due_display = due_date.strftime("%-m/%-d/%Y") if due_date is not None else "—"
-    meta = Table(
-        [[_p("DATE", st["colhead"]), _p(rfq_date.strftime("%-m/%-d/%Y"), st["cellb"]),
-          _p("RFQ NUMBER", st["colhead"]), _p(rfq_number, st["cellb"]),
-          _p("QUOTES DUE", st["colhead"]), _p(due_display, st["cellb"])]],
-        colWidths=[_CONTENT_W * 0.10, _CONTENT_W * 0.16, _CONTENT_W * 0.16,
-                   _CONTENT_W * 0.26, _CONTENT_W * 0.14, _CONTENT_W * 0.18],
-    )
-    meta.setStyle(TableStyle([
-        ("LINEBELOW", (0, 0), (-1, -1), 0.8, _GOLD),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    flow.append(meta)
-    flow.append(Spacer(1, 8))
+    flow.append(Spacer(1, 10))
 
     # TO (the addressed vendor — render-time SoR snapshot) + PROJECT side-by-side.
     to_rows = [
@@ -199,12 +193,14 @@ def render_rfq_pdf(
         flow.append(_section_header("SCOPE / REQUEST DETAILS", st))
         flow.extend(_rich_body(str(rfq.get("scope_text")), st))
 
-    # The submit-your-quote footer block (fixed language; number escaped via _p).
+    # The submit-your-quote footer block (fixed language; number escaped inside the
+    # callout via _p). The gold callout box is the house emphasis treatment — the
+    # same box the forms' legal text and the PO's routing clause use.
     flow.append(_section_header("HOW TO SUBMIT YOUR QUOTE", st))
     flow.append(Spacer(1, 2))
     footer = KeepTogether([
-        _p(_SUBMIT_FOOTER.format(rfq_number=rfq_number), st["legal"]),
-        Spacer(1, 4),
+        _callout(_SUBMIT_FOOTER.format(rfq_number=rfq_number), st),
+        Spacer(1, 6),
         _p(
             (
                 f"Quotes are due by {due_display} to {entity}."

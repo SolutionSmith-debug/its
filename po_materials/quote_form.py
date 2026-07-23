@@ -71,7 +71,7 @@ from datetime import datetime
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 
@@ -205,8 +205,17 @@ def render_quote_form(
     assert ws is not None
     ws.title = SHEET_FORM
 
-    title_font = Font(bold=True, size=14)
-    label_font = Font(bold=True)
+    # House styling (2026-07-23 light touch): fills / fonts ONLY. The parse half
+    # reads the FIXED geometry above (HEADER_LABEL_ROWS / TABLE_HEADER_ROW /
+    # FIRST_LINE_ROW / column indices) — styling must never move a row or column,
+    # and openpyxl styles are invisible to `parse_quote_form` (values only).
+    brand_green = "FF1F4D2E"
+    title_font = Font(bold=True, size=14, color=brand_green)
+    label_font = Font(bold=True, color=brand_green)
+    header_fill = PatternFill(start_color=brand_green, end_color=brand_green,
+                              fill_type="solid")
+    price_fill = PatternFill(start_color="FFFBF6E9", end_color="FFFBF6E9",
+                             fill_type="solid")  # pale gold — "fill these in"
     ws.cell(row=1, column=1, value="Request for Quote — Quote Form").font = title_font
     header_values = {
         "rfq_number": ("RFQ Number:", rfq_number),
@@ -221,7 +230,8 @@ def render_quote_form(
 
     for col, header in enumerate(TABLE_HEADERS, start=1):
         cell = ws.cell(row=TABLE_HEADER_ROW, column=col, value=header)
-        cell.font = label_font
+        cell.font = Font(bold=True, color="FFFFFFFF")
+        cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center")
 
     for index, line in enumerate(lines[:MAX_LINES]):
@@ -233,9 +243,14 @@ def render_quote_form(
         if qty is not None:
             ws.cell(row=row, column=COL_QTY, value=qty)
         ws.cell(row=row, column=COL_UNIT, value=str(line.get("unit") or ""))
-        # Price cells: BLANK, currency-formatted — the vendor's input surface.
-        ws.cell(row=row, column=COL_UNIT_PRICE).number_format = CURRENCY_FORMAT
-        ws.cell(row=row, column=COL_EXTENDED).number_format = CURRENCY_FORMAT
+        # Price cells: BLANK, currency-formatted, pale-gold-filled — the vendor's
+        # input surface, visually marked as the cells to complete.
+        unit_price = ws.cell(row=row, column=COL_UNIT_PRICE)
+        unit_price.number_format = CURRENCY_FORMAT
+        unit_price.fill = price_fill
+        extended = ws.cell(row=row, column=COL_EXTENDED)
+        extended.number_format = CURRENCY_FORMAT
+        extended.fill = price_fill
 
     widths = {1: 6, 2: 18, 3: 48, 4: 10, 5: 8, 6: 14, 7: 14}
     for col, width in widths.items():
