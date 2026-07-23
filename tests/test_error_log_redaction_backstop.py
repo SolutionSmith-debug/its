@@ -187,7 +187,7 @@ def test_redact_masks_known_shapes(raw: str, must_go: str):
         "a1b2c3d4-e5f6-4789-abcd-0123456789ab",  # a UUID (e.g. a correlation_id) — not a secret
         "processed 42 rows in 3.14s",
         "job JOB-0007 lifecycle=archived status=active",  # 'status=active' is not a secret keyword
-        "sheet 3072320166907780 updated",
+        "sheet 8933909738770308 updated",
     ],
 )
 def test_redact_does_not_over_redact_benign_text(benign: str):

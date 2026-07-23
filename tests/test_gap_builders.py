@@ -233,14 +233,14 @@ def _stub_box_root(monkeypatch: pytest.MonkeyPatch, items: list[dict[str, Any]])
 
 # ---- canonical fixtures mirroring the LIVE tenant shape ------------------
 
-_WS_SYSTEM_ID = 680592632244100
+_WS_SYSTEM_ID = 2730369263921028
 _SYSTEM_FOLDER_IDS = {
-    d3.FOLDER_CONFIG: 164788727768964,
-    d3.FOLDER_LOGS: 5231338308560772,
-    d3.FOLDER_QUEUES: 7201663145535364,
-    d3.FOLDER_DAEMONS: 2130046845511556,
+    d3.FOLDER_CONFIG: 1775005051709316,
+    d3.FOLDER_LOGS: 6278604679079812,
+    d3.FOLDER_QUEUES: 4026804865394564,
+    d3.FOLDER_DAEMONS: 4871229795526532,
 }
-_WS_PORTAL_ID = 194283417429892
+_WS_PORTAL_ID = 6820552519247748
 
 # A distinctive permalink for the sandbox-shared-into-production workspace the ownership
 # guard must refuse. Asserted verbatim in the not-owned tests so a builder that stops
@@ -348,8 +348,8 @@ def test_d2_adopts_existing_workspace_and_both_folders(monkeypatch, capsys):
         workspaces=[{"id": _WS_PORTAL_ID, "name": d2.WORKSPACE_NAME, "accessLevel": "OWNER"}],
         folders={
             _WS_PORTAL_ID: [
-                {"id": 6663869084002180, "name": "00_Safety Portal"},
-                {"id": 3559329820370820, "name": "00_Form Catalog"},
+                {"id": 2261538947000196, "name": "00_Safety Portal"},
+                {"id": 6765138574370692, "name": "00_Form Catalog"},
             ]
         },
     )
@@ -363,7 +363,7 @@ def test_d2_adopts_existing_workspace_and_both_folders(monkeypatch, capsys):
     tenant.post.assert_not_called()
     folder_create.assert_not_called()
     out = capsys.readouterr().out
-    assert "6663869084002180" in out and "3559329820370820" in out
+    assert "2261538947000196" in out and "6765138574370692" in out
 
 
 def test_d2_workspace_name_uses_two_en_dashes_not_an_em_dash():
@@ -1460,7 +1460,7 @@ def test_d3_key_to_title_covers_exactly_the_twelve_sheet_ids_keys():
 
 def test_d3_column_id_readback_maps_every_key(monkeypatch):
     _stub_daemon_health_columns(monkeypatch)
-    resolved = d3.read_daemon_health_column_ids(4529351700729732)
+    resolved = d3.read_daemon_health_column_ids(697287746473860)
     assert set(resolved) == set(sheet_ids.DAEMON_HEALTH_COLUMNS)
     assert all(v is not None for v in resolved.values())
 
@@ -1490,13 +1490,13 @@ def test_d3_duplicate_sheet_names_warn_with_every_id_and_create_nothing(monkeypa
     """The live "02 — Logs" folder holds FIVE sheets named ITS_Errors and only the LAST
     is the one the code uses. Adopt-first is correct; adopting SILENTLY is not."""
     duplicate_ids = [
-        4195780532326276, 470411799121796, 2704945844277124, 4505679602601860, 27291433258884,
+        4195780532326276, 470411799121796, 2704945844277124, 4505679602601860, 8015637140950916,
     ]
     tenant = _system_tenant(with_sheets=True)
     logs_folder = _SYSTEM_FOLDER_IDS[d3.FOLDER_LOGS]
     tenant.sheets[logs_folder] = [
         {"id": sid, "name": "ITS_Errors"} for sid in duplicate_ids
-    ] + [{"id": 8687740798324612, "name": "ITS_Quarantine"}]
+    ] + [{"id": 137816716562308, "name": "ITS_Quarantine"}]
     _install_tenant(monkeypatch, d3, tenant)
     sheet_create = _stub_sheet_create(monkeypatch, tenant)
     _stub_daemon_health_columns(monkeypatch)
@@ -1578,9 +1578,9 @@ def test_d2_duplicate_folder_names_warn_and_create_nothing(monkeypatch, capsys):
         workspaces=[{"id": _WS_PORTAL_ID, "name": d2.WORKSPACE_NAME, "accessLevel": "OWNER"}],
         folders={
             _WS_PORTAL_ID: [
-                {"id": 6663869084002180, "name": "00_Safety Portal"},
+                {"id": 2261538947000196, "name": "00_Safety Portal"},
                 {"id": 4444, "name": "00_Safety Portal"},
-                {"id": 3559329820370820, "name": "00_Form Catalog"},
+                {"id": 6765138574370692, "name": "00_Form Catalog"},
             ]
         },
     )
@@ -1595,7 +1595,7 @@ def test_d2_duplicate_folder_names_warn_and_create_nothing(monkeypatch, capsys):
     folder_create.assert_not_called()
     out = capsys.readouterr().out
     assert "duplicate_name_ambiguity" in out
-    assert "6663869084002180" in out and "4444" in out
+    assert "2261538947000196" in out and "4444" in out
 
 
 def test_d4_duplicate_root_names_warn_with_every_id_and_create_nothing(monkeypatch, capsys):

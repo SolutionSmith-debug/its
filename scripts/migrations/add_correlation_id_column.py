@@ -5,12 +5,12 @@ Companion to PR α (alert-routing dedupe core). Run once during PR α
 landing; safe to re-run (both operations are idempotency-guarded).
 
 What it does:
-1. Inspect ITS_Errors (sheet 27291433258884) columns. If `Correlation_ID`
+1. Inspect ITS_Errors (sheet 8015637140950916) columns. If `Correlation_ID`
    is absent, POST a new TEXT_NUMBER column at index 6 — between
    `Traceback` (last data column) and `Surfaced At` (first triage column).
    If the column is already present, skip silently.
 
-2. Inspect ITS_Config (sheet 3072320166907780) for a row with
+2. Inspect ITS_Config (sheet 8933909738770308) for a row with
    `Setting = alerting.dedupe_window_minutes` and `Workstream = global`.
    If missing, POST a new row with `Value = 60` and a Description
    pointing at `shared/defaults.py:ALERTING_DEDUPE_WINDOW_MINUTES` as

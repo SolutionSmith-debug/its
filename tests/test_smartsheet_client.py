@@ -1118,7 +1118,7 @@ def test_list_workspace_share_emails_parses_normalizes_and_excludes_groups(mocke
             {"accessLevel": "EDITOR", "type": "GROUP", "groupId": 9},           # no email → excluded
         ]),
     )
-    out = smartsheet_client.list_workspace_share_emails(194283417429892)
+    out = smartsheet_client.list_workspace_share_emails(6820552519247748)
     assert out == frozenset({"alice@x.com", "bob@x.com"})
 
 
@@ -1742,7 +1742,7 @@ def test_find_row_by_primary_returns_matching_row_dict(mocker):
     )
 
     row = smartsheet_client.find_row_by_primary(
-        sheet_id=4529351700729732,
+        sheet_id=697287746473860,
         primary_column_id=10,
         value="safety_reports.portal_poll",
     )
@@ -1778,26 +1778,26 @@ def test_update_row_cells_by_id_builds_cell_payload(mocker):
     client.Sheets.update_rows.return_value = SimpleNamespace(result=[])
 
     smartsheet_client.update_row_cells_by_id(
-        sheet_id=4529351700729732,
+        sheet_id=697287746473860,
         row_id=7461022174478212,
         cells_by_column_id={
-            6447303178358660: "2026-05-21T19:00:00Z",  # last_heartbeat
-            4195503364673412: "OK",                     # last_cycle_status
-            536328667434884: 1247,                      # total_cycles
+            2052777316749188: "2026-05-21T19:00:00Z",  # last_heartbeat
+            6556376944119684: "OK",                     # last_cycle_status
+            8808176757804932: 1247,                      # total_cycles
         },
     )
 
     # The SDK Sheets.update_rows call took exactly one Row with three cells.
     assert client.Sheets.update_rows.call_count == 1
     sheet_id_arg, rows_arg = client.Sheets.update_rows.call_args.args
-    assert sheet_id_arg == 4529351700729732
+    assert sheet_id_arg == 697287746473860
     [row] = rows_arg
     assert row.id == 7461022174478212
     by_col = {c.column_id: c.value for c in row.cells}
     assert by_col == {
-        6447303178358660: "2026-05-21T19:00:00Z",
-        4195503364673412: "OK",
-        536328667434884: 1247,
+        2052777316749188: "2026-05-21T19:00:00Z",
+        6556376944119684: "OK",
+        8808176757804932: 1247,
     }
 
 
@@ -1827,25 +1827,25 @@ def test_add_row_by_id_builds_cell_payload_and_returns_new_id(mocker):
     )
 
     new_id = smartsheet_client.add_row_by_id(
-        sheet_id=4529351700729732,
+        sheet_id=697287746473860,
         cells_by_column_id={
-            817803644145540: "safety_reports.weekly_send_poll",  # daemon_name
-            5321403271516036: "safety_reports",                   # workstream
-            3069603457830788: True,                               # enabled
+            8245226804383620: "safety_reports.weekly_send_poll",  # daemon_name
+            926877409906564: "safety_reports",                   # workstream
+            5430477037277060: True,                               # enabled
         },
     )
 
     assert new_id == 7788
     assert client.Sheets.add_rows.call_count == 1
     sheet_id_arg, rows_arg = client.Sheets.add_rows.call_args.args
-    assert sheet_id_arg == 4529351700729732
+    assert sheet_id_arg == 697287746473860
     [row] = rows_arg
     assert row.to_bottom is True
     by_col = {c.column_id: c.value for c in row.cells}
     assert by_col == {
-        817803644145540: "safety_reports.weekly_send_poll",
-        5321403271516036: "safety_reports",
-        3069603457830788: True,
+        8245226804383620: "safety_reports.weekly_send_poll",
+        926877409906564: "safety_reports",
+        5430477037277060: True,
     }
 
 

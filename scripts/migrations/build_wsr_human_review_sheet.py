@@ -1,7 +1,7 @@
 """Build WSR_human_review — the Phase-5 weekly review/approve/send surface.
 
 Creates the central review sheet in the standalone "ITS –– Safety Portal" workspace's
-"Safety Portal" folder (FOLDER id 6663869084002180; amendment b). This is NOT the old
+"Safety Portal" folder (FOLDER id 2261538947000196; amendment b). This is NOT the old
 WPR_Pending_Review (which lives in ITS — Human Review) — it supersedes it for the
 portal safety flow.
 
@@ -34,7 +34,7 @@ import requests  # type: ignore[import-untyped]  # noqa: E402
 
 from shared import keychain, smartsheet_client  # noqa: E402
 
-FOLDER_SAFETY_PORTAL = 6663869084002180  # ITS –– Safety Portal / Safety Portal
+FOLDER_SAFETY_PORTAL = 2261538947000196  # ITS –– Safety Portal / Safety Portal
 SHEET_NAME = "WSR_human_review"
 # Lifecycle: PENDING → SENDING (write-ahead marker, weekly_send Stage 6) → SENT;
 # FAILED (retryable) / HELD (operator hold) are off-path. SENDING is a transient

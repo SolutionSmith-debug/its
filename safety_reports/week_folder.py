@@ -45,8 +45,8 @@ SCRIPT_NAME = "safety_reports.week_folder"
 # Bradley 1 / Week of 2026-03-09 sheets — verified live 2026-05-21.
 # Per-customer-repo invariant: replace at fork time if the blueprint
 # is forked for a different customer's portfolio.
-TEMPLATE_DAILY_REPORTS_SHEET_ID = 7282977254887300
-TEMPLATE_WEEKLY_ROLLUP_SHEET_ID = 2229209496768388
+TEMPLATE_DAILY_REPORTS_SHEET_ID = 7503204592865156
+TEMPLATE_WEEKLY_ROLLUP_SHEET_ID = 1173075633590148
 
 
 @dataclass(frozen=True)
