@@ -2040,6 +2040,58 @@ def list_workspace_share_emails(workspace_id: int) -> frozenset[str]:
 
 
 @_breaker_guard
+def list_workspace_shares(workspace_id: int) -> tuple[dict[str, Any], ...]:
+    """Return the workspace's RAW share records — USER and GROUP shares alike.
+
+    Purpose
+        The cutover gate's F22 share audit (``scripts/verify_cutover.py`` VC-10)
+        needs more than ``list_workspace_share_emails`` exposes: a GROUP share
+        carries NO ``email``, so the email view cannot distinguish "no group
+        shares" from "a group share that silently does not count toward F22".
+        This helper returns the raw share dicts (``type``, ``email``, ``name``,
+        ``accessLevel``, …) so a caller can flag group shares and mirror-account
+        residue by inspection.
+
+    Invariants
+        - Same transport as ``list_workspace_share_emails`` (direct REST
+          ``GET /workspaces/{id}/shares?includeAll=true``). The small transport
+          duplication is deliberate, not an oversight: that helper's body and
+          decorator stack are locked by the retry-enrollment AST tests
+          (``tests/test_smartsheet_retry.py``), so neither delegating it here
+          nor refactoring it onto this helper is in scope (§14 preservation).
+        - Records are returned verbatim (no lowercasing/dedup — the caller
+          normalizes for its own comparison). Read-only.
+        - NOT ``_transient_retry``-enrolled: the approved-enrollment list is
+          set-equality-locked in ``tests/test_smartsheet_retry.py``; enrolling
+          this read is a deliberate follow-up edit there, never a side effect
+          of the helper landing.
+
+    Failure modes
+        Non-2xx → typed ``SmartsheetError`` hierarchy via
+        ``_translate_smartsheet_error``; ``SmartsheetCircuitOpenError`` when the
+        breaker is OPEN.
+
+    Consumers
+        ``scripts/verify_cutover.py`` ``_check_approver_shares`` (VC-10).
+    """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = (
+        f"https://api.smartsheet.com/2.0/workspaces/{workspace_id}/shares"
+        "?includeAll=true"
+    )
+    context = f"listing raw shares for workspace {workspace_id}"
+    try:
+        response = requests.get(
+            url, headers={"Authorization": f"Bearer {token}"}, timeout=30
+        )
+    except requests.RequestException as e:
+        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context, idempotent=True)
+    body = response.json()
+    return tuple(share for share in body.get("data", []) if isinstance(share, dict))
+
+
+@_breaker_guard
 def attach_pdf_to_row(
     sheet_id: int,
     row_id: int,
