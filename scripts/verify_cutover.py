@@ -27,31 +27,34 @@ Design contract:
 
 Checks (each independently selectable via ``--only`` / ``--skip``):
 
-====== ============== ==============================================================
-id     slug           what it proves
-====== ============== ==============================================================
-VC-01  keychain       all required Keychain secrets present (18: 11 non-Box + Box
-                      triplet + ``ITS_PORTAL_PO_TOKEN`` + the config-actuator /
-                      subcontract-poll daemon bearers + the operator-dashboard PIN)
-VC-02  launchd        every shipped ``org.solutionsmith.its.*`` plist loaded EXCEPT the
-                      dark-unloaded send daemons (``po-send`` — send-gate), which must
-                      NOT be loaded (no missing, no orphans, no dark send daemon running)
-VC-03  config         load-bearing ITS_Config rows present + non-default
-                      (worker_base_url, from_mailbox rows, scheduled_send_local,
-                      the polling/sync/intake gates, ``system.operator_email``,
-                      the subcontract-poll gate rows) and — unless
-                      ``--allow-sandbox`` or a named ``--profile`` exemption —
-                      free of the mirror domain
-VC-04  daemon-health  every Enabled ITS_Daemon_Health row has a heartbeat fresher
-                      than 2 x its Interval Seconds (the schema's documented
-                      staleness threshold)
-VC-05  review-queue   ITS_Review_Queue reachable (read of pending rows succeeds)
-VC-06  alerting       ITS_SENTRY_DSN + ITS_RESEND_API_KEY present and shape-valid
-VC-07  git            repo on ``main``, working tree clean, HEAD == origin/main
-VC-08  d1-migrations  ``wrangler d1 migrations list <db> --remote`` reports none
-                      pending (one retry on transient Cloudflare 7403)
-VC-09  heartbeat-url  ``system.heartbeat_url`` (UptimeRobot) configured, https
-====== ============== ==============================================================
+====== =============== ==============================================================
+id     slug            what it proves
+====== =============== ==============================================================
+VC-01  keychain        all required Keychain secrets present (18: 11 non-Box + Box
+                       triplet + ``ITS_PORTAL_PO_TOKEN`` + the config-actuator /
+                       subcontract-poll daemon bearers + the operator-dashboard PIN)
+VC-02  launchd         every shipped ``org.solutionsmith.its.*`` plist loaded EXCEPT the
+                       dark-unloaded send daemons (``po-send`` — send-gate), which must
+                       NOT be loaded (no missing, no orphans, no dark send daemon running)
+VC-03  config          load-bearing ITS_Config rows present + non-default
+                       (worker_base_url, from_mailbox rows, scheduled_send_local,
+                       the polling/sync/intake gates, ``system.operator_email``,
+                       the subcontract-poll gate rows) and — unless
+                       ``--allow-sandbox`` or a named ``--profile`` exemption —
+                       free of the mirror domain
+VC-04  daemon-health   every Enabled ITS_Daemon_Health row has a heartbeat fresher
+                       than 2 x its Interval Seconds (the schema's documented
+                       staleness threshold)
+VC-05  review-queue    ITS_Review_Queue reachable (read of pending rows succeeds)
+VC-06  alerting        ITS_SENTRY_DSN + ITS_RESEND_API_KEY present and shape-valid
+VC-07  git             repo on ``main``, working tree clean, HEAD == origin/main
+VC-08  d1-migrations   ``wrangler d1 migrations list <db> --remote`` reports none
+                       pending (one retry on transient Cloudflare 7403)
+VC-09  heartbeat-url   ``system.heartbeat_url`` (UptimeRobot) configured, https
+VC-10  approver-shares every manifest workspace carries its production approver
+                       USER shares (manifest ⊆ live), zero mirror-domain share
+                       residue, and no GROUP shares posing as F22 authority
+====== =============== ==============================================================
 
 PO enrollment note (WS1): ``po_send`` has LANDED (PR #500, ships dark via a seeded
 ``po_materials.po_send.polling_enabled=false`` row), so its production-address surface is
@@ -109,6 +112,23 @@ log line. Enrolling it as ``non_empty`` would turn a benign absence into a RED c
 verdict — the opposite of what VC-03 is for. The rows ARE seeded so the operator has
 something to edit; that is the phantom-switch fix, not a cutover assertion.
 
+VC-10 approver-shares (CL-11 mechanization + CL-37's subcontracts leg): F22 approval
+authority IS workspace USER-share membership (GROUP shares do NOT count — a group-only
+share yields an EMPTY authorized set that silently fail-closes every send), so the gate
+diffs each workspace named in ``scripts/migrations/production_shares_manifest.json``
+against its LIVE share list via ``smartsheet_client.list_workspace_shares``. SUBSET
+semantics, deliberately NOT set equality: the manifest approver set must be ⊆ the live
+USER-share set and the mirror domain must show ZERO residue — the operator's own
+account, its@, or any additional production share Seth grants may legitimately hold
+shares beyond the manifest, and pinning equality would turn every such grant into a RED
+cutover verdict. A GROUP share on a checked workspace FAILS the check: it carries no
+F22 authority, and its presence invites the false belief that group members can
+approve sends. ``--allow-sandbox`` waives the whole check (mirror dress rehearsals run
+mirror-account shares by design); a ``--profile`` does NOT exempt VC-10 — a
+profile-gated phase cutover still requires the production approver shares. The applier
+half is ``scripts/migrations/seed_production_shares.py`` (guarded, plan-default,
+ADD-only).
+
 Usage::
 
     python -m scripts.verify_cutover                 # full gate (the cutover verdict)
@@ -128,6 +148,7 @@ are mutually exclusive so a profile gate can't be silently degraded.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from collections.abc import Callable
@@ -163,6 +184,13 @@ DARK_UNLOADED_LABELS = frozenset({
 # after cutover means a daemon is pointed at the sandbox (§53 sandbox-masks-
 # production). `--allow-sandbox` relaxes this for mirror dress rehearsals.
 SANDBOX_DOMAIN_MARKER = "evergreenmirror"
+
+# The CL-11/CL-37 production approver-share manifest (data, operator-reviewed).
+# VC-10 diffs each workspace it names against the live share list; the applier is
+# scripts/migrations/seed_production_shares.py (guarded, plan-default, ADD-only).
+APPROVER_SHARES_MANIFEST = (
+    REPO_ROOT / "scripts" / "migrations" / "production_shares_manifest.json"
+)
 
 # Cutover PROFILES — each names a phase-specific set of (key, workstream) rows whose
 # VC-03 sandbox scan is EXEMPTED. Deliberately data, not a code path: if a cutover
@@ -815,6 +843,123 @@ def _check_heartbeat_url(opts: Options) -> CheckOutcome:
     return CheckOutcome(passed=True, summary="system.heartbeat_url configured (https).")
 
 
+# ---- VC-10 approver-shares ------------------------------------------------
+
+
+def _load_shares_manifest() -> dict[str, object]:
+    """Parse the checked-in approver-share manifest (schema-validated at CI by
+    tests/test_production_shares.py — the gate needs only a structural read)."""
+    loaded: dict[str, object] = json.loads(
+        APPROVER_SHARES_MANIFEST.read_text(encoding="utf-8")
+    )
+    return loaded
+
+
+def _check_approver_shares(opts: Options) -> CheckOutcome:
+    """F22 approver USER shares match the production manifest (CL-11 + CL-37).
+
+    Per manifest workspace (id via its ``shared.sheet_ids`` constant): (a) the
+    manifest approver emails must be a SUBSET of the live USER-share emails —
+    subset, deliberately NOT equality, because the operator's own account / its@
+    may legitimately hold shares beyond the manifest; (b) ZERO live USER shares
+    on the mirror domain (each residue named — removal is a manual unshare, the
+    seeder never deletes); (c) any GROUP share FAILS the check, named as
+    non-counting toward F22 (a group-only share silently fail-closes every send,
+    and a group share beside valid USER shares invites the false belief that
+    group members hold approval authority).
+
+    ``--allow-sandbox`` waives the whole check (PASS, no API call — mirror dress
+    rehearsals run mirror-account shares by design). A ``--profile`` does NOT
+    exempt VC-10: a profile-gated phase cutover still requires the production
+    approver shares on every send-bearing workspace.
+    """
+    if opts.allow_sandbox:
+        return CheckOutcome(
+            passed=True,
+            summary="approver-share check waived (sandbox mode — manifest diff waived).",
+        )
+    try:
+        manifest = _load_shares_manifest()
+        workspaces = manifest["workspaces"]
+        mirror_domain = str(manifest["mirror_domain"]).strip().lower()
+    except (OSError, ValueError, KeyError) as exc:
+        return CheckOutcome(
+            passed=False,
+            summary=f"approver-share manifest unreadable ({APPROVER_SHARES_MANIFEST}).",
+            details=f"{type(exc).__name__}: {exc}",
+        )
+    # The residue leg keys off the manifest's mirror_domain — pin it to the
+    # SANDBOX_DOMAIN_MARKER single source so a manifest typo cannot silently
+    # blind the check (adversarial review 2026-07-23; the seeder pins the same
+    # value as EXPECTED_MIRROR_DOMAIN).
+    if mirror_domain != f"{SANDBOX_DOMAIN_MARKER}.com":
+        return CheckOutcome(
+            passed=False,
+            summary=(
+                f"manifest mirror_domain {mirror_domain!r} != "
+                f"'{SANDBOX_DOMAIN_MARKER}.com' — a typo here would BLIND the "
+                "mirror-residue leg; fix the manifest."
+            ),
+        )
+    mirror_suffix = "@" + mirror_domain
+    if not isinstance(workspaces, list) or not workspaces:
+        return CheckOutcome(
+            passed=False,
+            summary="approver-share manifest names zero workspaces.",
+        )
+    problems: list[str] = []
+    checked = 0
+    for ws in workspaces:
+        constant = str(ws.get("constant"))
+        label = f"{ws.get('name')} [{constant}]"
+        workspace_id = int(getattr(sheet_ids, constant, 0) or 0)
+        if not workspace_id:
+            problems.append(f"{label}: sheet_ids.{constant} missing or 0 — cannot check")
+            continue
+        shares = smartsheet_client.list_workspace_shares(workspace_id)
+        user_emails = {
+            str(share["email"]).strip().lower()
+            for share in shares
+            if share.get("email")
+        }
+        expected = {
+            str(approver["email"]).strip().lower()
+            for approver in ws.get("approvers", [])
+        }
+        for email in sorted(expected - user_emails):
+            problems.append(f"{label}: missing approver USER share {email}")
+        for email in sorted(e for e in user_emails if e.endswith(mirror_suffix)):
+            problems.append(
+                f"{label}: mirror-account share residue {email} (UNSHARE by hand — "
+                "the seeder never deletes)"
+            )
+        for share in shares:
+            if not share.get("email"):
+                group_name = share.get("name") or f"groupId={share.get('groupId')}"
+                problems.append(
+                    f"{label}: GROUP share {group_name!r} does NOT count toward F22 "
+                    "(group members hold NO approval authority — approvers need "
+                    "individual USER shares)"
+                )
+        checked += 1
+    if problems:
+        return CheckOutcome(
+            passed=False,
+            summary=(
+                f"approver-share audit failed on {checked} checked workspace(s) "
+                f"({len(problems)} problem(s))."
+            ),
+            details="; ".join(problems),
+        )
+    return CheckOutcome(
+        passed=True,
+        summary=(
+            f"all {checked} manifest workspaces carry the production approver USER "
+            "shares (manifest ⊆ live), zero mirror residue, no GROUP shares."
+        ),
+    )
+
+
 # ---- registry + harness ---------------------------------------------------
 
 CHECKS: tuple[CheckSpec, ...] = (
@@ -827,6 +972,7 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec("VC-07", "git", "repo on main, clean, matches origin/main", _check_git),
     CheckSpec("VC-08", "d1-migrations", "remote D1 has no pending migrations", _check_d1_migrations),
     CheckSpec("VC-09", "heartbeat-url", "UptimeRobot heartbeat URL configured", _check_heartbeat_url),
+    CheckSpec("VC-10", "approver-shares", "F22 approver USER shares match the production manifest", _check_approver_shares),
 )
 
 
@@ -909,7 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list:
         for spec in CHECKS:
-            print(f"{spec.check_id}  {spec.slug:<14} {spec.description}")
+            print(f"{spec.check_id}  {spec.slug:<15} {spec.description}")
         return 0
 
     try:

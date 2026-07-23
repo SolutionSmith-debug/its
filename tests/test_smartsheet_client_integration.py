@@ -664,6 +664,25 @@ def test_list_workspace_share_emails_live(_token_available):
         assert e == e.lower().strip()  # normalized (lowercased + stripped)
 
 
+def test_list_workspace_shares_live(_token_available):
+    """Live §30-style smoke: the RAW share records backing VC-10 (the cutover
+    gate's F22 share audit). Read-only, no cleanup. Proves the live
+    /workspaces/{id}/shares payload shape the mock-level tests hand-author —
+    in particular that USER shares carry `email` and every record carries
+    `accessLevel` (the GROUP-detection assumption: a share with no `email` is
+    a group). (2026-07-23 adversarial-review advisory: run before relying on
+    VC-10 at the actual cutover.)"""
+    shares = smartsheet_client.list_workspace_shares(
+        sheet_ids.WORKSPACE_SAFETY_PORTAL
+    )
+    assert isinstance(shares, tuple) and shares
+    for share in shares:
+        assert isinstance(share, dict)
+        assert share.get("accessLevel")
+        # every share is USER (has email) or GROUP (no email, has name/groupId)
+        assert share.get("email") or share.get("name") or share.get("groupId")
+
+
 # ---- attach_pdf_to_row: live multipart upload + idempotent replace ------
 
 

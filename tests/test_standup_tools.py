@@ -8,7 +8,9 @@ was reachable), not just a green path.
 """
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -28,6 +30,17 @@ import standup  # noqa: E402
 import wipe_tenant as wipe  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _redirect_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test here gets the stand-up ACT-fence marker (PR #674) redirected
+    to tmp_path — unit tests must never touch ~/its/state (the live-state
+    tripwire enforces it; forensic class #8)."""
+    monkeypatch.setattr(standup, "STANDUP_MARKER_PATH",
+                        tmp_path / "standup_in_progress.json")
+    monkeypatch.setattr(wipe, "STANDUP_MARKER_PATH",
+                        tmp_path / "standup_in_progress.json")
 
 
 # ---- wipe_tenant: allowlist double-match (guard 1) ------------------------
@@ -315,6 +328,86 @@ def test_sweep_covers_yaml_and_md_report_only(tmp_path: Path) -> None:
     # report-only: nothing rewritten
     assert "111222333" in (tmp_path / "runbook.md").read_text()
     assert "111222333" in (tmp_path / "conf.yaml").read_text()
+
+
+# ---- sheet_ids_regen: scoped propagation-probe retry ------------------------
+
+
+def test_constant_workspaces_resolves_plain_and_external() -> None:
+    out = regen._constant_workspaces({
+        "WORKSPACE_SYSTEM",
+        "safety_reports/week_folder.py:TEMPLATE_DAILY_REPORTS_SHEET_ID",
+        "NOT_A_REAL_CONSTANT",
+    })
+    assert out == {"ITS — System", "Forefront Portfolio — ITS Demo"}
+
+
+def test_filtered_retry_never_degrades_unfetched_constants() -> None:
+    """The overlay teeth: a workspace-filtered re-resolve reports MISSING for
+    every unfetched workspace's constants — merging it naively would flip
+    already-resolved constants back to MISSING. Only refetched workspaces may
+    take fresh values."""
+    old_res: dict[str, int | str] = {c: 1000 + i for i, c in enumerate(regen.REGISTRY)}
+    old_ext: dict[str, dict[str, int | str]] = {
+        path: {c: 2000 for c in consts}
+        for path, consts in regen.EXTERNAL_CONSTANTS.items()}
+    old_cols = {"daemon_name": 42}
+    fresh_res: dict[str, int | str] = {
+        c: (7777 if t.workspace == "ITS — System" else regen.MISSING)
+        for c, t in regen.REGISTRY.items()}
+    fresh_ext: dict[str, dict[str, int | str]] = {
+        path: {c: regen.MISSING for c in consts}
+        for path, consts in regen.EXTERNAL_CONSTANTS.items()}
+    fresh_cols = {"daemon_name": 99}
+    merged_res, merged_ext, merged_cols = regen._overlay_resolutions(
+        (old_res, old_ext, old_cols),
+        (fresh_res, fresh_ext, fresh_cols),
+        refetched={"ITS — System"})
+    # System-workspace constants take the fresh value...
+    assert merged_res["WORKSPACE_SYSTEM"] == 7777
+    assert merged_res["SHEET_CONFIG"] == 7777
+    # ...every other workspace's constants KEEP their prior resolution.
+    assert merged_res["WORKSPACE_SAFETY_PORTAL"] == old_res["WORKSPACE_SAFETY_PORTAL"]
+    assert all(v == 2000 for cmap in merged_ext.values() for v in cmap.values())
+    # DAEMON_HEALTH columns ride the System workspace -> fresh here.
+    assert merged_cols == {"daemon_name": 99}
+    # ...and stay OLD when System was not refetched.
+    _, _, cols_kept = regen._overlay_resolutions(
+        (old_res, old_ext, old_cols),
+        (fresh_res, fresh_ext, fresh_cols),
+        refetched={"ITS — Purchase Orders"})
+    assert cols_kept == {"daemon_name": 42}
+
+
+def test_retry_loop_scopes_resolve_to_expected_workspaces(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Wiring: attempt 1 resolves FULL (drift-self-heal); the retry burst calls
+    _resolve_live with exactly the unresolved --expect constants' workspaces."""
+    calls: list[set[str] | None] = []
+    all_missing: dict[str, int | str] = dict.fromkeys(regen.REGISTRY, regen.MISSING)
+    resolved_system = dict(all_missing) | {
+        c: 5000 + i for i, (c, t) in enumerate(regen.REGISTRY.items())
+        if t.workspace == "ITS — System"}
+    ext_missing = {path: dict.fromkeys(consts, regen.MISSING)
+                   for path, consts in regen.EXTERNAL_CONSTANTS.items()}
+
+    def _fake_resolve(workspace_filter: set[str] | None = None) -> Any:
+        calls.append(workspace_filter)
+        res = all_missing if workspace_filter is None else resolved_system
+        return dict(res), {p: dict(c) for p, c in ext_missing.items()}, {}
+
+    monkeypatch.setattr(regen, "_resolve_live", _fake_resolve)
+    monkeypatch.setattr(regen.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["sheet_ids_regen.py", "--retry-missing", "3",
+         "--expect", "WORKSPACE_SYSTEM", "--expect", "SHEET_CONFIG"])
+    rc = regen.main()
+    assert rc == 0  # plan mode; the expected constants resolved on the retry
+    assert calls[0] is None                     # initial resolve is FULL
+    assert calls[1] == {"ITS — System"}         # retry scoped to the expect set
+    assert len(calls) == 2                      # resolved -> no further attempts
+    assert "re-resolving 1 workspace(s)" in capsys.readouterr().out
 
 
 # ---- build_legacy_workspaces ----------------------------------------------
@@ -833,3 +926,289 @@ def test_write_state_is_best_effort(
     monkeypatch.setattr(standup.state_io, "atomic_write_json", _oser)
     standup._write_state({"status": "running"}, tmp_path)  # must not raise
     assert "run_state_write_failed" in capsys.readouterr().out
+
+
+# ---- standup finish + marker + dashboard exemption (PR: finish subcommand) --
+
+
+def test_send_dispatch_labels_match_shipped_plists() -> None:
+    """Parity teeth: every SEND_DISPATCH label must be a shipped plist (a
+    renamed plist would silently drop from the dark-posture exclusion and a
+    send daemon would load), and the set is exactly the five dispatch lanes."""
+    shipped = {p.name.removesuffix(".plist")
+               for p in (REPO_ROOT / "scripts" / "launchd").glob(
+                   "org.solutionsmith.its.*.plist")}
+    missing = standup.SEND_DISPATCH_LABELS - shipped
+    assert not missing, f"SEND_DISPATCH label(s) with no shipped plist: {missing}"
+    assert standup.SEND_DISPATCH_LABELS == {
+        "org.solutionsmith.its.po-send",
+        "org.solutionsmith.its.rfq-send",
+        "org.solutionsmith.its.subcontract-send",
+        "org.solutionsmith.its.weekly-send",
+        "org.solutionsmith.its.progress-send",
+    }
+    assert standup.DASHBOARD_LABEL in shipped
+
+
+def test_reload_fleet_dark_never_loads_send_or_dashboard(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    loads: list[str] = []
+
+    def _record(plist: str) -> int:
+        loads.append(plist)
+        return 0
+
+    monkeypatch.setattr(standup, "_install_load", _record)
+    failures = standup._reload_fleet("dark")
+    assert failures == []
+    labels = {name.removesuffix(".plist") for name in loads}
+    assert not labels & standup.SEND_DISPATCH_LABELS, (
+        "dark posture loaded a SEND-DISPATCH plist — External-Send-Gate violation")
+    assert standup.DASHBOARD_LABEL not in labels  # restarted last, not here
+    assert len(labels) >= 10  # the working fleet actually loads
+
+
+def test_reload_fleet_full_loads_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    loads: list[str] = []
+
+    def _record(plist: str) -> int:
+        loads.append(plist)
+        return 0
+
+    monkeypatch.setattr(standup, "_install_load", _record)
+    standup._reload_fleet("full")
+    labels = {name.removesuffix(".plist") for name in loads}
+    assert standup.SEND_DISPATCH_LABELS <= labels
+    assert standup.DASHBOARD_LABEL not in labels
+
+
+def _boom_named(what: str) -> Any:
+    def _inner(*a: Any, **k: Any) -> None:
+        raise AssertionError(f"{what} reached — must not run in this mode")
+    return _inner
+
+
+def test_finish_verify_only_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--verify-only runs only the read-only legs: no gate, no cleanup, no
+    reload, no dashboard restart, no daemons-down requirement."""
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: True)
+    monkeypatch.setattr(standup, "_verify_regen_parity", lambda: True)
+    monkeypatch.setattr(standup, "_await_heartbeats", lambda *a, **k: [])
+    monkeypatch.setattr(standup, "_post_reload_error_sweep", lambda: 0)
+    monkeypatch.setattr(standup, "_gate_report", lambda dump_dir: None)
+    for seam in ("_require_daemons_down", "_state_cleanup", "_reload_fleet",
+                 "_restart_dashboard", "_confirm", "_confirm_full_posture"):
+        monkeypatch.setattr(standup, seam, _boom_named(seam))
+    assert standup.finish_main(["--verify-only", "--no-restore"]) == 0
+
+
+def test_finish_full_posture_requires_phrase(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A declined LOAD SEND DAEMONS phrase aborts BEFORE any cleanup/reload."""
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: True)
+    monkeypatch.setattr(standup, "_verify_regen_parity", lambda: True)
+    monkeypatch.setattr(standup, "_require_daemons_down", lambda: True)
+    monkeypatch.setattr(standup, "_confirm_full_posture", lambda: False)
+    for seam in ("_state_cleanup", "_reload_fleet", "_restart_dashboard",
+                 "_confirm"):
+        monkeypatch.setattr(standup, seam, _boom_named(seam))
+    assert standup.finish_main(["--posture", "full", "--no-restore"]) == 1
+
+
+def test_finish_precondition_failures_abort(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    for seam in ("_require_daemons_down", "_state_cleanup", "_reload_fleet",
+                 "_restart_dashboard", "_confirm", "_await_heartbeats",
+                 "_post_reload_error_sweep", "_gate_report"):
+        monkeypatch.setattr(standup, seam, _boom_named(seam))
+    # dirty tree refuses first
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: False)
+    monkeypatch.setattr(standup, "_verify_regen_parity", _boom_named("regen"))
+    assert standup.finish_main(["--no-restore"]) == 1
+    # regen mismatch refuses second
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: True)
+    monkeypatch.setattr(standup, "_verify_regen_parity", lambda: False)
+    assert standup.finish_main(["--no-restore"]) == 1
+
+
+def test_dashboard_exempt_from_daemon_guards(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both daemon-down guards EXEMPT the dashboard (read-only panels stay up;
+    ACT verbs are marker-fenced, its#677) but still refuse on any other job."""
+    dash = standup.DASHBOARD_LABEL
+    monkeypatch.setattr(standup, "_loaded_its_labels", lambda: [dash])
+    assert standup._require_daemons_down() is True
+    monkeypatch.setattr(standup, "_loaded_its_labels",
+                        lambda: [dash, "org.solutionsmith.its.portal-poll"])
+    assert standup._require_daemons_down() is False
+
+    monkeypatch.setattr(wipe, "_loaded_its_daemons", lambda: [dash])
+    wipe.require_daemons_down()  # exempt -> no raise
+    monkeypatch.setattr(wipe, "_loaded_its_daemons",
+                        lambda: [dash, "org.solutionsmith.its.portal-poll"])
+    with pytest.raises(wipe.WipeRefusedError):
+        wipe.require_daemons_down()
+
+
+def test_wipe_commit_sets_fence_marker_and_leaves_it(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wipe sets the ACT-fence marker BEFORE the dump and does NOT clear it
+    — only a COMPLETED standup run clears the marker (PR #674 lifecycle: the
+    wipe->rebuild window stays fenced end to end)."""
+    marker = tmp_path / "standup_in_progress.json"
+    monkeypatch.setattr(wipe, "STANDUP_MARKER_PATH", marker)
+    monkeypatch.setattr(wipe, "require_daemons_down", lambda: None)
+    monkeypatch.setattr(wipe, "_list_workspaces",
+                        lambda: [dict(zip(("name", "id"),
+                                          wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0],
+                                          strict=True))])
+    monkeypatch.setattr(wipe, "_box_root_items", lambda: [])
+    monkeypatch.setattr(wipe, "_confirm_phrase", lambda: True)
+    monkeypatch.setattr(wipe, "DUMP_ROOT", tmp_path / "dumps")
+    (tmp_path / "dumps").mkdir()
+    seen: dict[str, bool] = {}
+
+    def _dump(ws: dict[str, Any], dump_dir: Path) -> tuple[int, list[str]]:
+        seen["marker_during_dump"] = marker.is_file()
+        return 1, []
+
+    def _delete(ws_id: int) -> None:
+        seen["marker_during_delete"] = marker.is_file()
+
+    monkeypatch.setattr(wipe, "dump_workspace", _dump)
+    monkeypatch.setattr(wipe, "_delete_workspace", _delete)
+    monkeypatch.setattr(wipe, "_delete_box_folder", _boom_named("box delete"))
+    monkeypatch.setattr(sys, "argv", ["wipe_tenant.py", "--commit"])
+    assert wipe.main() == 0
+    assert seen == {"marker_during_dump": True, "marker_during_delete": True}
+    assert marker.is_file()  # NOT cleared — standup completion owns the clear
+
+
+def test_gate_report_shows_dump_vs_live(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    ws_dir = tmp_path / "smartsheet" / "ITS — System"
+    ws_dir.mkdir(parents=True)
+    (ws_dir / "cfg__1.sheet.json").write_text(json.dumps({
+        "name": "ITS_Config",
+        "columns": [], "rows": [
+            {"Setting": "x.polling_enabled", "Workstream": "x", "Value": "true"},
+        ]}), encoding="utf-8")
+    live_rows = [
+        {"Setting": "x.polling_enabled", "Workstream": "x", "Value": "false",
+         "Description": "Do NOT set true until the rider merges."},
+        {"Setting": "x.worker_base_url", "Workstream": "x", "Value": "https://x"},
+    ]
+    import shared.smartsheet_client as sc
+    monkeypatch.setattr(sc, "get_rows", lambda sheet_id: live_rows)
+    standup._gate_report(tmp_path)
+    out = capsys.readouterr().out
+    assert "x.polling_enabled [x]" in out
+    assert "dump='true'  live='false'" in out
+    assert "DIFFERS from pre-wipe" in out
+    assert "Do NOT set true until the rider merges." in out
+    assert "READ-ONLY" in out
+    assert "x.worker_base_url" not in out  # non-gate rows stay out of the report
+
+
+# ---- standup: run-branch mode (checkpoints on a per-run git branch) ---------
+
+
+def _init_repo(tmp_path: Path) -> Path:
+    """A real throwaway git repo — the run-branch ops are git-semantics-bearing
+    (pathspec excludes, dirty detection), so mocks would prove nothing."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init", "-q", "-b", "main"],
+                 ["config", "user.email", "t@example.com"],
+                 ["config", "user.name", "t"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True,
+                   capture_output=True)
+    return repo
+
+
+def test_start_run_branch_refuses_dirty_tree_then_creates(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _init_repo(tmp_path)
+    monkeypatch.setattr(standup, "REPO_ROOT", repo)
+    (repo / "tracked.py").write_text("x = 2\n", encoding="utf-8")
+    with pytest.raises(standup.StageFailedError, match="DIRTY"):
+        standup._start_run_branch("r1")
+    # clean tree -> branch created and checked out
+    subprocess.run(["git", "checkout", "-q", "--", "tracked.py"], cwd=repo,
+                   check=True, capture_output=True)
+    branch = standup._start_run_branch("r1")
+    assert branch == "standup/run-r1"
+    assert standup._current_branch() == branch
+
+
+def test_commit_stage_checkpoint_commits_repo_files_but_never_logs(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE pathspec teeth: the prewipe dumps + transcripts live under logs/
+    (untracked, NOT gitignored — the live repo shows them as ??), and a naive
+    `git add -A` would land multi-MB dump JSON on the run branch."""
+    repo = _init_repo(tmp_path)
+    monkeypatch.setattr(standup, "REPO_ROOT", repo)
+    branch = standup._start_run_branch("r2")
+    (repo / "tracked.py").write_text("x = 3\n", encoding="utf-8")
+    (repo / "logs").mkdir()
+    (repo / "logs" / "prewipe_dump.json").write_text("{}", encoding="utf-8")
+    before = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                            capture_output=True, text=True).stdout.strip()
+    standup._commit_stage_checkpoint("regen-system", "r2", branch)
+    after = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                           capture_output=True, text=True).stdout.strip()
+    assert after != before  # a checkpoint commit landed
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
+                            check=True, capture_output=True, text=True).stdout
+    assert "?? logs/" in status  # the dump was NOT committed
+    assert "tracked.py" not in status  # the repo file WAS
+    # clean pass -> no empty commit
+    standup._commit_stage_checkpoint("noop-stage", "r2", branch)
+    final = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                           capture_output=True, text=True).stdout.strip()
+    assert final == after
+    # run-branch off (None) -> untouched even when dirty
+    (repo / "tracked.py").write_text("x = 4\n", encoding="utf-8")
+    standup._commit_stage_checkpoint("any", "r2", None)
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=repo, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_resume_run_branch_refusals(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _init_repo(tmp_path)
+    monkeypatch.setattr(standup, "REPO_ROOT", repo)
+    # recorded branch not checked out (HEAD is main) -> refuse
+    with pytest.raises(standup.StageFailedError, match="not checked out"):
+        standup._resume_run_branch("standup/run-old")
+    # pre-run-branch state (None) -> WARN + continue without checkpoints
+    monkeypatch.setattr(standup, "_sync_run_branch_with_main",
+                        _boom_named("sync"))
+    assert standup._resume_run_branch(None) is None
+    assert "predates run-branch mode" in capsys.readouterr().out
+
+
+def test_sync_with_main_conflict_stops_never_auto_resolves(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def _fake_git(*args: str) -> Any:
+        calls.append(args)
+        if args[0] == "fetch":
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[0] == "merge":
+            return subprocess.CompletedProcess(args, 1, "CONFLICT", "")
+        if args[:2] == ("diff", "--name-only"):
+            return subprocess.CompletedProcess(args, 0, "shared/sheet_ids.py", "")
+        raise AssertionError(f"unexpected git {args}")
+
+    monkeypatch.setattr(standup, "_git", _fake_git)
+    with pytest.raises(standup.StageFailedError, match="CONFLICTED"):
+        standup._sync_run_branch_with_main()
+    # the conflict surface names the files and no resolution command ran
+    assert not any(a[0] in {"checkout", "reset", "commit"} for a in calls)
