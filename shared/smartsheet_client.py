@@ -644,6 +644,7 @@ _TRANSIENT_RETRY_ENROLLED: frozenset[str] = frozenset({
     "find_folder_by_name_in_folder",
     "find_folder_by_name_in_workspace",
     "list_workspace_share_emails",
+    "get_workspace_name",
 })
 
 
@@ -1625,6 +1626,36 @@ def _count_sheets_in_node(node: dict[str, Any]) -> int:
     for folder in node.get("folders") or []:
         total += _count_sheets_in_node(folder)
     return total
+
+
+@_breaker_guard
+@_transient_retry
+def get_workspace_name(workspace_id: int) -> str:
+    """Live workspace name for ``workspace_id`` (`GET /workspaces/{id}`).
+
+    Purpose: VC-10's stale-constant guard — before auditing a workspace's F22
+    approver shares, the cutover gate proves the object a
+    ``sheet_ids.WORKSPACE_*`` constant points at is still the workspace the
+    manifest MEANS (adversarial review 2026-07-23: an ID-drifted constant
+    would otherwise silently audit the WRONG object — false PASS or masked
+    FAIL). Direct REST for the same DeprecationWarning / within-session
+    stale-read reasons as `count_workspace_sheets`.
+
+    Failure modes: `SmartsheetNotFoundError` on a dead ID (the caller names it
+    per-workspace); transients ride `_transient_retry`. Consumers:
+    `scripts/verify_cutover._check_approver_shares` (VC-10).
+    """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = f"https://api.smartsheet.com/2.0/workspaces/{workspace_id}"
+    context = f"fetching workspace {workspace_id} name"
+    try:
+        response = requests.get(
+            url, headers={"Authorization": f"Bearer {token}"}, timeout=30
+        )
+    except requests.RequestException as e:
+        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context, idempotent=True)
+    return str(response.json().get("name", ""))
 
 
 @_breaker_guard

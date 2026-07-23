@@ -123,7 +123,9 @@ def load_manifest(path: pathlib.Path = MANIFEST_PATH) -> dict[str, Any]:
     for key in ("production_domain", "mirror_domain", "workspaces"):
         if key not in manifest:
             raise ManifestError(f"manifest missing required key {key!r}")
-    domain = str(manifest["production_domain"])
+    # .strip().lower() for CONSISTENCY with the mirror pin below — either way a
+    # variant fails closed; normalizing keeps the two pin checks identical in shape.
+    domain = str(manifest["production_domain"]).strip().lower()
     if domain != EXPECTED_PRODUCTION_DOMAIN:
         raise ManifestError(
             f"production_domain {domain!r} != pinned {EXPECTED_PRODUCTION_DOMAIN!r} "
@@ -333,12 +335,24 @@ def apply_plans(plans: list[WorkspacePlan]) -> tuple[int, int]:
             # the loud-but-non-fatal WARN below; a transient 429/5xx retries
             # inside the helper and PROPAGATES on exhaustion — it must never
             # ride the WARN path and silently narrow an F22 approver set.
-            r = request_with_retry(
-                "post", f"{BASE}/workspaces/{plan.live_id}/shares?sendEmail=false",
-                headers=_headers(),
-                json=[{"email": email, "accessLevel": level}],
-                timeout=30, raise_for_status=False,
-            )
+            try:
+                r = request_with_retry(
+                    "post",
+                    f"{BASE}/workspaces/{plan.live_id}/shares?sendEmail=false",
+                    headers=_headers(),
+                    json=[{"email": email, "accessLevel": level}],
+                    timeout=30, raise_for_status=False,
+                )
+            except Exception:
+                # Exhausted transient retries PROPAGATE (never a WARN — a 429
+                # must not silently narrow an F22 approver set), but the
+                # operator keeps the faithful tally before the traceback.
+                print(
+                    f"  [ABORT] transient retries EXHAUSTED on {email} "
+                    f"({plan.name!r}) — {added} added so far; the seeder is "
+                    "ADD-only + idempotent, re-run to continue."
+                )
+                raise
             if r.status_code == 200:
                 added += 1
                 print(f"  [ok] shared {plan.name!r} with {email} ({level})")

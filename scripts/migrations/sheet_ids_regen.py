@@ -829,7 +829,8 @@ def main() -> int:
         if len(hits) > 60:
             print(f"    ... and {len(hits) - 60} more")
     else:
-        print("\n[ok] repo sweep: no replaced old id survives anywhere in *.py.")
+        print("\n[ok] repo sweep: no replaced old id survives anywhere in "
+              f"{'/'.join(SWEEP_GLOBS)}.")
     if unresolved:
         print(f"\n[WARN] {unresolved} unresolved constant(s) left untouched (their objects "
               "do not exist yet, or names are ambiguous):")
