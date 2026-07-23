@@ -270,6 +270,51 @@ def test_registry_daemon_health_keys_match_sheet_ids_dict() -> None:
     assert keys == set(regen.DAEMON_HEALTH_TITLE_BY_KEY)
 
 
+def test_remap_scope_includes_doctrine_manifest() -> None:
+    """docs/doctrine_manifest.yaml MUST stay in the --write remap scope: its
+    canonical_sheets ids are what check_doctrine_drift M4 (CI-BLOCKING)
+    compares against sheet_ids.py, and the *.py-only remap missed it on the
+    2026-07-23 rebuild (PR #670 hand-fixed it). Same parity-teeth pattern as
+    test_regen_expect_table_matches_registry_and_stages."""
+    paths = regen.remap_file_paths()
+    assert regen.DOCTRINE_MANIFEST_PATH in paths
+    assert regen.DOCTRINE_MANIFEST_PATH.is_file()
+    # The wipe tool must ALSO be in the list (its exclusion happens at the
+    # write loop, never by dropping it from the glob — a reordering that
+    # silently removed the exemption comment's anchor would be invisible).
+    assert (REPO_ROOT / "scripts" / "migrations" / "wipe_tenant.py") in paths
+
+
+def test_integer_remap_rewrites_yaml_content() -> None:
+    """The two-phase remap is format-agnostic — prove it flips a manifest-shaped
+    yaml fragment (the PR #670 miss, synthetically re-created)."""
+    yaml_text = (
+        "canonical_sheets:\n"
+        "  SHEET_CONFIG:\n"
+        "    id: 8933909738770308\n"
+        "    source: \"shared/sheet_ids.py:SHEET_CONFIG\"\n"
+    )
+    out, n = regen.rewrite_integer_remap(yaml_text, {8933909738770308: 12345})
+    assert "id: 12345" in out
+    assert n == 1
+
+
+def test_sweep_covers_yaml_and_md_report_only(tmp_path: Path) -> None:
+    """The widened sweep surfaces replaced ids in yaml/yml/md (report-only) —
+    and never rewrites them (file content asserted unchanged)."""
+    (tmp_path / "runbook.md").write_text("old sheet id 111222333 lives here\n")
+    (tmp_path / "conf.yaml").write_text("sheet_id: 111222333\n")
+    (tmp_path / "pin.py").write_text("SHEET = 111222333\n")
+    (tmp_path / "other.txt").write_text("111222333\n")  # outside SWEEP_GLOBS
+    hits = regen.sweep_repo_for_old_ids(
+        {111222333: 999}, skip=set(), root=tmp_path)
+    hit_files = {h.split(":")[0] for h in hits}
+    assert hit_files == {"runbook.md", "conf.yaml", "pin.py"}
+    # report-only: nothing rewritten
+    assert "111222333" in (tmp_path / "runbook.md").read_text()
+    assert "111222333" in (tmp_path / "conf.yaml").read_text()
+
+
 # ---- build_legacy_workspaces ----------------------------------------------
 
 
