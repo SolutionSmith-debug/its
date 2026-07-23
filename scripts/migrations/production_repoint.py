@@ -18,11 +18,14 @@ a data artifact the guard deliberately scopes out — and this module contains
 zero production-identity literals.
 
 Guards (each fails CLOSED, each is separately tested)
-    1. STRUCTURAL SECTION-E EXCLUSION. load_map() REFUSES any map containing a
-       setting that ends in ``_enabled`` or contains ``.polling_enabled``. Send-
-       scope gate flips stay CL-13 manual + Seth — a FIXED External-Send-Gate
-       high-capability class — and no edit to the JSON can smuggle one through
-       this tool.
+    1. STRUCTURAL SECTION-E EXCLUSION + A-D ALLOWLIST. load_map() REFUSES any
+       map containing a section-E send-scope setting (``*_enabled``,
+       ``*.polling_enabled``, ``scheduled_send_local``) AND refuses any setting
+       outside the reviewed section A-D name classes (the ALLOWED_SETTING_*
+       allowlist) — so no edit to the JSON can smuggle a send-scope write
+       through this tool, including future send-scope names no blocklist could
+       anticipate. Gate flips stay CL-13 manual + Seth — a FIXED External-
+       Send-Gate high-capability class.
     2. MIRROR-VALUE REFUSAL. load_map() REFUSES any ``to_production`` containing
        the sandbox domain marker (imported from scripts.verify_cutover — single
        source): a repoint map that points AT the mirror is a corrupted map.
@@ -114,6 +117,22 @@ MAP_PATH = Path(__file__).with_name("production_repoint_map.json")
 
 VALID_CATEGORIES = frozenset({"A", "B", "C", "D"})
 
+# Guard 1 ALLOWLIST — only the reviewed section A-D setting-name classes may
+# load. A blocklist under-approximates (adversarial review 2026-07-23: the
+# original *_enabled/polling_enabled blocklist missed scheduled_send_local, and
+# a future send-scope name like `send_window_local` would slip through any
+# blocklist). Anything not matching refuses — adding a NEW repoint class is
+# deliberately a code+data change, never a data-only map edit.
+ALLOWED_SETTING_SUFFIXES: tuple[str, ...] = (
+    ".worker_base_url",          # section A
+    ".from_mailbox",             # section B
+    ".portal_root_folder_id",    # section D (resolve_box_root rows)
+)
+ALLOWED_SETTINGS_EXACT: frozenset[str] = frozenset({
+    "system.operator_email",     # section C
+    "system.heartbeat_url",      # section C (prompt_operator row)
+})
+
 # ---- classifications ------------------------------------------------------
 
 CLASS_ALREADY = "already-production"
@@ -168,10 +187,24 @@ def _validate_row(raw: dict[str, Any], index: int) -> RowSpec:
 
     # Guard 1 — structural section-E exclusion. Gate flips are CL-13 manual + Seth
     # (FIXED External-Send-Gate class); this tool must be INCAPABLE of carrying one.
-    if setting.endswith("_enabled") or ".polling_enabled" in setting:
+    # The changeset's section E names THREE classes: *_enabled, *.polling_enabled,
+    # AND scheduled_send_local — all refused by name for a precise message...
+    if (setting.endswith("_enabled") or ".polling_enabled" in setting
+            or "scheduled_send_local" in setting):
         raise MapValidationError(
-            f"{where}: section-E send-scope gate settings (*_enabled / *.polling_enabled) "
-            "are structurally EXCLUDED from this tool — gate flips stay CL-13 manual + Seth."
+            f"{where}: section-E send-scope settings (*_enabled / *.polling_enabled / "
+            "scheduled_send_local) are structurally EXCLUDED from this tool — they stay "
+            "CL-13 manual + Seth."
+        )
+    # ...and the ALLOWLIST is the catch-all: only the reviewed A-D name classes
+    # load at all, so no future send-scope name can slip through a blocklist.
+    if not (setting in ALLOWED_SETTINGS_EXACT
+            or any(setting.endswith(suffix) for suffix in ALLOWED_SETTING_SUFFIXES)):
+        raise MapValidationError(
+            f"{where}: setting {setting!r} is not in the reviewed section A-D allowlist "
+            "(worker_base_url / from_mailbox / portal_root_folder_id suffixes, "
+            "system.operator_email, system.heartbeat_url) — adding a new repoint class "
+            "is a code+data change, never a data-only map edit."
         )
 
     if raw["category"] not in VALID_CATEGORIES:

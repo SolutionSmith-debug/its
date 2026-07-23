@@ -97,7 +97,7 @@ def _write_map(tmp_path: Path, rows: list[dict[str, Any]]) -> Path:
 
 def _std_row(**overrides: Any) -> dict[str, Any]:
     row: dict[str, Any] = {
-        "setting": "example.some_url",
+        "setting": "example.worker_base_url",
         "workstream": "safety_reports",
         "from_mirror": "https://x.evergreenmirror.com",
         "to_production": "https://x.example.com",
@@ -212,6 +212,30 @@ def test_validator_refuses_any_enabled_suffix_gate(tmp_path: Path) -> None:
                  from_mirror="false", to_production="true"),
     ])
     with pytest.raises(pr.MapValidationError, match="section-E"):
+        pr.load_map(path)
+
+
+def test_validator_refuses_scheduled_send_local(tmp_path: Path) -> None:
+    """The third section-E class (2026-07-23 adversarial-review finding — the
+    original blocklist missed it): scheduled_send_local is send-scope and must
+    never load through this tool."""
+    path = _write_map(tmp_path, [
+        _std_row(setting="po_materials.po_send.scheduled_send_local",
+                 from_mirror="07:00", to_production="07:00"),
+    ])
+    with pytest.raises(pr.MapValidationError, match="section-E"):
+        pr.load_map(path)
+
+
+def test_validator_refuses_unlisted_setting_class(tmp_path: Path) -> None:
+    """The allowlist catch-all: a setting outside the reviewed A-D name classes
+    (here, a hypothetical future send-scope name no blocklist anticipates)
+    refuses — adding a new repoint class is a code+data change."""
+    path = _write_map(tmp_path, [
+        _std_row(setting="po_materials.po_send.send_window_local",
+                 from_mirror="x", to_production="y"),
+    ])
+    with pytest.raises(pr.MapValidationError, match="allowlist"):
         pr.load_map(path)
 
 
