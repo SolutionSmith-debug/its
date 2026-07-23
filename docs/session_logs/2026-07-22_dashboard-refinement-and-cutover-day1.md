@@ -117,8 +117,39 @@ full return brief; external sends / secret rotation / doctrine bumps explicitly 
 - New topic memory `project_dashboard-refinement-cutover-day1-2026-07-22.md` (session
   outcomes + do-not-redo pointers), indexed in MEMORY.md.
 
+## Evening addendum — operator-interactive arc (PRs #660–#662)
+
+After the operator returned, three live incidents were diagnosed and fixed
+interactively:
+
+- `dcf02c3` — **#660** `fix(dashboard): Cache-Control no-cache → no-store` — the
+  operator's re-created Safari Dock app served a stale /system and a wedged
+  /config while the daemon (verified) served everything current: Safari web
+  apps import Safari's HTTP cache at creation and revalidate `no-cache`
+  unreliably. Second bite of this class; pages are now never cached at all
+  (assets stay versioned + cacheable). Client side: one-time
+  Manage-Website-Data purge for `127.0.0.1`, then re-add the Dock app.
+- `9748243` — **#661** `fix(dashboard): map chips z-index` — **the wrong fix**,
+  recorded as such: every records-column sheet tile was unclickable (latent
+  since the map shipped; surfaced when #655's briefs made the sheet rails
+  worth clicking). elementFromPoint showed the Box spanner's transparent
+  5-band container swallowing the clicks. A chip-level z-index CANNOT beat it
+  (.sm-cell carries grid-item z-index:2, so the later-DOM spanner ties and
+  wins on document order) — re-proven still-broken after merge.
+- `2e8e47e` — **#662** `fix(dashboard): spanner pointer-events pass-through` —
+  the real mechanism: the container ignores clicks, its own chip re-enables
+  them. Live-proven before AND after shipping: 55/55 chips pass the
+  elementFromPoint sweep; a records sheet click and the Box spanner click
+  both load their rails. #661's ineffective rule reverted; the drift-guard
+  test retargeted to pin the pointer-events pair.
+
+Also in this arc: blueprint session-close records committed + pushed
+(`363bae5`); four stuck background watcher shells killed; the pre-existing
+screenshot artifacts cleaned from the repo root; E1 de-risked (operator:
+Evergreen's Smartsheet tier matches the mirror's Business tier).
+
 Session-log line convention:
 - pytest: 4318 passed / 2 skipped / 49 deselected
 - mypy: 0 errors / 453 source files
 - ruff: clean
-- main-branch CI on merge commits: SUCCESS (f2bb9a0, 16acbf3, e5f08e5, 202b7b6, a2623fd)
+- main-branch CI on merge commits: SUCCESS (f2bb9a0, 16acbf3, e5f08e5, 202b7b6, a2623fd, 2959cc4, dcf02c3, 9748243, 2e8e47e)
