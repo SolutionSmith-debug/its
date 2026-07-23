@@ -2318,7 +2318,21 @@ stays deliberate, (b) a closure policy for the ~11 uncovered surfaces (retain-in
 de-facto policy, never chosen explicitly), (c) schedules the overdue live move smoke. **Tag:** `field_ops`,
 `archive-on-closure`, `its#462`, `§51`, `audit`, `seth-owned`.
 
-## Un-adopted optimization findings from the 2026-07-23 stand-up rehearsal — 2 of 5 named opportunities remain unclaimed, 3 already in flight [OPEN 2026-07-23]
+## Un-adopted optimization findings from the 2026-07-23 stand-up rehearsal — 2 of 5 named opportunities remain unclaimed, 3 already in flight [RESOLVED 2026-07-23]
+
+**RESOLVED 2026-07-23 (Brief A close-out, PRs #673/#675/#676/#679/#680/#683/#685/#686/#687, all
+four-part-verified, exec HEAD `fc27f75`):** all 5 named opportunities below landed. The 3 "already in
+flight" items merged as claimed — finish/epilogue → **#679**, CL-12 repoint actuator → **#680**, CL-11
+shares + VC-10 → **#685** (reconciled with #674's ACT-fence, which #679 adopted wholesale, deleting its own
+`_run_marker.py`; its#677 closed as superseded). Both "genuinely unclaimed" items also landed: item 1
+(checklist/punchlist/README collapse around the one-step stand-up + the CL-12 "all gates true" doc-bug fix)
+→ **#686**; item 2 (run-branch mode) → **#687** (per-run `standup/run-<UTC>` branch, per-stage checkpoint
+commits with a `:(exclude)logs` pathspec, `--resume` merge-main-then-STOP-on-conflict flow, landing-PR
+push). Of the "lower-priority" findings, one more also landed: scoping `sheet_ids_regen --retry-missing` to
+the unresolved `--expect` constants' workspaces → **#683**. Remaining lower-priority findings (more CL items
+as mechanical `verify_cutover` checks, the generic dump-restore utility, the config-seed-engine dedup) are
+genuinely still open — see the new `docs/session_logs/2026-07-23_standup-process-optimization.md` (PR #688)
+and the fresh tech-debt entries below for what's left. Original findings preserved below for the record.
 
 Three review passes over the 2026-07-23 tenant wipe+stand-up rehearsal produced optimization dossiers —
 operator-experience (`~/its/logs/reviews/2026-07-23_opt_operator.json`), runtime/safety
@@ -2380,4 +2394,46 @@ see the exec `CLAUDE.md` git-guardrails section) — this is a manual operator c
 **Trigger:** next operator terminal session; run `git worktree remove --force ~/its-standup` (safe: the
 worktree's own git state is clean, nothing uncommitted of value lives there) then `git worktree prune`. **Tag:**
 `worktree`, `operator-manual`, `cleanup`, `low-severity`.
+
+## `_loaded_its_daemons`/`_loaded_its_labels`/`_launchctl_list` — a launchd-query helper now has 3-4 near-identical copies [OPEN 2026-07-23]
+
+The Brief-A stand-up hardening pass (PRs #673–#687, see `docs/session_logs/2026-07-23_standup-process-optimization.md`)
+brought the count of near-identical "shell out to `launchctl list`, parse for `org.solutionsmith.its.*`
+labels" helpers to 3-4 across `scripts/migrations/wipe_tenant.py`, `scripts/migrations/standup.py`,
+`scripts/verify_cutover.py`, and `scripts/migrations/production_repoint.py` — each one independently
+re-derives the same daemon-label/loaded-state check rather than sharing a `shared/launchd.py` primitive.
+Op Stds §14 (preservation-over-refactor) sets a ≥4 real reuse cases threshold before a convergence PR is
+warranted, not "still open" or "collision-safe" alone (HOUSE_REFLEXES §6 "don't harden dormant subsystems").
+This has now reached that threshold on count, but **do not build the extraction speculatively** —
+`improve-codebase-architecture` is a constrained skill requiring explicit operator approval, and the four
+call sites currently differ slightly in what they need back (label list only vs. loaded/unloaded state vs.
+a specific daemon's status), so the shared shape needs Seth's confirmation, not just a mechanical dedup.
+**Trigger:** next time a 5th consumer needs the same launchd-query logic, or Seth explicitly greenlights the
+extraction. **Tag:** `migrations`, `standup`, `§14`, `launchd`, `refactor-candidate`.
+
+## `seed_production_shares.list_workspace_shares` not enrolled in the family's `_rest_retry` transient-retry seam [OPEN 2026-07-23]
+
+`shared.smartsheet_client.list_workspace_shares` (new, PR #685, backing CL-11/VC-10) is a read-only helper
+and was deliberately left off the `scripts/migrations/_rest_retry.py` bounded-retry allowlist that #673
+introduced for the wipe/standup/regen family's write-and-restore paths — it doesn't currently back a hot
+path where a transient 429/5xx would be costly to hand-retry, and the AST-locked approved-callers list in
+`_rest_retry.py` would need to grow to admit it. **Trigger:** if `list_workspace_shares` starts backing a
+polling daemon or another frequently-invoked path (rather than the current one-shot CL-11 seeding/verify
+use), enroll it in `_TRANSIENT_RETRY` in the same PR that adds the new consumer. **Tag:** `migrations`,
+`cutover`, `CL-11`, `shares`, `low-severity`.
+
+## `seed_production_shares.py` `already_present` check is presence-only, not access-level-aware [OPEN 2026-07-23]
+
+The ADD-only CL-11 shares seeder (`scripts/migrations/seed_production_shares.py`, PR #685) treats an
+approver already present on a workspace's share list as "done" — it does not check WHAT access level that
+existing share carries. A workspace where the manifest expects an approver at EDITOR but the live share is
+actually VIEWER-only will show `already_present` and be silently skipped, even though the approver cannot
+actually exercise F22 approval authority (checkbox-flip requires write access) until manually corrected.
+This was called out as a manual spot-check note in the #685 PR body rather than a code fix, because
+narrowing the ADD-only seeder into an access-level-comparing one changes its risk profile (an automated
+"fix the access level" step starts editing existing production shares, not just adding new ones — a
+bigger, more dangerous surface than the reviewed PR's scope). **Trigger:** before relying on VC-10
+`approver-shares` as a complete go/no-go signal at cutover, manually cross-check each flagged
+"already_present" approver's actual access level against the manifest's expected level — do not assume
+presence implies correct access. **Tag:** `migrations`, `cutover`, `CL-11`, `shares`, `F22`, `seth-owned`.
 
