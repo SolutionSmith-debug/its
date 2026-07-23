@@ -106,6 +106,18 @@ class WipeRefusedError(RuntimeError):
     """A guard refused the wipe. Nothing (further) was deleted."""
 
 
+# The read-only observability tier stays up through a wipe/stand-up window:
+# the dashboard makes no background tenant writes, its ACT verbs are fenced by
+# the stand-up marker below (operator_dashboard/auth.py reads it), and the
+# stand-up epilogue restarts it onto the final constants. Everything else —
+# every daemon that WRITES on a cycle — must still be down.
+DAEMON_DOWN_EXEMPT = frozenset({"org.solutionsmith.its.dashboard"})
+
+# Set at --commit (before the dump), cleared by a SUCCESSFUL standup.py run —
+# the wipe->rebuild window stays fenced end to end. Manual unfence: delete it.
+STANDUP_MARKER_PATH = pathlib.Path.home() / "its" / "state" / "standup_in_progress.json"
+
+
 # ---- guards ---------------------------------------------------------------
 
 
@@ -120,7 +132,12 @@ def _loaded_its_daemons() -> list[str]:
 
 
 def require_daemons_down() -> None:
-    loaded = _loaded_its_daemons()
+    exempt_loaded = [d for d in _loaded_its_daemons() if d in DAEMON_DOWN_EXEMPT]
+    if exempt_loaded:
+        print(f"[info] exempt_daemons_loaded: {', '.join(exempt_loaded)} — the "
+              "read-only dashboard may stay up (ACT verbs are fenced by the "
+              "stand-up marker).")
+    loaded = [d for d in _loaded_its_daemons() if d not in DAEMON_DOWN_EXEMPT]
     if loaded:
         print(f"[abort] daemons_loaded: {len(loaded)} org.solutionsmith.its.* job(s) are "
               "still loaded — a live fleet would error-storm against deleted sheets and "
@@ -399,11 +416,11 @@ def main() -> int:
         except WipeRefusedError:
             return 1
     else:
-        loaded = _loaded_its_daemons()
+        loaded = [d for d in _loaded_its_daemons() if d not in DAEMON_DOWN_EXEMPT]
         if loaded:
             print(f"[WARN] {len(loaded)} org.solutionsmith.its.* daemon(s) loaded — "
                   "fine for a read-only plan, but --commit will refuse until they "
-                  "are unloaded.\n")
+                  "are unloaded (the read-only dashboard is exempt).\n")
 
     live_ws = _list_workspaces()
     ws_deletable, ws_mismatch, ws_unlisted = match_allowlist(
@@ -445,6 +462,17 @@ def main() -> int:
     if not _confirm_phrase():
         print("[abort] confirmation phrase not matched; nothing deleted.")
         return 1
+
+    # Fence the dashboard's ACT verbs for the whole wipe->rebuild window
+    # (operator_dashboard/auth.py refuses actuation while this is fresh; a
+    # successful standup.py run clears it).
+    from shared import state_io
+    state_io.atomic_write_json(STANDUP_MARKER_PATH, {
+        "started_at_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "tool": "wipe_tenant",
+    })
+    print(f"[info] stand-up marker set ({STANDUP_MARKER_PATH}) — dashboard ACT "
+          "verbs fenced until the stand-up completes.")
 
     # ---- dump (guard 4: a dump we cannot capture/persist aborts the wipe) ----
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")

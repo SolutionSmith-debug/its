@@ -650,11 +650,45 @@ def _resolve_dump_dir(explicit: pathlib.Path | None) -> pathlib.Path:
     return candidates[0]
 
 
+# Same exemption as wipe_tenant.DAEMON_DOWN_EXEMPT: the read-only dashboard
+# stays up (no background tenant writes; ACT verbs fenced by the stand-up
+# marker below; restarted onto final constants at the epilogue).
+DAEMON_DOWN_EXEMPT = frozenset({"org.solutionsmith.its.dashboard"})
+
+# Written at LIVE-run start (refreshed on every resume — the fence max-age
+# window restarts), cleared ONLY on full completion so an aborted run stays
+# fenced across the fix->resume gap. operator_dashboard/auth.py reads it.
+STANDUP_MARKER_PATH = pathlib.Path.home() / "its" / "state" / "standup_in_progress.json"
+
+
+def _write_standup_marker() -> None:
+    from shared import state_io
+    state_io.atomic_write_json(STANDUP_MARKER_PATH, {
+        "started_at_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "tool": "standup",
+    })
+    print(f"[info] stand-up marker set ({STANDUP_MARKER_PATH}) — dashboard ACT "
+          "verbs fenced until this run completes.")
+
+
+def _clear_standup_marker() -> None:
+    STANDUP_MARKER_PATH.unlink(missing_ok=True)
+    print("[info] stand-up marker cleared — dashboard ACT verbs unfenced.")
+
+
+
+
 def _require_daemons_down() -> bool:
     out = subprocess.run(["launchctl", "list"], capture_output=True, text=True,
                          timeout=30, check=True).stdout
     loaded = [line.split()[-1] for line in out.splitlines()
               if "org.solutionsmith.its." in line]
+    exempt_loaded = [d for d in loaded if d in DAEMON_DOWN_EXEMPT]
+    if exempt_loaded:
+        print(f"[info] exempt_daemons_loaded: {', '.join(exempt_loaded)} — the "
+              "read-only dashboard may stay up (ACT verbs are fenced by the "
+              "stand-up marker).")
+    loaded = [d for d in loaded if d not in DAEMON_DOWN_EXEMPT]
     if loaded:
         print(f"[abort] daemons_loaded: {len(loaded)} org.solutionsmith.its.* job(s) "
               "still loaded — the stand-up rewrites shared/sheet_ids.py on the live "
@@ -781,6 +815,7 @@ def main() -> int:
         print("[skip] Operator declined; nothing run.")
         return 0
 
+    _write_standup_marker()
     run_id = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     log_dir = dump_dir if dump_dir is not None else DUMP_ROOT
     _run_log_path = log_dir / (f"standup_{run_id}.log" if dump_dir is not None
@@ -834,6 +869,9 @@ def main() -> int:
     state["status"] = "complete"
     state["current_stage"] = None
     _write_state(state, dump_dir)
+    # Marker clears ONLY here (full completion) — an aborted run above returns
+    # early and stays fenced across the fix->resume gap.
+    _clear_standup_marker()
     print(
         "\n[ok] Stand-up complete. Epilogue (in order):\n"
         "  1. git diff — review the regenerated ID surfaces (sheet_ids.py, "
