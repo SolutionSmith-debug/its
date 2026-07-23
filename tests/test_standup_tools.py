@@ -366,6 +366,22 @@ def test_skipped_seeders_stay_skipped() -> None:
         assert forbidden not in source, forbidden
 
 
+def test_regen_expect_table_matches_registry_and_stages() -> None:
+    """Every REGEN_EXPECT key is a real stage; every expected constant is a real
+    regen REGISTRY / EXTERNAL_CONSTANTS name (a typo would make --expect abort
+    the whole stand-up at that stage); every regen stage has an expect list."""
+    names = _stage_names(Path("/tmp/x"))
+    known = set(regen.REGISTRY) | {
+        f"{path}:{c}" for path, consts in regen.EXTERNAL_CONSTANTS.items()
+        for c in consts}
+    for stage, expects in standup.REGEN_EXPECT.items():
+        assert stage in names, stage
+        for const in expects:
+            assert const in known, (stage, const)
+    regen_stages = {n for n in names if n.startswith("regen-")}
+    assert regen_stages == set(standup.REGEN_EXPECT)
+
+
 def test_restore_sheet_targets_are_valid_constants() -> None:
     text = (REPO_ROOT / "shared" / "sheet_ids.py").read_text(encoding="utf-8")
     for _ws, _sheet, constant in standup.RESTORE_SHEETS:

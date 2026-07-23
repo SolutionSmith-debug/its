@@ -550,27 +550,65 @@ def main() -> int:
                              "listing on the first read.")
     parser.add_argument("--retry-delay", type=float, default=3.0, metavar="SECS",
                         help="Delay between --retry-missing attempts (default 3s).")
+    parser.add_argument("--expect", action="append", default=[], metavar="CONST",
+                        help="A constant the caller's just-finished builder stage MUST "
+                             "have created ('CONST', or 'path/file.py:CONST' for "
+                             "external constants). Repeatable. Retries target ONLY "
+                             "these (no convergence heuristic — propagation lag can "
+                             "outlast any single retry, the 2026-07-23 failure), and "
+                             "an expected constant still unresolved after the retry "
+                             "budget FAILS the run nonzero — the deterministic "
+                             "builder->flip contract for the standup interleave.")
     args = parser.parse_args()
     strict = args.strict or args.check
+
+    known = set(REGISTRY) | {
+        f"{path}:{c}" for path, consts in EXTERNAL_CONSTANTS.items() for c in consts}
+    expect = set(args.expect)
+    unknown = expect - known
+    if unknown:
+        print(f"[abort] unknown --expect name(s): {sorted(unknown)} — must be a "
+              "REGISTRY constant or 'path:CONST' from EXTERNAL_CONSTANTS.")
+        return 2
+
+    def _resolved_ok(name: str) -> bool:
+        if ":" in name:
+            path, const = name.split(":", 1)
+            return isinstance(external.get(path, {}).get(const), int)
+        return isinstance(resolutions.get(name), int)
 
     print(f"[info] Mode: {'CHECK' if args.check else 'WRITE' if args.write else 'PLAN'}")
     resolutions, external, columns_by_key = _resolve_live()
     missing = missing_required(resolutions, external)
     attempt = 0
-    while args.retry_missing and attempt < args.retry_missing and missing:
+    while args.retry_missing and attempt < args.retry_missing:
+        target = ({e for e in expect if not _resolved_ok(e)} if expect else missing)
+        if not target:
+            break
         attempt += 1
-        print(f"[info] propagation_probe: {len(missing)} required constant(s) MISSING — "
+        print(f"[info] propagation_probe: {len(target)} "
+              f"{'expected' if expect else 'required'} constant(s) unresolved — "
               f"re-resolving (attempt {attempt}/{args.retry_missing}, "
               f"{args.retry_delay:g}s delay)...")
         time.sleep(args.retry_delay)
         resolutions, external, columns_by_key = _resolve_live()
         new_missing = missing_required(resolutions, external)
-        if new_missing == missing:
+        if not expect and new_missing == missing:
             print(f"[info] propagation_probe: missing set converged at "
                   f"{len(new_missing)} — treating as genuinely absent "
                   "(objects whose builders have not run yet).")
             break
         missing = new_missing
+
+    still_expected = {e for e in expect if not _resolved_ok(e)}
+    if still_expected:
+        print(f"[abort] expected_unresolved: {len(still_expected)} constant(s) the "
+              f"preceding builder stage should have created did not resolve after "
+              f"{attempt} retr{'y' if attempt == 1 else 'ies'}: "
+              f"{sorted(still_expected)}. Either propagation is exceptionally slow "
+              "(re-run the stage) or the builder did not actually create the object "
+              "(investigate before resuming). Nothing was written.")
+        return 1
 
     sheet_ids_text = SHEET_IDS_PATH.read_text(encoding="utf-8")
     current = read_current_values(sheet_ids_text, list(REGISTRY))
