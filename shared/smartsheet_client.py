@@ -1758,8 +1758,10 @@ def move_sheet_to_folder(sheet_id: int, folder_id: int) -> None:
     """MOVE (never delete) a sheet into `folder_id` via the SDK (`Sheets.move_sheet`).
 
     The §51 archive-on-closure path uses this to RELOCATE a closed job's standing
-    tracker sheets — today only the `<Job> — Hours Log` — from the per-job PROGRESS
-    folder into the Archive workspace's "Closed Projects" folder. This is a pure
+    tracker sheets — the enumeration lives with the sole caller,
+    `field_ops.fieldops_sync._archive_closed_job_trackers` (four trackers as of P7
+    M3 Slice 2) — from the per-job PROGRESS folder into the Archive workspace's
+    "Closed Projects" folder. This is a pure
     relocation: the sheet, its rows, and its cell history are all preserved (contrast
     `delete_sheet`, which destroys the sheet — this NEVER deletes anything).
 

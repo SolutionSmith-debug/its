@@ -978,3 +978,5 @@ runbook_exemptions:
   - safety_portal_config_sheets.md     # one-time config-sheet setup, not a fault
   - progress_reporting_config_sheets.md # one-time config-sheet setup, not a fault
   - week_sheet_config.md               # one-time week-sheet config, not a fault
+  - project_closure.md                 # closure how-to (lifecycle levers + what stays); the archive-move FAULT itself is hours_log_sync.md Fault F
+  - tenant_standup.md                  # wipe/stand-up/finish lifecycle runbook (operator tool, Seth-attended), not a daemon-plane fault
