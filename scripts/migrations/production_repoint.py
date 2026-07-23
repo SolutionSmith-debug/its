@@ -92,8 +92,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # names — "found twice").
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import requests  # type: ignore[import-untyped]  # noqa: E402
 import verify_cutover  # noqa: E402  — sys.path-driven import
+
+# Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
+# it explicitly). Bounded transient retry for the cutover-day sweep — a 429
+# mid-sweep must retry, and exhaustion PROPAGATES (a partial sweep re-runs
+# safely: already-production rows classify as no-write).
+from _rest_retry import request_with_retry  # noqa: E402
 
 from shared import keychain, sheet_ids  # noqa: E402
 
@@ -256,15 +261,13 @@ def _headers() -> dict[str, str]:
 
 
 def _get_json(path: str) -> dict[str, Any]:
-    r = requests.get(BASE + path, headers=_headers())
-    r.raise_for_status()
+    r = request_with_retry("get", BASE + path, headers=_headers(), timeout=60)
     json_body: dict[str, Any] = r.json()
     return json_body
 
 
 def _put_json(path: str, body: Any) -> dict[str, Any]:
-    r = requests.put(BASE + path, headers=_headers(), json=body)
-    r.raise_for_status()
+    r = request_with_retry("put", BASE + path, headers=_headers(), json=body, timeout=60)
     json_body: dict[str, Any] = r.json()
     return json_body
 
