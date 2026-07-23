@@ -755,6 +755,34 @@ def _resolve_unique_parent(ids: list[int], kind: str, name: str, remedy: str) ->
     return ids[0]
 
 
+# ---- column-description API cap -----------------------------------------
+
+# Smartsheet rejects the whole sheet-create when ANY column description exceeds
+# 250 chars (HTTP 400 errorCode 1041). The schemas above keep their full
+# operator-facing prose — the API payload gets a capped copy. Found live
+# 2026-07-23: the first-ever fresh-tenant run of this builder failed on four of
+# five sheets (286/287/275/275-char descriptions); every prior run had adopted
+# existing sheets, so the create path's limit was never exercised.
+SMARTSHEET_COLUMN_DESCRIPTION_MAX = 250
+
+
+def _cap_descriptions(sheet_name: str,
+                      columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a payload copy with descriptions capped to the API limit, WARN-loud."""
+    capped: list[dict[str, Any]] = []
+    for col in columns:
+        desc = col.get("description")
+        if isinstance(desc, str) and len(desc) > SMARTSHEET_COLUMN_DESCRIPTION_MAX:
+            print(f"[WARN] description_capped: {sheet_name!r} column {col['title']!r} "
+                  f"description is {len(desc)} chars — truncated to "
+                  f"{SMARTSHEET_COLUMN_DESCRIPTION_MAX} for the API payload (full text "
+                  "stays in this script as the canonical operator reference).")
+            col = {**col,
+                   "description": desc[:SMARTSHEET_COLUMN_DESCRIPTION_MAX - 1] + "…"}
+        capped.append(col)
+    return capped
+
+
 # ---- AUTO_NUMBER guard --------------------------------------------------
 
 
@@ -869,7 +897,8 @@ def build_one_sheet(
     if not gate.allow(f"create sheet {sheet_name!r} in folder {folder_id}"):
         return "declined", None
 
-    new_id = smartsheet_client.create_sheet_in_folder(folder_id, sheet_name, columns)
+    new_id = smartsheet_client.create_sheet_in_folder(
+        folder_id, sheet_name, _cap_descriptions(sheet_name, columns))
     _verify_after_create(folder_id, sheet_name, new_id, constant)
     print(f"[ok] created sheet {sheet_name!r} in folder {folder_id} (sheet_id={new_id}, "
           f"{len(columns)} columns).")

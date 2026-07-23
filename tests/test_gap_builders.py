@@ -521,7 +521,14 @@ def test_d3_create_branch_targets_the_right_folder_with_the_right_columns(monkey
     for sheet_name, folder_name, _const, columns in d3.SHEETS:
         folder_id, _name, passed = calls[sheet_name]
         assert folder_id == _SYSTEM_FOLDER_IDS[folder_name], sheet_name
-        assert passed is columns, sheet_name
+        # The payload is a _cap_descriptions COPY of the schema (errorCode 1041
+        # cap), so compare structure, not identity: same column order/titles/
+        # types/options, and every description within the API limit.
+        assert [(c["title"], c.get("type"), c.get("options")) for c in passed] == \
+            [(c["title"], c.get("type"), c.get("options")) for c in columns], sheet_name
+        assert all(
+            len(c.get("description") or "") <= d3.SMARTSHEET_COLUMN_DESCRIPTION_MAX
+            for c in passed), sheet_name
         titles = [c["title"] for c in passed]
         assert len(titles) == len(set(titles)), sheet_name
         assert sum(1 for c in passed if c.get("primary")) == 1, sheet_name
@@ -2040,3 +2047,33 @@ def test_canonical_object_lists_are_exactly_the_deliverable():
         "progress_reports.box.portal_root_folder_id",
     ]
     assert d4.BOX_ROOT_FOLDER_ID == "0"
+
+
+# =========================================================================
+# Column-description API cap (errorCode 1041) — found live 2026-07-23
+# =========================================================================
+
+
+def test_cap_descriptions_truncates_over_limit_and_preserves_rest():
+    cols = [
+        {"title": "Long", "type": "TEXT_NUMBER", "description": "x" * 300},
+        {"title": "Short", "type": "TEXT_NUMBER", "description": "fine"},
+        {"title": "NoDesc", "type": "TEXT_NUMBER"},
+    ]
+    capped = d3._cap_descriptions("Sheet", cols)
+    assert len(capped[0]["description"]) <= d3.SMARTSHEET_COLUMN_DESCRIPTION_MAX
+    assert capped[1]["description"] == "fine"
+    assert "description" not in capped[2]
+    # source dicts are never mutated — the cap applies to the payload copy only
+    assert len(cols[0]["description"]) == 300
+
+
+def test_every_system_sheet_schema_survives_the_payload_cap():
+    """The five schemas keep full prose in source; the PAYLOAD must always fit.
+    The first fresh-tenant run failed 4/5 sheets on 275-308 char descriptions —
+    this pins the payload path, not the prose."""
+    for name, _folder, _const, cols in d3.SHEETS:
+        for col in d3._cap_descriptions(name, cols):
+            desc = col.get("description")
+            if desc is not None:
+                assert len(desc) <= d3.SMARTSHEET_COLUMN_DESCRIPTION_MAX, (name, col["title"])
