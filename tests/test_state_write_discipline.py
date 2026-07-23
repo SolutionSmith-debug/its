@@ -26,8 +26,11 @@ import ast
 from pathlib import Path
 
 # Runtime surface walked — the same untrusted-content / daemon surface as the F02
-# network allowlist (shared/ helpers + the workstream packages). scripts/ is
-# operator-run and writes only ~/its/.watchdog markers (not state).
+# network allowlist (shared/ helpers + the workstream packages). scripts/ as a
+# whole stays un-walked (operator-run one-shots), EXCEPT the tenant-lifecycle
+# pair below: since #674 standup.py + wipe_tenant.py write the
+# ~/its/state/standup_in_progress.json ACT-fence marker, so a future direct
+# state write there must face this gate too (2026-07-23 verify pass).
 #
 # This used to be a hand-maintained COPY of the F02 list, with a comment claiming it was
 # "kept in sync with the F02 WALKED_ROOTS in test_capability_gating.py" — it wasn't: it
@@ -36,6 +39,12 @@ from pathlib import Path
 # IMPORTED from the F02 gate, so the claimed parity is structural and the two guards
 # cannot drift again. (Coverage-gap audit, 2026-07-21.)
 from tests.test_capability_gating import WALKED_ROOTS
+
+# Individually-walked files outside WALKED_ROOTS (see the scripts/ note above).
+EXTRA_WALKED_FILES: tuple[str, ...] = (
+    "scripts/migrations/standup.py",
+    "scripts/migrations/wipe_tenant.py",
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -91,6 +100,10 @@ STATE_WRITE_ALLOWLIST: dict[str, str] = {
         "writes the ~/its/.watchdog/<job>.last_run liveness marker (NOT ~/its/state/) — "
         "its ~/its/state/ writes (subcontract_flagged.json + heartbeat files) all ride "
         "state_io",
+    "scripts/migrations/wipe_tenant.py":
+        "writes the prewipe dump JSON under ~/its/logs/migrations/prewipe_* (NOT "
+        "~/its/state/) — its one ~/its/state/ write (the #674 ACT-fence marker) rides "
+        "state_io.atomic_write_json",
 }
 
 
@@ -116,6 +129,10 @@ def _modules_with_direct_write() -> set[str]:
         for path in sorted(root_dir.rglob("*.py")):
             if _has_direct_write(path):
                 out.add(path.relative_to(REPO_ROOT).as_posix())
+    for rel in EXTRA_WALKED_FILES:
+        path = REPO_ROOT / rel
+        if path.is_file() and _has_direct_write(path):
+            out.add(rel)
     return out
 
 

@@ -214,8 +214,19 @@ def _run_script(rel_path: str, *args: str) -> None:
     - ``PYTHONUNBUFFERED=1`` + line-streamed output, each line prefixed
       ``[stage/script]`` and teed to the per-run log.
     """
-    cmd = [sys.executable, str(REPO_ROOT / rel_path), *args]
-    base = pathlib.Path(rel_path).stem
+    _run_child([sys.executable, str(REPO_ROOT / rel_path), *args],
+               pathlib.Path(rel_path).stem, rel_path)
+
+
+def _run_module(module: str, *args: str) -> None:
+    """`_run_script` for `-m`-invoked modules (e.g. scripts.verify_cutover,
+    whose imports need package execution) — same non-interactive contract,
+    same transcript tee."""
+    _run_child([sys.executable, "-m", module, *args],
+               module.rsplit(".", 1)[-1], module)
+
+
+def _run_child(cmd: list[str], base: str, what: str) -> None:
     _emit(f"\n--- $ {' '.join(cmd[1:])}")
     env = {**os.environ, "PYTHONUNBUFFERED": "1", NONINTERACTIVE_ENV: "1"}
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -225,7 +236,7 @@ def _run_script(rel_path: str, *args: str) -> None:
         _emit(f"[{_current_stage}/{base}] {line.rstrip()}")
     returncode = proc.wait()
     if returncode != 0:
-        raise StageFailedError(f"{rel_path} exited {returncode}")
+        raise StageFailedError(f"{what} exited {returncode}")
 
 
 class StageFailedError(RuntimeError):
@@ -549,14 +560,9 @@ def _stage_restore_shares(dump_dir: pathlib.Path) -> None:
 
 def _stage_final_verify() -> None:
     _regen("--check")
-    print("\n--- verify_cutover (config rows; sandbox values allowed — rehearsal, "
+    _emit("\n--- verify_cutover (config rows; sandbox values allowed — rehearsal, "
           "not a phase verdict)")
-    result = subprocess.run(
-        [sys.executable, "-m", "scripts.verify_cutover", "--only", "config",
-         "--allow-sandbox"],
-        cwd=REPO_ROOT, check=False)
-    if result.returncode != 0:
-        raise StageFailedError("verify_cutover --only config failed")
+    _run_module("scripts.verify_cutover", "--only", "config", "--allow-sandbox")
 
 
 # ---- the stage table ------------------------------------------------------
@@ -757,12 +763,15 @@ def _current_branch() -> str:
 def _start_run_branch(run_id: str) -> str:
     """Create standup/run-<UTC> from current HEAD. Refuses a DIRTY tree — the
     branch must be created BEFORE the first regen write, or the first
-    checkpoint silently includes pre-run dirt."""
-    if _git("status", "--porcelain").stdout.strip():
+    checkpoint silently includes pre-run dirt. Dirt is judged with the SAME
+    ``:(exclude)logs`` pathspec the checkpoints use: the untracked prewipe
+    dump under logs/migrations is REQUIRED by the default restore flow and can
+    never land in a checkpoint, so it must not trip this gate."""
+    if _git("status", "--porcelain", "--", ".", ":(exclude)logs").stdout.strip():
         raise StageFailedError(
-            "run-branch: the working tree is DIRTY — commit/stash first so the "
-            "first checkpoint holds ONLY regen output (or pass --no-run-branch "
-            "to manage git yourself)")
+            "run-branch: the working tree is DIRTY (repo files outside logs/) — "
+            "commit/stash first so the first checkpoint holds ONLY regen output "
+            "(or pass --no-run-branch to manage git yourself)")
     branch = f"standup/run-{run_id}"
     result = _git("checkout", "-b", branch)
     if result.returncode != 0:
@@ -797,15 +806,22 @@ def _sync_run_branch_with_main() -> None:
     fetched = _git("fetch", "origin")
     if fetched.returncode != 0:
         print(f"[WARN] run-branch: git fetch failed ({fetched.stderr.strip()[:120]}) "
-              "— continuing with the local view of origin/main.")
+              "— SKIPPING the origin/main sync this resume (a mid-run fix PR "
+              "will NOT be picked up; re-run --resume once the network is back).")
         return
     merged = _git("merge", "--no-edit", "origin/main")
     if merged.returncode != 0:
         conflicted = _git("diff", "--name-only", "--diff-filter=U").stdout.strip()
+        if conflicted:
+            raise StageFailedError(
+                "run-branch: merging origin/main CONFLICTED — resolve by hand "
+                "(never auto-resolved), `git add` + `git commit` the merge, then "
+                f"--resume. Conflicted files:\n{conflicted}")
         raise StageFailedError(
-            "run-branch: merging origin/main CONFLICTED — resolve by hand "
-            "(never auto-resolved), `git add` + `git commit` the merge, then "
-            f"--resume. Conflicted files:\n{conflicted}")
+            "run-branch: the origin/main merge FAILED before it began (no "
+            "conflicted files — likely uncommitted output the merge would "
+            "overwrite; commit or stash it, then --resume). git said:\n"
+            f"{(merged.stderr or merged.stdout).strip()[:400]}")
     if "Already up to date" not in merged.stdout:
         print("[info] run-branch: merged origin/main — subprocess stages pick "
               "the fixes up from disk at the next stage.")
@@ -862,25 +878,36 @@ def _write_state(state: dict[str, Any], dump_dir: pathlib.Path | None) -> None:
 
 
 def _resume_start_stage(dump_dir: pathlib.Path | None, *, no_restore: bool,
-                        skip_shares: bool, stage_names: list[str]) -> str:
+                        skip_shares: bool, no_run_branch: bool,
+                        stage_names: list[str]) -> str:
     """Derive the restart stage from the persisted run state, refusing LOUDLY on
-    every ambiguous case: no state, a completed run, or flags that conflict with
-    the recorded run (a different flag set produces a different stage list, so
-    'first incomplete stage' would silently skip or re-run work)."""
+    every ambiguous case: no state, a corrupt state file, a completed run, or
+    flags that conflict with the recorded run (a different flag set produces a
+    different stage list — or, for run-branch mode, silently drops the recorded
+    branch's checkpoints — so 'first incomplete stage' would skip or re-run
+    work)."""
     path = _state_path(dump_dir)
     if not path.is_file():
         raise StageFailedError(
             f"--resume: no run state at {path} — nothing to resume (a run older "
             "than the state feature, or a fresh tenant): use --start-at explicitly")
-    state = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise StageFailedError(
+            f"--resume: run state UNREADABLE at {path} ({exc}) — "
+            "use --start-at explicitly") from exc
     if state.get("status") == "complete":
         raise StageFailedError(
             "--resume: the recorded run is COMPLETE — start a fresh run, or pass "
             "--start-at explicitly to re-run a stage")
     recorded = state.get("flags", {})
-    supplied = {"no_restore": no_restore, "skip_shares": skip_shares}
-    conflicts = {k: (recorded.get(k), v) for k, v in supplied.items()
-                 if recorded.get(k) != v}
+    # .get(k, False): pre-#687 state files never recorded no_run_branch; absent
+    # means the run used the mode's default (False), not a conflict.
+    supplied = {"no_restore": no_restore, "skip_shares": skip_shares,
+                "no_run_branch": no_run_branch}
+    conflicts = {k: (recorded.get(k, False), v) for k, v in supplied.items()
+                 if recorded.get(k, False) != v}
     if conflicts:
         raise StageFailedError(
             f"--resume: supplied flags conflict with the recorded run "
@@ -1264,6 +1291,15 @@ def finish_main(argv: list[str]) -> int:
         failures += _restart_dashboard()
 
     print("\n== finish summary ==")
+    # The ACT-fence marker is cleared only on full stand-up completion (#674);
+    # a permanently-abandoned run leaves it behind, and a clean finish would
+    # otherwise restart a dashboard whose ACT verbs stay 503-fenced for up to
+    # 6h with no hint here. Informational only — never changes the exit code.
+    if STANDUP_MARKER_PATH.exists():
+        print(f"[note] stand-up fence marker still present at "
+              f"{STANDUP_MARKER_PATH} — dashboard ACT verbs stay fenced until "
+              "its 6h age-out (an abandoned run never cleared it). Remove the "
+              "file to unfence once the tenant is verified consistent.")
     if failures:
         print(f"[FAIL] {len(failures)} load/restart failure(s): {', '.join(failures)}")
     if laggards:
@@ -1338,7 +1374,8 @@ def main() -> int:
         try:
             resume_stage = _resume_start_stage(
                 dump_dir, no_restore=args.no_restore,
-                skip_shares=args.skip_shares, stage_names=names)
+                skip_shares=args.skip_shares,
+                no_run_branch=args.no_run_branch, stage_names=names)
         except StageFailedError as exc:
             print(f"[abort] {exc}")
             return 1
@@ -1360,7 +1397,13 @@ def main() -> int:
     if not args.no_run_branch:
         try:
             if args.resume and not args.start_at:
-                prior = json.loads(_state_path(dump_dir).read_text(encoding="utf-8"))
+                try:
+                    prior = json.loads(
+                        _state_path(dump_dir).read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise StageFailedError(
+                        f"--resume: run state unreadable re-reading "
+                        f"{_state_path(dump_dir)} ({exc})") from exc
                 run_branch = _resume_run_branch(prior.get("run_branch"))
             else:
                 run_branch = _start_run_branch(run_id)
@@ -1379,6 +1422,7 @@ def main() -> int:
         "status": "running",
         "started_utc": run_id,
         "flags": {"no_restore": args.no_restore, "skip_shares": args.skip_shares,
+                  "no_run_branch": args.no_run_branch,
                   "dump_dir": str(dump_dir) if dump_dir else None},
         "stage_names": names,
         "run_branch": run_branch,
@@ -1407,7 +1451,8 @@ def main() -> int:
             _write_state(state, dump_dir)
             _emit(f"\n[abort] interrupted during stage {name!r}. Every builder is "
                   f"idempotent — resume: python3 {MIGRATIONS}/standup.py --resume "
-                  f"(or --start-at {name})")
+                  f"(--start-at {name} also works, but mints a FRESH run branch "
+                  "and skips the origin/main fix-PR sync)")
             return 1
         except Exception as exc:  # noqa: BLE001 — ANY stage failure gets the resume hint
             state["status"] = "failed"
@@ -1415,7 +1460,8 @@ def main() -> int:
             label = type(exc).__name__ if not isinstance(exc, StageFailedError) else "stage"
             _emit(f"\n[abort] stage {name!r} failed ({label}): {exc}\n"
                   f"Fix, then resume: python3 {MIGRATIONS}/standup.py --resume "
-                  f"(or --start-at {name})")
+                  f"(--start-at {name} also works, but mints a FRESH run branch "
+                  "and skips the origin/main fix-PR sync)")
             return 1
         state["completed"].append(name)
         state["stages"][name]["finished_utc"] = dt.datetime.now(

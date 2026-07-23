@@ -52,6 +52,9 @@ APPROVED_RETRY_ENROLLMENT = {
     "find_folder_by_name_in_folder",
     "find_folder_by_name_in_workspace",
     "list_workspace_share_emails",
+    # VC-10 stale-constant guard (2026-07-23 verify pass): a pure GET of the
+    # workspace name — idempotent read, retry-safe.
+    "get_workspace_name",
 }
 
 # Substrings that mean "this body can mutate remote state". An enrolled function whose
