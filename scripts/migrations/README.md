@@ -7,6 +7,33 @@ target state already in place makes zero writes and exits 0.
 
 ## Scripts
 
+### Tenant wipe + orchestrated stand-up (2026-07-22 family)
+
+The full-tenant lifecycle tools. `standup.py` supersedes the manual walk of the
+builder sequence below for a from-zero stand-up — the individual builders remain
+the units it runs, and each is still independently runnable.
+
+1. `wipe_tenant.py` — name-guarded sandbox wipe (Smartsheet workspaces + Box
+   roots, hard-coded name+id allowlist, daemon-down precondition, typed-phrase
+   gate, dump-before-delete to `~/its/logs/migrations/prewipe_<UTC>/`). Plan-only
+   by default; `--commit` to execute.
+2. `standup.py` — the orchestrator: runs every builder in dependency order as
+   subprocesses, interleaves `sheet_ids_regen.py --write` between stages so
+   every `shared/sheet_ids.py` constant (plus `DAEMON_HEALTH_COLUMNS`,
+   `operator_dashboard/system_map.py` literals, and `safety_reports/week_folder.py`
+   template ids) is flipped automatically — FLIP still precedes SEED, the flip is
+   just mechanical now. Restores data-bearing SoR rows + workspace share lists
+   from the pre-wipe dump, auto-pastes the Box-root ids into ITS_Config, pauses
+   at the two UI-only manual gates (AUTO_NUMBER `Job ID`, `Portal Job Key`), and
+   finishes with `sheet_ids_regen.py --check` + `verify_cutover --only config`.
+   `--list` shows stages; `--start-at <stage>` resumes a failed run.
+3. `sheet_ids_regen.py` — the circle-closer, also useful standalone:
+   `--check` is a read-only parity probe (every constant resolves live to an
+   object of the expected name); `--write` regenerates the ID surfaces.
+4. `build_legacy_workspaces.py` — builders for the four hand-created workspaces
+   that never had one (Human Review, Operations master DBs, Archive, the
+   Forefront demo skeleton + week-folder template sheets).
+
 ### Phase-1 cutover builder sequence
 
 The four gap-builders that stand up a fresh PRODUCTION tenant run in this order.
