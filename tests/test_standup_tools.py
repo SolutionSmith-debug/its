@@ -168,6 +168,15 @@ def test_resolve_missing_required_vs_optional() -> None:
     assert regen.resolve_in_tree(_TREE, optional) == regen.ABSENT_OPTIONAL
 
 
+def test_missing_required_excludes_ambiguous_and_optional() -> None:
+    """Only MISSING drives the propagation probe: AMBIGUOUS is a real conflict
+    (retrying cannot fix a duplicate name) and absent-optional is by design."""
+    res: dict[str, int | str] = {"A": regen.MISSING, "B": regen.AMBIGUOUS,
+                                 "C": regen.ABSENT_OPTIONAL, "D": 123}
+    ext: dict[str, dict[str, int | str]] = {"f.py": {"E": regen.MISSING, "F": 9}}
+    assert regen.missing_required(res, ext) == {"A", "f.py:E"}
+
+
 def test_resolve_all_duplicate_workspace_names_ambiguous() -> None:
     workspaces = [{"name": "ITS — System", "id": 100},
                   {"name": "ITS — System", "id": 101}]

@@ -64,6 +64,7 @@ import dataclasses
 import pathlib
 import re
 import sys
+import time
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
@@ -452,6 +453,18 @@ def sweep_repo_for_old_ids(remap: dict[int, int], skip: set[pathlib.Path]) -> li
 # ---- orchestration --------------------------------------------------------
 
 
+def missing_required(
+    resolutions: dict[str, Resolution],
+    external: dict[str, dict[str, Resolution]],
+) -> set[str]:
+    """Names of REQUIRED constants that resolved MISSING (AMBIGUOUS excluded —
+    duplicates are a real conflict, never a propagation artifact)."""
+    miss = {c for c, r in resolutions.items() if r == MISSING}
+    for path, res_map in external.items():
+        miss |= {f"{path}:{c}" for c, r in res_map.items() if r == MISSING}
+    return miss
+
+
 def _resolve_live() -> tuple[dict[str, Resolution], dict[str, dict[str, Resolution]],
                              dict[str, int]]:
     """Resolve REGISTRY + EXTERNAL_CONSTANTS + DAEMON_HEALTH_COLUMNS against the tenant."""
@@ -528,11 +541,36 @@ def main() -> int:
                       help="Read-only parity probe (strict).")
     parser.add_argument("--strict", action="store_true",
                         help="Fail on any unresolved REQUIRED constant (implied by --check).")
+    parser.add_argument("--retry-missing", type=int, default=0, metavar="N",
+                        help="Re-resolve up to N times while required constants are "
+                             "MISSING, stopping early once the missing set stops "
+                             "shrinking. Absorbs Smartsheet's create->read propagation "
+                             "window (§45) when run right after a builder — objects "
+                             "created seconds ago can be absent from the workspace "
+                             "listing on the first read.")
+    parser.add_argument("--retry-delay", type=float, default=3.0, metavar="SECS",
+                        help="Delay between --retry-missing attempts (default 3s).")
     args = parser.parse_args()
     strict = args.strict or args.check
 
     print(f"[info] Mode: {'CHECK' if args.check else 'WRITE' if args.write else 'PLAN'}")
     resolutions, external, columns_by_key = _resolve_live()
+    missing = missing_required(resolutions, external)
+    attempt = 0
+    while args.retry_missing and attempt < args.retry_missing and missing:
+        attempt += 1
+        print(f"[info] propagation_probe: {len(missing)} required constant(s) MISSING — "
+              f"re-resolving (attempt {attempt}/{args.retry_missing}, "
+              f"{args.retry_delay:g}s delay)...")
+        time.sleep(args.retry_delay)
+        resolutions, external, columns_by_key = _resolve_live()
+        new_missing = missing_required(resolutions, external)
+        if new_missing == missing:
+            print(f"[info] propagation_probe: missing set converged at "
+                  f"{len(new_missing)} — treating as genuinely absent "
+                  "(objects whose builders have not run yet).")
+            break
+        missing = new_missing
 
     sheet_ids_text = SHEET_IDS_PATH.read_text(encoding="utf-8")
     current = read_current_values(sheet_ids_text, list(REGISTRY))

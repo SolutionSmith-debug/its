@@ -141,6 +141,12 @@ def _run_many(*rel_paths: str) -> None:
 
 
 def _regen(*args: str) -> None:
+    # --retry-missing absorbs Smartsheet's create->read propagation window when a
+    # regen runs seconds after its builder stage (§45; without it, a just-created
+    # workspace can be absent from the listing and NOTHING gets flipped — the
+    # 2026-07-23 first-run failure mode).
+    if "--check" not in args:
+        args = (*args, "--retry-missing", "5")
     _run_script(f"{MIGRATIONS}/sheet_ids_regen.py", *args)
 
 
