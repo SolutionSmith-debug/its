@@ -212,6 +212,14 @@ def test_integer_remap_word_boundaries() -> None:
     assert "sheet_id=777" in out
 
 
+def test_integer_remap_chained_pairs_never_double_replace() -> None:
+    # One pair's NEW id equals another pair's OLD id: two-phase must keep them
+    # independent — sequential replacement would turn the first 1 into 3.
+    out, n = regen.rewrite_integer_remap("x = 1\ny = 2\n", {1: 2, 2: 3})
+    assert "x = 2" in out and "y = 3" in out
+    assert n == 2
+
+
 def test_read_current_values() -> None:
     vals = regen.read_current_values(_FIXTURE, ["WORKSPACE_SYSTEM", "SHEET_CONFIG",
                                                 "ALIAS", "MISSING_CONST"])
@@ -351,3 +359,21 @@ def test_restore_sheet_targets_are_valid_constants() -> None:
     text = (REPO_ROOT / "shared" / "sheet_ids.py").read_text(encoding="utf-8")
     for _ws, _sheet, constant in standup.RESTORE_SHEETS:
         assert re.search(rf"^{constant}\s*=", text, re.MULTILINE), constant
+
+
+def test_resolve_dump_dir_refusals(tmp_path: Path,
+                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    """No dump -> refuse (never a silent fresh-tenant fallback); two dumps ->
+    refuse auto-pick (a partial re-wipe's second dump is incomplete)."""
+    monkeypatch.setattr(standup, "DUMP_ROOT", tmp_path)
+    with pytest.raises(standup.StageFailedError, match="no prewipe"):
+        standup._resolve_dump_dir(None)
+    (tmp_path / "prewipe_A").mkdir()
+    assert standup._resolve_dump_dir(None) == tmp_path / "prewipe_A"
+    (tmp_path / "prewipe_B").mkdir()
+    with pytest.raises(standup.StageFailedError, match="auto-picking is unsafe"):
+        standup._resolve_dump_dir(None)
+    # explicit --dump always wins, but must exist
+    assert standup._resolve_dump_dir(tmp_path / "prewipe_B") == tmp_path / "prewipe_B"
+    with pytest.raises(standup.StageFailedError, match="does not exist"):
+        standup._resolve_dump_dir(tmp_path / "prewipe_missing")

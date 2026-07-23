@@ -408,16 +408,22 @@ def rewrite_dict_values(text: str, dict_updates: dict[str, int]) -> tuple[str, l
 
 
 def rewrite_integer_remap(text: str, remap: dict[int, int]) -> tuple[str, int]:
-    """Replace standalone old ids with new ids (system_map literals). Returns (text, n)."""
+    """Replace standalone old ids with new ids. Returns (text, replacements).
+
+    Two-phase (old -> placeholder -> new) so a chained remap — some pair's NEW
+    id textually equal to another pair's OLD id — can never double-replace.
+    """
     n = 0
-    for old, new in remap.items():
+    placeholders: dict[str, int] = {}
+    for i, (old, new) in enumerate(sorted(remap.items())):
         if old == new:
             continue
-        new_text = re.sub(rf"(?<!\d){old}(?!\d)", str(new), text)
-        if new_text != text:
-            n += len(re.findall(rf"(?<!\d){new}(?!\d)", new_text)) - len(
-                re.findall(rf"(?<!\d){new}(?!\d)", text))
-            text = new_text
+        token = f"\x00REMAP{i}\x00"
+        text, count = re.subn(rf"(?<!\d){old}(?!\d)", token, text)
+        n += count
+        placeholders[token] = new
+    for token, new in placeholders.items():
+        text = text.replace(token, str(new))
     return text, n
 
 
@@ -430,7 +436,7 @@ def sweep_repo_for_old_ids(remap: dict[int, int], skip: set[pathlib.Path]) -> li
     for path in sorted(REPO_ROOT.rglob("*.py")):
         if any(part in {".venv", ".venv-wt", "node_modules", ".git"} for part in path.parts):
             continue
-        if path in skip:
+        if path.resolve() in skip:
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -604,12 +610,27 @@ def main() -> int:
         target_path.write_text(file_text, encoding="utf-8")
         print(f"[ok] {path}: {len(ch)} constant(s) rewritten.")
 
-    map_text = SYSTEM_MAP_PATH.read_text(encoding="utf-8")
-    map_text, n_map = rewrite_integer_remap(map_text, remap)
-    SYSTEM_MAP_PATH.write_text(map_text, encoding="utf-8")
-    print(f"[ok] operator_dashboard/system_map.py: {n_map} literal(s) remapped.")
+    # Integer-literal remap across every surface that pins the same datum:
+    # system_map MapNodes, builder-local pins (build_wsr_human_review_sheet.py
+    # hard-pins FOLDER_SAFETY_PORTAL — the standup interleave depends on this
+    # rewrite landing BEFORE that builder runs), and test pins.
+    remap_files: list[pathlib.Path] = [SYSTEM_MAP_PATH]
+    remap_files += sorted((REPO_ROOT / "scripts" / "migrations").glob("*.py"))
+    remap_files += sorted((REPO_ROOT / "tests").glob("*.py"))
+    self_path = pathlib.Path(__file__).resolve()
+    for remap_path in remap_files:
+        if remap_path.resolve() == self_path:
+            continue  # never rewrite this module's own registry/doc text mid-run
+        remap_text = remap_path.read_text(encoding="utf-8")
+        remap_text, n_hits = rewrite_integer_remap(remap_text, remap)
+        if n_hits:
+            remap_path.write_text(remap_text, encoding="utf-8")
+            print(f"[ok] {remap_path.relative_to(REPO_ROOT)}: "
+                  f"{n_hits} literal(s) remapped.")
 
-    skip = {SHEET_IDS_PATH, SYSTEM_MAP_PATH, WEEK_FOLDER_PATH}
+    skip = {SHEET_IDS_PATH.resolve(), SYSTEM_MAP_PATH.resolve(),
+            WEEK_FOLDER_PATH.resolve(), self_path}
+    skip |= {p.resolve() for p in remap_files}
     hits = sweep_repo_for_old_ids(remap, skip)
     if hits:
         print(f"\n[WARN] stale_old_ids_survive: {len(hits)} line(s) elsewhere in the repo "

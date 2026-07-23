@@ -95,14 +95,30 @@ BOX_ROOT_CONFIG_ROWS: tuple[tuple[str, str, str], ...] = (
 
 
 def _confirm(prompt: str) -> bool:
-    """Master y/N gate (tests monkeypatch)."""
-    return input(f"{prompt} [y/N] ").strip().lower() == "y"
+    """Master y/N gate (tests monkeypatch). EOF counts as a decline."""
+    try:
+        return input(f"{prompt} [y/N] ").strip().lower() == "y"
+    except EOFError:
+        return False
 
 
 def _manual_gate(instruction: str) -> None:
-    """Pause for a UI-only step; loops until the operator confirms it is done."""
+    """Pause for a UI-only step; loops until the operator confirms it is done.
+
+    EOF (a piped/non-interactive run reaching a gate) aborts the stage cleanly —
+    the resume hint then names this stage, the operator does the UI step, and
+    the run continues with --start-at the FOLLOWING stage.
+    """
     print(f"\n=== MANUAL STEP ===\n{instruction}")
-    while input("Done? [y/N] ").strip().lower() != "y":
+    while True:
+        try:
+            answer = input("Done? [y/N] ").strip().lower()
+        except EOFError as exc:
+            raise StageFailedError(
+                "manual step reached with no interactive stdin — do the step above, "
+                "then resume at the NEXT stage") from exc
+        if answer == "y":
+            return
         print("Waiting — complete the step above, then answer y.")
 
 
@@ -143,17 +159,28 @@ def _headers() -> dict[str, str]:
 
 
 def _stage_box_roots() -> None:
-    """build_box_roots + auto-paste of the two ITS_Config rows (circle closed)."""
-    _run_script(f"{MIGRATIONS}/build_box_roots.py")
+    """build_box_roots + auto-paste of the two ITS_Config rows (circle closed).
+
+    The builder's own identity gate is auto-fed like every other prompt, so the
+    Box login is printed HERE first — the attended operator sees which account
+    the roots land in before the subprocess runs (the builder prints it again).
+    """
     from shared import box_client, smartsheet_client
+    me = box_client.get_client().user().get()
+    print(f"[info] Box identity for this stage: {me.login} ({me.name})")
+    _run_script(f"{MIGRATIONS}/build_box_roots.py")
     sheet_ids = _fresh_sheet_ids()
-    root_items = {i.get("name"): str(i.get("id"))
-                  for i in box_client.list_folder("0", limit=1000)
-                  if i.get("type") == "folder"}
+    all_roots = [i for i in box_client.list_folder("0", limit=1000)
+                 if i.get("type") == "folder"]
     for folder_name, setting, workstream in BOX_ROOT_CONFIG_ROWS:
-        folder_id = root_items.get(folder_name)
-        if not folder_id:
+        matches = [str(i.get("id")) for i in all_roots if i.get("name") == folder_name]
+        if len(matches) > 1:
+            raise StageFailedError(
+                f"Box root {folder_name!r} is AMBIGUOUS ({len(matches)} folders: "
+                f"{matches}) — reconcile before the config paste")
+        if not matches:
             raise StageFailedError(f"Box root {folder_name!r} not found after builder run")
+        folder_id = matches[0]
         existing = smartsheet_client.get_rows(
             sheet_ids.SHEET_CONFIG,
             filters={"Setting": setting, "Workstream": workstream})
@@ -190,7 +217,15 @@ def _find_dump_sheet(dump_dir: pathlib.Path, workspace: str, sheet: str,
 
 
 def _stage_restore_rows(dump_dir: pathlib.Path) -> None:
-    """Restore data-bearing SoR rows from the pre-wipe dump (idempotent by primary)."""
+    """Restore data-bearing SoR rows from the pre-wipe dump (idempotent by primary).
+
+    Raw REST (not smartsheet_client.add_rows) so structured objectValues —
+    MULTI_PICKLIST cells like ITS_Vendors "Supply Categories" and
+    ITS_Subcontractors "Trades" — round-trip intact; a title-keyed plain value
+    would flatten them to a display string the API rejects. Cells map dump
+    title -> REBUILT sheet column id; dump columns absent on the rebuilt
+    schema are reported, never silently dropped.
+    """
     from shared import smartsheet_client
     sheet_ids = _fresh_sheet_ids()
     for workspace, sheet_name, constant in RESTORE_SHEETS:
@@ -202,10 +237,17 @@ def _stage_restore_rows(dump_dir: pathlib.Path) -> None:
         if dump is None:
             print(f"[WARN] restore skipped: {sheet_name!r} not in dump {workspace!r}")
             continue
-        writable = {
+        dump_writable = {
             c["title"] for c in dump.get("columns", [])
             if c.get("title") and not c.get("systemColumnType")
         }
+        target_cols = smartsheet_client.list_columns_with_options(target_id)
+        target_id_by_title = {c.get("title"): int(c["id"]) for c in target_cols}
+        writable = dump_writable & set(target_id_by_title)
+        dropped = dump_writable - set(target_id_by_title)
+        if dropped:
+            print(f"[WARN] {sheet_name!r}: dump column(s) absent on the rebuilt sheet, "
+                  f"values NOT restored: {sorted(dropped)}")
         primary = next(
             (c["title"] for c in dump.get("columns", []) if c.get("primary")), None)
         if primary is None:
@@ -213,31 +255,88 @@ def _stage_restore_rows(dump_dir: pathlib.Path) -> None:
             continue
         existing_primaries = {
             r.get(primary) for r in smartsheet_client.get_rows(target_id)}
-        to_add = []
+        payload: list[dict[str, Any]] = []
         for row in dump.get("rows", []):
             if row.get(primary) in existing_primaries:
                 continue
-            cells = {t: v for t, v in row.items()
-                     if t in writable and t != "_row_id" and v is not None}
+            object_values = row.get("_ov") or {}
+            cells: list[dict[str, Any]] = []
+            for title in sorted(writable):
+                col_id = target_id_by_title[title]
+                if title in object_values:
+                    cells.append({"columnId": col_id,
+                                  "objectValue": object_values[title]})
+                elif row.get(title) is not None:
+                    cells.append({"columnId": col_id, "value": row[title]})
             if cells:
-                to_add.append(cells)
-        if not to_add:
+                payload.append({"toBottom": True, "cells": cells})
+        if not payload:
             print(f"[skip] {sheet_name!r}: nothing to restore "
                   f"({len(dump.get('rows', []))} dumped, all present or empty).")
             continue
-        for i in range(0, len(to_add), 300):
-            smartsheet_client.add_rows(target_id, to_add[i:i + 300])
-        print(f"[ok] {sheet_name!r}: restored {len(to_add)} row(s) from dump.")
+        for i in range(0, len(payload), 300):
+            r = requests.post(f"{BASE}/sheets/{target_id}/rows", headers=_headers(),
+                              json=payload[i:i + 300], timeout=120)
+            if r.status_code != 200:
+                raise StageFailedError(
+                    f"restore add-rows failed for {sheet_name!r}: "
+                    f"HTTP {r.status_code} {r.text[:300]}")
+        print(f"[ok] {sheet_name!r}: restored {len(payload)} row(s) from dump.")
+    _reconcile_progress_job_ids(sheet_ids)
+
+
+def _reconcile_progress_job_ids(sheet_ids: Any) -> None:
+    """Re-align ITS_Active_Jobs_Progress 'Job ID' with the safety sheet's values.
+
+    The safety sheet's 'Job ID' is the UI-created AUTO_NUMBER column, so restored
+    rows get freshly assigned numbers; the progress sheet's 'Job ID' is a plain
+    TEXT mirror restored with the PRE-wipe values. If auto-numbering did not
+    reproduce the old sequence the cross-sheet join splits — so reconcile by
+    'Project Name' and rewrite drifted progress values, WARN on unmatched rows.
+    """
+    from shared import smartsheet_client
+    if not (getattr(sheet_ids, "SHEET_ACTIVE_JOBS", 0)
+            and getattr(sheet_ids, "SHEET_ACTIVE_JOBS_PROGRESS", 0)):
+        print("[WARN] job_id_reconcile skipped: an Active-Jobs constant is unresolved.")
+        return
+    safety = smartsheet_client.get_rows(sheet_ids.SHEET_ACTIVE_JOBS)
+    progress = smartsheet_client.get_rows(sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS)
+    safety_by_project = {r.get("Project Name"): r.get("Job ID") for r in safety
+                        if r.get("Project Name")}
+    updates = []
+    for row in progress:
+        project = row.get("Project Name")
+        want = safety_by_project.get(project)
+        if want is None:
+            print(f"[WARN] job_id_reconcile: progress row {project!r} has no safety "
+                  "counterpart — reconcile manually.")
+            continue
+        if row.get("Job ID") != want:
+            updates.append({"_row_id": row["_row_id"], "Job ID": want})
+    if updates:
+        smartsheet_client.update_rows(sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS, updates)
+        print(f"[ok] job_id_reconcile: {len(updates)} progress Job ID(s) re-aligned "
+              "to the safety sheet's regenerated auto-numbers.")
+    else:
+        print("[ok] job_id_reconcile: safety and progress Job IDs already aligned.")
 
 
 def _stage_restore_shares(dump_dir: pathlib.Path) -> None:
-    """Re-share rebuilt workspaces from the dumped share lists (F22 approver sets)."""
+    """Re-share rebuilt workspaces from the dumped share lists (F22 approver sets).
+
+    §46: workspace membership IS approval authority, so this write is guarded
+    like the builders — the target workspace must be OWNER-access and uniquely
+    named, and every dumped share this tool CANNOT restore (a GROUP share has
+    no email) is WARNed, never silently dropped: a silently narrower approver
+    set on Purchase Orders / Subcontracts would fail-close the send gates with
+    no explanation.
+    """
     ws_listing = requests.get(f"{BASE}/workspaces?includeAll=true",
                               headers=_headers(), timeout=30)
     ws_listing.raise_for_status()
-    live_by_name: dict[str, list[int]] = {}
+    live_by_name: dict[str, list[dict[str, Any]]] = {}
     for ws in ws_listing.json().get("data", []):
-        live_by_name.setdefault(str(ws.get("name")), []).append(int(ws["id"]))
+        live_by_name.setdefault(str(ws.get("name")), []).append(ws)
     for name in RESHARE_WORKSPACES:
         meta_path = (dump_dir / "smartsheet" / name.replace("/", "_")
                      / "_workspace.json")
@@ -249,14 +348,26 @@ def _stage_restore_shares(dump_dir: pathlib.Path) -> None:
         if len(targets) != 1:
             print(f"[WARN] shares skipped: {len(targets)} live workspaces named {name!r}")
             continue
+        target = targets[0]
+        if target.get("accessLevel") != "OWNER":
+            print(f"[WARN] shares skipped: workspace {name!r} accessLevel="
+                  f"{target.get('accessLevel')} != OWNER — refusing to write shares "
+                  "into a workspace this token does not own.")
+            continue
         added = 0
         for share in shares:
             email = share.get("email")
             level = share.get("accessLevel")
-            if not email or level in (None, "OWNER"):
+            if level == "OWNER":
+                continue  # ownership is implicit on the rebuilt workspace
+            if not email:
+                print(f"  [WARN] share_not_restorable: {name!r} had a non-email share "
+                      f"(type={share.get('type')}, name={share.get('name')!r}, "
+                      f"accessLevel={level}) — GROUP shares must be re-added by hand "
+                      "or the approver set is narrower than pre-wipe.")
                 continue
             r = requests.post(
-                f"{BASE}/workspaces/{targets[0]}/shares?sendEmail=false",
+                f"{BASE}/workspaces/{int(target['id'])}/shares?sendEmail=false",
                 headers=_headers(),
                 json=[{"email": email, "accessLevel": level}], timeout=30)
             if r.status_code == 200:
@@ -378,9 +489,31 @@ def build_stages(dump_dir: pathlib.Path | None, *, skip_shares: bool) -> list[St
     return stages
 
 
-def _latest_dump() -> pathlib.Path | None:
+def _resolve_dump_dir(explicit: pathlib.Path | None) -> pathlib.Path:
+    """Resolve the restore source, refusing every ambiguous case LOUDLY.
+
+    - No dump found and --no-restore not passed -> abort (a silent fresh-tenant
+      fallback would quietly skip the row/share restore the operator expects).
+    - MULTIPLE prewipe dumps -> abort and demand an explicit --dump: a partial
+      re-wipe after a failed first attempt creates a second, INCOMPLETE dump,
+      and auto-picking "newest" would restore from the wrong one.
+    """
+    if explicit is not None:
+        if not explicit.is_dir():
+            raise StageFailedError(f"dump dir {explicit} does not exist")
+        return explicit
     candidates = sorted(DUMP_ROOT.glob("prewipe_*"))
-    return candidates[-1] if candidates else None
+    if not candidates:
+        raise StageFailedError(
+            f"no prewipe_* dump under {DUMP_ROOT} — pass --dump DIR, or pass "
+            "--no-restore explicitly for a genuine fresh-tenant stand-up")
+    if len(candidates) > 1:
+        listing = ", ".join(c.name for c in candidates)
+        raise StageFailedError(
+            f"{len(candidates)} prewipe dumps exist ({listing}) — a partial re-wipe "
+            "produces an incomplete second dump, so auto-picking is unsafe; pass "
+            "--dump with the FULL (usually first) dump explicitly")
+    return candidates[0]
 
 
 def _require_daemons_down() -> bool:
@@ -414,9 +547,10 @@ def main() -> int:
 
     dump_dir: pathlib.Path | None = None
     if not args.no_restore:
-        dump_dir = args.dump or _latest_dump()
-        if dump_dir is not None and not dump_dir.is_dir():
-            print(f"[abort] dump dir {dump_dir} does not exist.")
+        try:
+            dump_dir = _resolve_dump_dir(args.dump)
+        except StageFailedError as exc:
+            print(f"[abort] {exc}")
             return 1
     stages = build_stages(dump_dir, skip_shares=args.skip_shares)
 
@@ -445,8 +579,13 @@ def main() -> int:
         print(f"\n=== STAGE {name} ===")
         try:
             fn()
-        except StageFailedError as exc:
-            print(f"\n[abort] stage {name!r} failed: {exc}\n"
+        except KeyboardInterrupt:
+            print(f"\n[abort] interrupted during stage {name!r}. Every builder is "
+                  f"idempotent — resume: python3 {MIGRATIONS}/standup.py --start-at {name}")
+            return 1
+        except Exception as exc:  # noqa: BLE001 — ANY stage failure gets the resume hint
+            label = type(exc).__name__ if not isinstance(exc, StageFailedError) else "stage"
+            print(f"\n[abort] stage {name!r} failed ({label}): {exc}\n"
                   f"Fix, then resume: python3 {MIGRATIONS}/standup.py --start-at {name}")
             return 1
     print(

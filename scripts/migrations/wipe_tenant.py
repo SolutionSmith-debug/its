@@ -124,9 +124,12 @@ def require_daemons_down() -> None:
 
 
 def _confirm_phrase() -> bool:
-    """The typed-phrase gate (guard 3). Tests monkeypatch this seam."""
+    """The typed-phrase gate (guard 3). Tests monkeypatch this seam. EOF = decline."""
     print(f'\nType exactly "{CONFIRM_PHRASE}" to delete everything listed above.')
-    return input("> ").strip() == CONFIRM_PHRASE
+    try:
+        return input("> ").strip() == CONFIRM_PHRASE
+    except EOFError:
+        return False
 
 
 def match_allowlist(
@@ -190,11 +193,28 @@ def _workspace_shares(workspace_id: int) -> list[dict[str, Any]]:
 
 
 def _sheet_dump(sheet_id: int) -> dict[str, Any]:
-    """Columns (with type/options/systemColumnType) + title-keyed rows for one sheet."""
-    r = requests.get(f"{BASE}/sheets/{sheet_id}?pageSize=10000",
-                     headers=_headers(), timeout=120)
-    r.raise_for_status()
-    sheet = r.json()
+    """Columns (type/options/systemColumnType) + rows for one sheet, ALL pages.
+
+    Fetched at level=2 with objectValue so MULTI_PICKLIST cells round-trip (a
+    plain `value` flattens them to a display string the restore cannot write
+    back). Rows carry `{title: value}` plus `_ov` = `{title: objectValue}` for
+    cells where the API returned a structured objectValue.
+    """
+    page = 1
+    sheet: dict[str, Any] = {}
+    raw_rows: list[dict[str, Any]] = []
+    while True:
+        r = requests.get(
+            f"{BASE}/sheets/{sheet_id}?pageSize=5000&page={page}"
+            "&level=2&include=objectValue",
+            headers=_headers(), timeout=120)
+        r.raise_for_status()
+        sheet = r.json()
+        raw_rows.extend(sheet.get("rows", []))
+        total = int(sheet.get("totalRowCount") or 0)
+        if len(raw_rows) >= total or not sheet.get("rows"):
+            break
+        page += 1
     columns = [
         {
             "id": c["id"],
@@ -208,17 +228,30 @@ def _sheet_dump(sheet_id: int) -> dict[str, Any]:
     ]
     title_by_id = {c["id"]: c["title"] for c in columns}
     rows = []
-    for row in sheet.get("rows", []):
+    for row in raw_rows:
         record: dict[str, Any] = {"_row_id": row.get("id")}
+        object_values: dict[str, Any] = {}
         for cell in row.get("cells", []):
             title = title_by_id.get(cell.get("columnId"))
-            if title is not None and "value" in cell:
+            if title is None:
+                continue
+            if "value" in cell:
                 record[title] = cell.get("value")
+            ov = cell.get("objectValue")
+            if isinstance(ov, dict):  # structured values (MULTI_PICKLIST etc.)
+                object_values[title] = ov
+        if object_values:
+            record["_ov"] = object_values
         rows.append(record)
+    total = int(sheet.get("totalRowCount") or 0)
+    if len(rows) != total:
+        raise RuntimeError(
+            f"sheet_dump_truncated: sheet {sheet_id} totalRowCount={total} "
+            f"but {len(rows)} rows fetched — refusing a lossy dump")
     return {
         "id": sheet.get("id"),
         "name": sheet.get("name"),
-        "total_rows": sheet.get("totalRowCount"),
+        "total_rows": total,
         "columns": columns,
         "rows": rows,
     }
@@ -231,8 +264,21 @@ def _walk_sheets(node: dict[str, Any], path: tuple[str, ...] = ()) -> list[tuple
     return out
 
 
-def dump_workspace(ws: dict[str, Any], dump_dir: pathlib.Path) -> int:
-    """Dump one workspace (tree + shares + every sheet) to JSON. Returns sheet count."""
+def dump_workspace(ws: dict[str, Any], dump_dir: pathlib.Path,
+                   ) -> tuple[int, list[str]]:
+    """Dump one workspace (tree + shares + every sheet) to JSON.
+
+    Returns (sheets_dumped, unreadable) where `unreadable` names sheets whose
+    FETCH failed (e.g. the four zero-column ITS_Errors shells from the row-cap
+    incident return 1115/404 on read) — recorded and reported, not fatal: an
+    unreadable broken shell has no content to preserve, and blocking the whole
+    wipe on it would strand the operation. Any WRITE failure still propagates
+    (guard 4 — a dump we cannot persist aborts the wipe).
+
+    Filenames carry the sheet id so duplicate names in one folder (the
+    ITS_Errors quintuplet) can never silently overwrite each other. Reports /
+    dashboards are NOT captured (sheets only) — a documented limitation.
+    """
     ws_id = int(ws["id"])
     tree = _workspace_tree(ws_id)
     shares = _workspace_shares(ws_id)
@@ -245,14 +291,26 @@ def dump_workspace(ws: dict[str, Any], dump_dir: pathlib.Path) -> int:
                    indent=2, default=str),
         encoding="utf-8")
     sheets = _walk_sheets(tree)
+    unreadable: list[str] = []
+    dumped = 0
     for path, sheet_meta in sheets:
-        dump = _sheet_dump(int(sheet_meta["id"]))
+        sheet_id = int(sheet_meta["id"])
+        label = "/".join((*path, str(sheet_meta.get("name"))))
+        try:
+            dump = _sheet_dump(sheet_id)
+        except (requests.HTTPError, RuntimeError) as e:
+            unreadable.append(f"{label} (id={sheet_id}): {e}")
+            print(f"[WARN] sheet_unreadable: {label} (id={sheet_id}) — {e}. "
+                  "Recorded and skipped (no content preserved for this sheet).")
+            continue
         dump["folder_path"] = list(path)
         dump["workspace"] = ws["name"]
-        fname = f"{'__'.join((*path, str(sheet_meta.get('name'))))}".replace("/", "_")
+        fname = (f"{'__'.join((*path, str(sheet_meta.get('name'))))}"
+                 f"__{sheet_id}").replace("/", "_")
         (ws_dir / f"{fname}.sheet.json").write_text(
             json.dumps(dump, indent=2, default=str), encoding="utf-8")
-    return len(sheets)
+        dumped += 1
+    return dumped, unreadable
 
 
 def _tree_skeleton(node: dict[str, Any]) -> dict[str, Any]:
@@ -372,31 +430,54 @@ def main() -> int:
         print("[abort] confirmation phrase not matched; nothing deleted.")
         return 1
 
-    # ---- dump (guard 4: abort the wipe on any dump failure) ----
+    # ---- dump (guard 4: a dump we cannot capture/persist aborts the wipe) ----
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     dump_dir = DUMP_ROOT / f"prewipe_{stamp}"
     dump_dir.mkdir(parents=True, exist_ok=False)
     print(f"\n[dump] -> {dump_dir}")
     total_sheets = 0
-    for ws in ws_deletable:
-        n = dump_workspace(ws, dump_dir)
-        total_sheets += n
-        print(f"[dump] {ws['name']!r}: {n} sheet(s) dumped.")
-    box_manifests = {}
-    for b in box_deletable:
-        box_manifests[b["name"]] = _box_manifest(str(b["id"]))
-        print(f"[dump] Box {b['name']!r}: manifest captured.")
-    (dump_dir / "box_manifest.json").write_text(
-        json.dumps(box_manifests, indent=2), encoding="utf-8")
-    (dump_dir / "_manifest.json").write_text(
-        json.dumps({
-            "captured_at_utc": stamp,
-            "smartsheet_workspaces": [
-                {"name": w["name"], "id": w["id"]} for w in ws_deletable],
-            "smartsheet_sheets_dumped": total_sheets,
-            "box_roots": [{"name": b["name"], "id": b["id"]} for b in box_deletable],
-        }, indent=2), encoding="utf-8")
-    print(f"[dump] complete: {total_sheets} sheets + shares + Box manifest.\n")
+    all_unreadable: list[str] = []
+    try:
+        for ws in ws_deletable:
+            n, unreadable = dump_workspace(ws, dump_dir)
+            total_sheets += n
+            all_unreadable.extend(unreadable)
+            print(f"[dump] {ws['name']!r}: {n} sheet(s) dumped"
+                  + (f", {len(unreadable)} unreadable" if unreadable else "") + ".")
+        box_manifests = {}
+        for b in box_deletable:
+            box_manifests[b["name"]] = _box_manifest(str(b["id"]))
+            print(f"[dump] Box {b['name']!r}: manifest captured.")
+        (dump_dir / "box_manifest.json").write_text(
+            json.dumps(box_manifests, indent=2), encoding="utf-8")
+        (dump_dir / "_manifest.json").write_text(
+            json.dumps({
+                "captured_at_utc": stamp,
+                "smartsheet_workspaces": [
+                    {"name": w["name"], "id": w["id"]} for w in ws_deletable],
+                "smartsheet_sheets_dumped": total_sheets,
+                "unreadable_sheets": all_unreadable,
+                "box_roots": [{"name": b["name"], "id": b["id"]}
+                              for b in box_deletable],
+                "limitations": "sheets only — reports/dashboards not captured; "
+                               "Box file bytes not downloaded (manifest only)",
+            }, indent=2), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001 — guard 4: ANY dump failure stops the wipe
+        print(f"\n[abort] dump_failed: {e}\nNothing was deleted. The partial dump at "
+              f"{dump_dir} is safe to remove.")
+        return 1
+    print(f"[dump] complete: {total_sheets} sheets + shares + Box manifest"
+          + (f" ({len(all_unreadable)} unreadable sheet(s) recorded)"
+             if all_unreadable else "") + ".\n")
+
+    # Guard 2 re-check: minutes have passed at the prompt + dump — a daemon
+    # reloaded in the window must stop the delete (check-then-act, re-armed).
+    try:
+        require_daemons_down()
+    except WipeRefusedError:
+        print(f"[abort] A daemon was loaded during the dump window. Dump retained at "
+              f"{dump_dir}; nothing deleted.")
+        return 1
 
     # ---- delete ----
     failures = 0
@@ -404,14 +485,14 @@ def main() -> int:
         try:
             _delete_workspace(int(ws["id"]))
             print(f"[deleted] Smartsheet workspace {ws['name']!r} (id={ws['id']})")
-        except requests.HTTPError as e:
+        except Exception as e:  # noqa: BLE001 — partial-failure contract: keep going
             failures += 1
             print(f"[ERROR] delete failed for {ws['name']!r}: {e}")
     for b in box_deletable:
         try:
             _delete_box_folder(str(b["id"]))
             print(f"[deleted] Box folder {b['name']!r} (id={b['id']}, recursive)")
-        except box_client.BoxError as e:
+        except Exception as e:  # noqa: BLE001 — raw boxsdk exceptions included
             failures += 1
             print(f"[ERROR] Box delete failed for {b['name']!r}: {e}")
 
