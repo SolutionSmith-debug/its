@@ -71,6 +71,7 @@ import requests  # type: ignore[import-untyped]  # noqa: E402
 # Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
 # it explicitly — the test_standup_tools.py import pattern).
 from _rest_retry import is_permanent_read_failure, request_with_retry  # noqa: E402
+from _run_marker import DASHBOARD_LABEL, run_marker  # noqa: E402
 
 from shared import box_client, keychain  # noqa: E402
 
@@ -120,7 +121,11 @@ def _loaded_its_daemons() -> list[str]:
 
 
 def require_daemons_down() -> None:
-    loaded = _loaded_its_daemons()
+    # The operator dashboard is EXEMPT: read-only panels + no background tenant
+    # writes, so it may stay observable over Tailscale mid-wipe. Its 5 PIN-gated
+    # ACT verbs are fenced by the standup-in-progress marker (_run_marker;
+    # dashboard side its#677) — a fresh marker 503s them.
+    loaded = [label for label in _loaded_its_daemons() if label != DASHBOARD_LABEL]
     if loaded:
         print(f"[abort] daemons_loaded: {len(loaded)} org.solutionsmith.its.* job(s) are "
               "still loaded — a live fleet would error-storm against deleted sheets and "
@@ -448,6 +453,14 @@ def main() -> int:
 
     # ---- dump (guard 4: a dump we cannot capture/persist aborts the wipe) ----
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    with run_marker("wipe_tenant", stamp):
+        return _dump_and_delete(stamp, ws_deletable, box_deletable)
+
+
+def _dump_and_delete(stamp: str, ws_deletable: list[dict[str, Any]],
+                     box_deletable: list[dict[str, Any]]) -> int:
+    """The mutating tail of main() — runs under the standup-in-progress marker
+    (_run_marker) so the dashboard's ACT fence covers the whole window."""
     dump_dir = DUMP_ROOT / f"prewipe_{stamp}"
     dump_dir.mkdir(parents=True, exist_ok=False)
     print(f"\n[dump] -> {dump_dir}")

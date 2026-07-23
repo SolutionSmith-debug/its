@@ -18,6 +18,7 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-23 | operations | active | infrastructure | [Runbook — Tenant wipe / stand-up / finish lifecycle (Successor-Remediation, Op Stds §43)](tenant_standup.md) | _–_ |
 | 2026-07-22 | operations | active | infrastructure | [Runbook — ITS_Errors triage (reading the error log + the mark-resolved / clear verbs) (Successor-Remediation, Op Stds §43)](its_errors_triage.md) | _–_ |
 | 2026-07-22 | operations | active | _–_ | [Runbook — ITS_Review_Queue triage (working the human-review queue + the resolve verb) (Successor-Remediation, Op Stds §43)](review_queue_triage.md) | _–_ |
 | 2026-07-22 | operations | active | infrastructure | [Runbook — ITS_Time_Off + the reviewer chain (PTO entry, chain skip logic, watchdog Check D gaps) (Successor-Remediation, Op Stds §43)](time_off_reviewer_chain.md) | _–_ |

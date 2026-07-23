@@ -56,8 +56,10 @@ import importlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -66,6 +68,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 # Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
 # it explicitly — the test_standup_tools.py import pattern).
 from _rest_retry import request_with_retry  # noqa: E402
+from _run_marker import DASHBOARD_LABEL, run_marker  # noqa: E402
 
 from shared import keychain, state_io  # noqa: E402
 
@@ -93,6 +96,31 @@ NONINTERACTIVE_ENV = "STANDUP_NONINTERACTIVE"
 # tenant, and the refuse-on-complete rule covers staleness).
 STATE_FILE_NAME = "standup_state.json"
 NORESTORE_STATE_PATH = DUMP_ROOT / "standup_norestore_state.json"
+
+# ---- `standup.py finish` posture table (the post-merge fleet reload) --------
+#
+# The five SEND-DISPATCH plists. `--posture dark` (default) NEVER loads them —
+# a rebuilt tenant comes back with zero running external-send dispatchers
+# regardless of the pre-wipe posture; loading any of them is a FIXED
+# External-Send-Gate operator action (--posture full + typed phrase, or
+# per-plist by hand, either way Seth). This is deliberately a POSTURE table in
+# code, never inferred from ITS_Config — a gate row reading `true` must not be
+# able to pull a send daemon up (fail-dark).
+# test_send_dispatch_labels_match_shipped_plists is the parity teeth.
+SEND_DISPATCH_LABELS: frozenset[str] = frozenset({
+    "org.solutionsmith.its.po-send",
+    "org.solutionsmith.its.rfq-send",
+    "org.solutionsmith.its.subcontract-send",
+    "org.solutionsmith.its.weekly-send",
+    "org.solutionsmith.its.progress-send",
+})
+FULL_POSTURE_PHRASE = "LOAD SEND DAEMONS"
+LAUNCHD_DIR = REPO_ROOT / "scripts" / "launchd"
+INSTALL_SH = LAUNCHD_DIR / "install.sh"
+HEARTBEAT_ROW_IDS_PATH = pathlib.Path.home() / "its" / "state" / "heartbeat_row_ids.json"
+# Cycle-wait only daemons at <= this interval; the hourly/daily jobs
+# (picklist-sync, watchdog) are reported as not-waited, not treated as laggards.
+HEARTBEAT_WAIT_MAX_INTERVAL_SECONDS = 900.0
 
 # Sheets whose ROWS are restored from the pre-wipe dump (workspace name, sheet name,
 # sheet_ids constant of the rebuilt target). Everything else restarts empty by design
@@ -650,11 +678,21 @@ def _resolve_dump_dir(explicit: pathlib.Path | None) -> pathlib.Path:
     return candidates[0]
 
 
-def _require_daemons_down() -> bool:
+def _loaded_its_labels() -> list[str]:
+    """Labels of loaded org.solutionsmith.its.* launchd jobs (raw — no exemption)."""
     out = subprocess.run(["launchctl", "list"], capture_output=True, text=True,
                          timeout=30, check=True).stdout
-    loaded = [line.split()[-1] for line in out.splitlines()
-              if "org.solutionsmith.its." in line]
+    return sorted(line.split()[-1] for line in out.splitlines()
+                  if "org.solutionsmith.its." in line)
+
+
+def _require_daemons_down() -> bool:
+    # The operator dashboard is EXEMPT: read-only panels + no background tenant
+    # writes, so it may stay observable over Tailscale mid-run. Its 5 PIN-gated
+    # ACT verbs are fenced by the standup-in-progress marker (_run_marker;
+    # dashboard side its#677) — and `finish` restarts it LAST so it re-imports
+    # the merged sheet_ids.
+    loaded = [label for label in _loaded_its_labels() if label != DASHBOARD_LABEL]
     if loaded:
         print(f"[abort] daemons_loaded: {len(loaded)} org.solutionsmith.its.* job(s) "
               "still loaded — the stand-up rewrites shared/sheet_ids.py on the live "
@@ -716,7 +754,397 @@ def _resume_start_stage(dump_dir: pathlib.Path | None, *, no_restore: bool,
         "inspect the state file before resuming")
 
 
+
+# ---- `standup.py finish` — the post-merge epilogue as mechanism -------------
+#
+# Runs ONLY after the regen landing PR has merged and ~/its is pulled (it
+# verifies both). Codifies the 4-step printed epilogue the 2026-07-23 run
+# executed by hand at resume-point fatigue: state cleanup -> posture-driven
+# fleet reload -> bounded heartbeat wait -> post-reload error sweep -> the
+# §44 gate-flip report (READ-ONLY) -> dashboard restart LAST. `--verify-only`
+# re-runs just the read-only checks (safe any time, the sheet_ids_regen
+# --check posture). Runbook: docs/runbooks/tenant_standup.md.
+
+
+def _verify_git_clean() -> bool:
+    """Precondition: ~-checkout is a clean origin/main tree (VC-07, subprocessed)."""
+    rc = subprocess.run(
+        [sys.executable, "-m", "scripts.verify_cutover", "--only", "git"],
+        cwd=REPO_ROOT, check=False).returncode
+    return rc == 0
+
+
+def _verify_regen_parity() -> bool:
+    """Precondition: shared/sheet_ids.py matches the live tenant (regen --check)."""
+    rc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / MIGRATIONS / "sheet_ids_regen.py"), "--check"],
+        cwd=REPO_ROOT, check=False).returncode
+    return rc == 0
+
+
+def _state_cleanup() -> bool:
+    """Delete heartbeat_row_ids.json under its sidecar lock; print the Check-U note.
+
+    Returns False (abort) on a lock timeout — a held lock means something is
+    STILL writing heartbeat state, i.e. a daemon survived the daemons-down
+    precondition.
+    """
+    if HEARTBEAT_ROW_IDS_PATH.exists():
+        try:
+            with state_io.with_path_lock(HEARTBEAT_ROW_IDS_PATH):
+                HEARTBEAT_ROW_IDS_PATH.unlink(missing_ok=True)
+        except state_io.StateLockTimeoutError:
+            print(f"[abort] {HEARTBEAT_ROW_IDS_PATH} is LOCKED — something is still "
+                  "writing heartbeat state (a daemon survived the precondition?).")
+            return False
+        print(f"[ok] removed {HEARTBEAT_ROW_IDS_PATH} — daemons re-provision their "
+              "ITS_Daemon_Health rows on first cycle.")
+    else:
+        print(f"[skip] {HEARTBEAT_ROW_IDS_PATH} already absent.")
+    print("[note] review ~/its/state/approver_set_baseline.json (watchdog Check U) "
+          "after any share change — the rebuilt workspaces re-baseline on first sweep.")
+    return True
+
+
+def _install_load(plist_name: str) -> int:
+    """One install.sh load — THE reload seam (tests record calls here)."""
+    return subprocess.run(["bash", str(INSTALL_SH), "load", plist_name],
+                          cwd=REPO_ROOT, check=False).returncode
+
+
+def _reload_fleet(posture: str) -> list[str]:
+    """Load every shipped plist per the posture table. Returns failed labels.
+
+    dark  — every plist EXCEPT the send-dispatch five (SEND_DISPATCH_LABELS)
+            and the dashboard (restarted LAST by _restart_dashboard).
+    full  — everything except the dashboard; the caller has ALREADY passed the
+            typed-phrase gate (never gate here — tests drive this directly).
+    """
+    failures: list[str] = []
+    for plist_path in sorted(LAUNCHD_DIR.glob("org.solutionsmith.its.*.plist")):
+        label = plist_path.name.removesuffix(".plist")
+        if label == DASHBOARD_LABEL:
+            continue  # restarted last, after the verifies
+        if posture == "dark" and label in SEND_DISPATCH_LABELS:
+            print(f"[skip] {label} — send-dispatch plist stays UNLOADED "
+                  "(--posture dark; loading it is a FIXED External-Send-Gate action)")
+            continue
+        if _install_load(plist_path.name) != 0:
+            failures.append(label)
+            print(f"[ERROR] load failed: {label}")
+    return failures
+
+
+def _confirm_full_posture() -> bool:
+    """Typed-phrase gate for --posture full (EOF declines; no bypass flag)."""
+    print("\n--posture full will ALSO load the send-dispatch daemons:")
+    for label in sorted(SEND_DISPATCH_LABELS):
+        print(f"    {label}")
+    print("Loading a send daemon is a FIXED External-Send-Gate operator action "
+          "(Seth). Gates in ITS_Config still runtime-gate each dispatcher, but "
+          "dark posture is the rebuilt-tenant default for a reason.")
+    print(f'Type exactly "{FULL_POSTURE_PHRASE}" to proceed.')
+    try:
+        return input("> ").strip() == FULL_POSTURE_PHRASE
+    except EOFError:
+        return False
+
+
+def _parse_heartbeat(raw: Any) -> dt.datetime | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed
+
+
+def _await_heartbeats(reload_start: dt.datetime, timeout_seconds: float) -> list[str]:
+    """Poll ITS_Daemon_Health until every fast-interval Enabled row heartbeats
+    past the reload, or the bounded timeout expires. Returns the laggards.
+
+    Rows self-provision (Enabled=True) on each daemon's FIRST cycle, so the set
+    GROWS during the wait — zero rows early on is normal, not success. Long-
+    interval daemons (> HEARTBEAT_WAIT_MAX_INTERVAL_SECONDS: picklist-sync,
+    watchdog) are named once as not-waited; they heartbeat within their own
+    interval and VC-04 remains the steady-state gate.
+    """
+    from shared import smartsheet_client
+    sheet_ids = _fresh_sheet_ids()
+    deadline = time.monotonic() + timeout_seconds
+    not_waited_reported = False
+    while True:
+        rows = smartsheet_client.get_rows(sheet_ids.SHEET_DAEMON_HEALTH)
+        laggards: list[str] = []
+        fresh = 0
+        slow_rows: list[str] = []
+        for row in rows:
+            if not row.get("Enabled"):
+                continue
+            name = str(row.get("Daemon Name") or f"row {row.get('_row_id')}")
+            try:
+                interval = float(str(row.get("Interval Seconds")))
+            except (TypeError, ValueError):
+                interval = 0.0
+            if interval > HEARTBEAT_WAIT_MAX_INTERVAL_SECONDS:
+                slow_rows.append(name)
+                continue
+            heartbeat = _parse_heartbeat(row.get("Last Heartbeat"))
+            if heartbeat is not None and heartbeat >= reload_start:
+                fresh += 1
+            else:
+                laggards.append(name)
+        if slow_rows and not not_waited_reported:
+            print(f"[info] not cycle-waited (interval > "
+                  f"{HEARTBEAT_WAIT_MAX_INTERVAL_SECONDS:g}s — they heartbeat "
+                  f"within their own interval): {', '.join(sorted(slow_rows))}")
+            not_waited_reported = True
+        if fresh and not laggards:
+            print(f"[ok] heartbeat_wait: all {fresh} fast-interval daemon row(s) "
+                  "fresh since the reload.")
+            return []
+        if time.monotonic() > deadline:
+            named = laggards if laggards else ["<no ITS_Daemon_Health rows yet>"]
+            print(f"[WARN] heartbeat_wait: {len(named)} daemon(s) not yet fresh "
+                  f"after {timeout_seconds:g}s: {', '.join(named)}")
+            return named
+        print(f"[wait] {len(laggards) if laggards else 'no rows yet'} — "
+              f"{fresh} fresh; re-checking in 30s "
+              f"(bounded: {max(0, int(deadline - time.monotonic()))}s left)")
+        time.sleep(30)
+
+
+def _post_reload_error_sweep() -> int:
+    """Summarize today's ITS_Errors rows by (Script, Error, Severity); return
+    the CRITICAL count. Date-granular — ITS_Errors' Timestamp carries no time,
+    so same-day pre-reload rows are included (said so in the output)."""
+    from shared import smartsheet_client
+    sheet_ids = _fresh_sheet_ids()
+    today = dt.date.today().isoformat()
+    rows = smartsheet_client.get_rows(sheet_ids.SHEET_ERRORS)
+    recent = [r for r in rows if str(r.get("Timestamp") or "") >= today]
+    if not recent:
+        print("[ok] error sweep: zero ITS_Errors rows dated today.")
+        return 0
+    counts: dict[tuple[str, str, str], int] = {}
+    for r in recent:
+        key = (str(r.get("Script") or "?"), str(r.get("Error") or "?"),
+               str(r.get("Severity") or "?"))
+        counts[key] = counts.get(key, 0) + 1
+    criticals = 0
+    print(f"[info] error sweep: {len(recent)} ITS_Errors row(s) dated {today} "
+          "(date-granular — the sheet carries no time-of-day; pre-reload "
+          "same-day rows are included):")
+    for (script, error, severity), n in sorted(counts.items()):
+        marker = " <-- CRITICAL" if severity == "CRITICAL" else ""
+        if severity == "CRITICAL":
+            criticals += n
+        print(f"    {n:>4}x  {severity:<8} {script} / {error}{marker}")
+    return criticals
+
+
+def _seeded_gate_defaults() -> dict[str, str]:
+    """Best-effort (setting -> seeded Value) scanned from the seeder corpus.
+
+    Advisory third column for the gate report only — the regex reads the
+    literal {"Setting": ..., "Value": ...} dict shape the seeder family uses;
+    a seeder shaped differently just yields no entry (shown as '?')."""
+    corpus = [REPO_ROOT / "scripts" / "seed_its_config.py",
+              *sorted((REPO_ROOT / "scripts" / "migrations").glob("seed_*.py"))]
+    pattern = re.compile(r'"Setting":\s*"([^"]+)"[^{}]*?"Value":\s*"([^"]*)"', re.S)
+    out: dict[str, str] = {}
+    for path in corpus:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in pattern.finditer(text):
+            out.setdefault(m.group(1), m.group(2))
+    return out
+
+
+def _gate_report(dump_dir: pathlib.Path | None) -> None:
+    """The §44 gate-flip worksheet: every *_enabled ITS_Config row's pre-wipe
+    dump value vs live value vs seeded default, with its FULL Description
+    inline (an in-cell precondition is doctrine — CL-13). REPORT ONLY, zero
+    writes — every flip stays a human decision and send-adjacent flips are a
+    FIXED high-capability class (Seth)."""
+    from shared import smartsheet_client
+    sheet_ids = _fresh_sheet_ids()
+    live_rows = smartsheet_client.get_rows(sheet_ids.SHEET_CONFIG)
+    gates = [r for r in live_rows if str(r.get("Setting") or "").endswith("_enabled")]
+    baseline: dict[tuple[str, str], str] = {}
+    if dump_dir is not None:
+        dump = _find_dump_sheet(dump_dir, "ITS — System", "ITS_Config")
+        if dump is None:
+            print("[WARN] gate report: no ITS_Config sheet in the dump — "
+                  "dump column shows '-'")
+        else:
+            baseline = {
+                (str(row.get("Setting")), str(row.get("Workstream"))):
+                    str(row.get("Value"))
+                for row in dump.get("rows", [])
+                if str(row.get("Setting") or "").endswith("_enabled")}
+    else:
+        print("[info] gate report: no dump baseline (--no-restore) — "
+              "dump column shows '-'")
+    seeded = _seeded_gate_defaults()
+    print(f"\n== GATE-FLIP REPORT ({len(gates)} *_enabled row(s)) — READ-ONLY: "
+          "every flip is a human decision; send-adjacent flips are FIXED "
+          "high-class (Seth). Read each Description FIRST (CL-13). ==")
+    for row in sorted(gates, key=lambda r: (str(r.get("Setting")),
+                                            str(r.get("Workstream")))):
+        setting = str(row.get("Setting"))
+        workstream = str(row.get("Workstream"))
+        live = str(row.get("Value"))
+        dump_value = baseline.get((setting, workstream), "-")
+        seed_value = seeded.get(setting, "?")
+        drift = ""
+        if dump_value not in ("-", live):
+            drift = "   <-- DIFFERS from pre-wipe"
+        print(f"  {setting} [{workstream}]")
+        print(f"      dump={dump_value!r}  live={live!r}  seeded={seed_value!r}{drift}")
+        description = str(row.get("Description") or "").strip()
+        if description:
+            print(f"      Description: {description}")
+
+
+def _restart_dashboard() -> list[str]:
+    """Restart (or first-load) the dashboard LAST so it re-imports the merged
+    sheet_ids — KeepAlive never restarts a healthy process, so without this it
+    serves dead frozen ids indefinitely after a rebuild."""
+    failures: list[str] = []
+    if DASHBOARD_LABEL in _loaded_its_labels():
+        rc = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{DASHBOARD_LABEL}"],
+            check=False).returncode
+        if rc == 0:
+            print(f"[ok] {DASHBOARD_LABEL} kickstarted (re-imports merged sheet_ids).")
+        else:
+            failures.append(DASHBOARD_LABEL)
+            print(f"[ERROR] dashboard kickstart failed (rc={rc}).")
+    else:
+        if _install_load(f"{DASHBOARD_LABEL}.plist") == 0:
+            print(f"[ok] {DASHBOARD_LABEL} loaded.")
+        else:
+            failures.append(DASHBOARD_LABEL)
+            print("[ERROR] dashboard load failed.")
+    return failures
+
+
+def finish_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="standup.py finish",
+        description="Post-merge finish: state cleanup + posture-driven fleet "
+                    "reload + heartbeat wait + error sweep + gate report + "
+                    "dashboard restart LAST. Runs AFTER the regen PR merged "
+                    "and ~/its was pulled.")
+    parser.add_argument("--posture", choices=("dark", "full"), default="dark",
+                        help="dark (default): send-dispatch plists stay UNLOADED. "
+                             "full: load everything — extra typed confirmation.")
+    parser.add_argument("--verify-only", action="store_true",
+                        help="read-only re-run: preconditions + heartbeat check + "
+                             "error sweep + gate report; no cleanup, no reload, "
+                             "no dashboard restart. Safe any time.")
+    parser.add_argument("--dump", type=pathlib.Path, default=None,
+                        help="prewipe dump dir for the gate-report baseline "
+                             "(default: auto-resolve; missing dump degrades the "
+                             "report, never aborts).")
+    parser.add_argument("--no-restore", action="store_true",
+                        help="no dump baseline (fresh-tenant finish).")
+    parser.add_argument("--heartbeat-timeout", type=float, default=1200.0,
+                        help="bounded heartbeat wait in seconds (default 1200).")
+    args = parser.parse_args(argv)
+
+    dump_dir: pathlib.Path | None = None
+    if not args.no_restore:
+        try:
+            dump_dir = _resolve_dump_dir(args.dump)
+        except StageFailedError as exc:
+            print(f"[WARN] no dump baseline: {exc} — the gate report will show "
+                  "live values only.")
+
+    print("== standup finish: preconditions ==")
+    if not _verify_git_clean():
+        print("[abort] finish precondition failed: the checkout is not a clean "
+              "origin/main tree (has the landing PR merged and this tree pulled?).")
+        return 1
+    if not _verify_regen_parity():
+        print("[abort] finish precondition failed: sheet_ids_regen --check "
+              "MISMATCH — the ID surfaces on disk do not match the live tenant. "
+              "Merge + pull the landing PR first; never hand-run --write here.")
+        return 1
+    if not args.verify_only:
+        if not _require_daemons_down():
+            print("[abort] finish precondition failed: daemons still loaded "
+                  "(finish performs the reload itself).")
+            return 1
+        if args.posture == "full" and not _confirm_full_posture():
+            print("[abort] --posture full not confirmed; nothing was done "
+                  "(re-run with --posture dark, or confirm the phrase).")
+            return 1
+        if not _confirm("Proceed with the post-merge finish (state cleanup + "
+                        f"fleet reload, posture={args.posture})?"):
+            print("[skip] Operator declined; nothing run.")
+            return 0
+
+    failures: list[str] = []
+    reload_start = dt.datetime.now(dt.UTC)
+    if not args.verify_only:
+        print("\n== state cleanup ==")
+        if not _state_cleanup():
+            return 1
+        print(f"\n== fleet reload (--posture {args.posture}) ==")
+        failures += _reload_fleet(args.posture)
+        # Postcondition (dark): no send-dispatch daemon may be live.
+        if args.posture == "dark":
+            hot = sorted(set(_loaded_its_labels()) & SEND_DISPATCH_LABELS)
+            if hot:
+                failures += hot
+                print(f"[ERROR] send-dispatch daemon LOADED under dark posture "
+                      f"(External-Send-Gate violation): {', '.join(hot)} — "
+                      "unload immediately (launchctl bootout) and investigate.")
+
+    print("\n== heartbeat wait ==")
+    laggards = _await_heartbeats(reload_start if not args.verify_only
+                                 else dt.datetime.now(dt.UTC) - dt.timedelta(hours=1),
+                                 args.heartbeat_timeout if not args.verify_only else 0)
+
+    print("\n== post-reload error sweep ==")
+    criticals = _post_reload_error_sweep()
+
+    _gate_report(dump_dir)
+
+    if not args.verify_only:
+        print("\n== dashboard restart (last) ==")
+        failures += _restart_dashboard()
+
+    print("\n== finish summary ==")
+    if failures:
+        print(f"[FAIL] {len(failures)} load/restart failure(s): {', '.join(failures)}")
+    if laggards:
+        print(f"[WARN] heartbeat laggards: {', '.join(laggards)} — "
+              "re-check with: standup.py finish --verify-only")
+    if criticals:
+        print(f"[FAIL] {criticals} CRITICAL ITS_Errors row(s) dated today — "
+              "escalate with the sweep summary above (do not clear the rows).")
+    if not failures and not laggards and not criticals:
+        print("[ok] finish clean: fleet reloaded, heartbeats fresh, no CRITICALs. "
+              "Gate flips (if any) remain the operator's §44 decision — see the "
+              "report above.")
+        return 0
+    return 1
+
+
 def main() -> int:
+    # Subcommand dispatch: `standup.py finish [...]` is the post-merge epilogue
+    # (a SEPARATE invocation by design — it runs only after the regen landing
+    # PR merged and this tree was pulled, which the run itself cannot outlive).
+    if len(sys.argv) > 1 and sys.argv[1] == "finish":
+        return finish_main(sys.argv[2:])
     global _current_stage, _run_log_path
     parser = argparse.ArgumentParser(
         description="Orchestrated tenant stand-up: builders + auto-FLIP + seeds.")
@@ -803,49 +1231,52 @@ def main() -> int:
     }
     _write_state(state, dump_dir)
 
-    for name, fn in stages[start:]:
-        _current_stage = name
-        state["current_stage"] = name
-        state["stages"][name] = {
-            "started_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds")}
-        _write_state(state, dump_dir)
-        _emit(f"\n=== STAGE {name} ===")
-        try:
-            fn()
-        except KeyboardInterrupt:
-            state["status"] = "failed"
+    # The whole mutating stretch runs under the standup-in-progress marker so
+    # the dashboard's ACT fence (its#677) covers half-flipped-constants windows.
+    with run_marker("standup", run_id):
+        for name, fn in stages[start:]:
+            _current_stage = name
+            state["current_stage"] = name
+            state["stages"][name] = {
+                "started_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds")}
             _write_state(state, dump_dir)
-            _emit(f"\n[abort] interrupted during stage {name!r}. Every builder is "
-                  f"idempotent — resume: python3 {MIGRATIONS}/standup.py --resume "
-                  f"(or --start-at {name})")
-            return 1
-        except Exception as exc:  # noqa: BLE001 — ANY stage failure gets the resume hint
-            state["status"] = "failed"
+            _emit(f"\n=== STAGE {name} ===")
+            try:
+                fn()
+            except KeyboardInterrupt:
+                state["status"] = "failed"
+                _write_state(state, dump_dir)
+                _emit(f"\n[abort] interrupted during stage {name!r}. Every builder is "
+                      f"idempotent — resume: python3 {MIGRATIONS}/standup.py --resume "
+                      f"(or --start-at {name})")
+                return 1
+            except Exception as exc:  # noqa: BLE001 — ANY stage failure gets the resume hint
+                state["status"] = "failed"
+                _write_state(state, dump_dir)
+                label = type(exc).__name__ if not isinstance(exc, StageFailedError) else "stage"
+                _emit(f"\n[abort] stage {name!r} failed ({label}): {exc}\n"
+                      f"Fix, then resume: python3 {MIGRATIONS}/standup.py --resume "
+                      f"(or --start-at {name})")
+                return 1
+            state["completed"].append(name)
+            state["stages"][name]["finished_utc"] = dt.datetime.now(
+                dt.UTC).isoformat(timespec="seconds")
             _write_state(state, dump_dir)
-            label = type(exc).__name__ if not isinstance(exc, StageFailedError) else "stage"
-            _emit(f"\n[abort] stage {name!r} failed ({label}): {exc}\n"
-                  f"Fix, then resume: python3 {MIGRATIONS}/standup.py --resume "
-                  f"(or --start-at {name})")
-            return 1
-        state["completed"].append(name)
-        state["stages"][name]["finished_utc"] = dt.datetime.now(
-            dt.UTC).isoformat(timespec="seconds")
+        state["status"] = "complete"
+        state["current_stage"] = None
         _write_state(state, dump_dir)
-    state["status"] = "complete"
-    state["current_stage"] = None
-    _write_state(state, dump_dir)
     print(
-        "\n[ok] Stand-up complete. Epilogue (in order):\n"
+        "\n[ok] Stand-up complete. Epilogue:\n"
         "  1. git diff — review the regenerated ID surfaces (sheet_ids.py, "
-        "system_map.py, week_folder.py); update any test pins the regen sweep "
-        "reported; land it all via PR.\n"
-        "  2. rm ~/its/state/heartbeat_row_ids.json (daemons re-provision their "
-        "ITS_Daemon_Health rows); review approver_set_baseline.json (Check U).\n"
-        "  3. After the PR merges and ~/its is pulled: reload the fleet via "
-        "scripts/launchd/install.sh load <plist> per daemon (po-send/rfq-send stay "
-        "unloaded — send gate).\n"
-        "  4. Gates are seeded DARK (=false) — the production posture. Read each "
-        "row's Description before flipping; send-gate flips escalate to Seth.")
+        "week_folder.py); reconcile any sweep-reported pins; land it all via PR.\n"
+        "  2. After the PR merges and ~/its is pulled:\n"
+        f"       python3 {MIGRATIONS}/standup.py finish\n"
+        "     (state cleanup -> DARK fleet reload [send-dispatch plists stay "
+        "unloaded] -> heartbeat wait -> error sweep -> the read-only gate-flip "
+        "report -> dashboard restart LAST).\n"
+        "  3. Gate flips stay §44 human decisions — read each Description first; "
+        "send-gate flips + --posture full escalate to Seth. Runbook: "
+        "docs/runbooks/tenant_standup.md")
     return 0
 
 
