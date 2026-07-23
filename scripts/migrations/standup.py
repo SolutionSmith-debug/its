@@ -732,6 +732,117 @@ def _require_daemons_down() -> bool:
     return True
 
 
+# ---- run-branch mode (opt_simplify #2) --------------------------------------
+#
+# The 2026-07-23 run needed 6 fix-PR cycles, each forcing a stash/pull/pop dance
+# on the live tree while uncommitted regen output sat across the ID surfaces. A
+# per-run branch turns every one of those into a plain `git merge origin/main`,
+# makes every resume point a COMMITTED checkpoint, and leaves the landing PR one
+# push away. Committing mid-run is safe exactly and only inside this tool's
+# precondition envelope: the daemons-down guard removes both live-tree hazards
+# (no daemon picks up half-flipped constants; no publish daemon to strand).
+# Never touches main: the branch is created from current HEAD and only ever
+# pushed as itself. Post-run cleanup follows MERGED-verify-then-update-ref.
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", "-C", str(REPO_ROOT), *args],
+                          capture_output=True, text=True, check=False, timeout=120)
+
+
+def _current_branch() -> str:
+    return _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+
+
+def _start_run_branch(run_id: str) -> str:
+    """Create standup/run-<UTC> from current HEAD. Refuses a DIRTY tree — the
+    branch must be created BEFORE the first regen write, or the first
+    checkpoint silently includes pre-run dirt."""
+    if _git("status", "--porcelain").stdout.strip():
+        raise StageFailedError(
+            "run-branch: the working tree is DIRTY — commit/stash first so the "
+            "first checkpoint holds ONLY regen output (or pass --no-run-branch "
+            "to manage git yourself)")
+    branch = f"standup/run-{run_id}"
+    result = _git("checkout", "-b", branch)
+    if result.returncode != 0:
+        raise StageFailedError(f"run-branch: checkout -b {branch} failed: "
+                               f"{result.stderr.strip()}")
+    print(f"[info] run branch {branch!r} created — every stage that changes "
+          "repo files commits a checkpoint here; a mid-run fix PR on main is "
+          "picked up by `git fetch && git merge origin/main` (--resume does "
+          "this for you).")
+    return branch
+
+
+def _resume_run_branch(recorded: str | None) -> str | None:
+    """--resume path: the recorded run branch must be checked out; then sync
+    main so subprocess stages pick up any mid-run fix PR from disk."""
+    if recorded is None:
+        print("[WARN] run-branch: the recorded run predates run-branch mode "
+              "(or ran --no-run-branch) — continuing without checkpoints.")
+        return None
+    current = _current_branch()
+    if current != recorded:
+        raise StageFailedError(
+            f"--resume: the recorded run branch {recorded!r} is not checked out "
+            f"(HEAD is {current!r}) — check it out, or --start-at explicitly")
+    _sync_run_branch_with_main()
+    return recorded
+
+
+def _sync_run_branch_with_main() -> None:
+    """fetch + merge origin/main onto the run branch. CONFLICTS surface and
+    STOP — never auto-resolved (the operator owns the merge)."""
+    fetched = _git("fetch", "origin")
+    if fetched.returncode != 0:
+        print(f"[WARN] run-branch: git fetch failed ({fetched.stderr.strip()[:120]}) "
+              "— continuing with the local view of origin/main.")
+        return
+    merged = _git("merge", "--no-edit", "origin/main")
+    if merged.returncode != 0:
+        conflicted = _git("diff", "--name-only", "--diff-filter=U").stdout.strip()
+        raise StageFailedError(
+            "run-branch: merging origin/main CONFLICTED — resolve by hand "
+            "(never auto-resolved), `git add` + `git commit` the merge, then "
+            f"--resume. Conflicted files:\n{conflicted}")
+    if "Already up to date" not in merged.stdout:
+        print("[info] run-branch: merged origin/main — subprocess stages pick "
+              "the fixes up from disk at the next stage.")
+
+
+def _commit_stage_checkpoint(stage: str, run_id: str, branch: str | None) -> None:
+    """Commit any repo-file changes a completed stage produced. Best-effort —
+    checkpointing must never fail a healthy run. The pathspec EXCLUDES logs/
+    (the prewipe dumps + per-run transcripts live under logs/migrations and are
+    NOT repo content — committing a multi-MB dump would be the bug)."""
+    if branch is None:
+        return
+    if not _git("status", "--porcelain", "--", ".", ":(exclude)logs").stdout.strip():
+        return
+    _git("add", "-A", "--", ".", ":(exclude)logs")
+    result = _git("commit", "-m", f"standup {run_id}: after {stage}")
+    if result.returncode != 0:
+        print(f"[WARN] run-branch: checkpoint commit failed after {stage!r}: "
+              f"{result.stderr.strip()[:160]} (run continues)")
+    else:
+        print(f"[info] run-branch: checkpoint committed — after {stage}")
+
+
+def _push_run_branch(branch: str, run_id: str) -> None:
+    """End-of-run: push the branch and print the landing-PR command (printed,
+    never executed — the operator reviews the diff first)."""
+    pushed = _git("push", "-u", "origin", branch)
+    if pushed.returncode != 0:
+        print(f"[WARN] run-branch: push failed ({pushed.stderr.strip()[:160]}) — "
+              f"push by hand: git push -u origin {branch}")
+    else:
+        print(f"[ok] run branch pushed: {branch}")
+    print("Open the landing PR (review the diff first):\n"
+          f"    gh pr create --base main --head {branch} "
+          f'--title "feat(standup): land the regenerated ID surfaces (run {run_id})"')
+
+
 # ---- run-state + --resume -------------------------------------------------
 
 
@@ -1192,6 +1303,10 @@ def main() -> int:
                         help="Derive the restart stage from the persisted run state "
                              "(standup_state.json beside the dump). Refuses on a "
                              "completed run or conflicting flags.")
+    parser.add_argument("--no-run-branch", action="store_true",
+                        help="Skip the per-run git branch (checkpoints + "
+                             "merge-main + landing-PR push); you manage git "
+                             "yourself. Default: run-branch mode ON.")
     parser.add_argument("--list", action="store_true", help="Print stages and exit.")
     args = parser.parse_args()
 
@@ -1241,6 +1356,17 @@ def main() -> int:
 
     _write_standup_marker()
     run_id = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_branch: str | None = None
+    if not args.no_run_branch:
+        try:
+            if args.resume and not args.start_at:
+                prior = json.loads(_state_path(dump_dir).read_text(encoding="utf-8"))
+                run_branch = _resume_run_branch(prior.get("run_branch"))
+            else:
+                run_branch = _start_run_branch(run_id)
+        except StageFailedError as exc:
+            print(f"[abort] {exc}")
+            return 1
     log_dir = dump_dir if dump_dir is not None else DUMP_ROOT
     _run_log_path = log_dir / (f"standup_{run_id}.log" if dump_dir is not None
                                else f"standup_norestore_{run_id}.log")
@@ -1255,6 +1381,7 @@ def main() -> int:
         "flags": {"no_restore": args.no_restore, "skip_shares": args.skip_shares,
                   "dump_dir": str(dump_dir) if dump_dir else None},
         "stage_names": names,
+        "run_branch": run_branch,
         "completed": names[:start],
         "current_stage": None,
         "stages": {},
@@ -1294,12 +1421,15 @@ def main() -> int:
         state["stages"][name]["finished_utc"] = dt.datetime.now(
             dt.UTC).isoformat(timespec="seconds")
         _write_state(state, dump_dir)
+        _commit_stage_checkpoint(name, run_id, run_branch)
     state["status"] = "complete"
     state["current_stage"] = None
     _write_state(state, dump_dir)
     # Marker clears ONLY here (full completion) — an aborted run above returns
     # early and stays fenced across the fix->resume gap (PR #674 lifecycle).
     _clear_standup_marker()
+    if run_branch is not None:
+        _push_run_branch(run_branch, run_id)
     print(
         "\n[ok] Stand-up complete. Epilogue:\n"
         "  1. git diff — review the regenerated ID surfaces (sheet_ids.py, "

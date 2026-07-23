@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -1108,3 +1109,106 @@ def test_gate_report_shows_dump_vs_live(
     assert "Do NOT set true until the rider merges." in out
     assert "READ-ONLY" in out
     assert "x.worker_base_url" not in out  # non-gate rows stay out of the report
+
+
+# ---- standup: run-branch mode (checkpoints on a per-run git branch) ---------
+
+
+def _init_repo(tmp_path: Path) -> Path:
+    """A real throwaway git repo — the run-branch ops are git-semantics-bearing
+    (pathspec excludes, dirty detection), so mocks would prove nothing."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init", "-q", "-b", "main"],
+                 ["config", "user.email", "t@example.com"],
+                 ["config", "user.name", "t"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    (repo / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True,
+                   capture_output=True)
+    return repo
+
+
+def test_start_run_branch_refuses_dirty_tree_then_creates(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _init_repo(tmp_path)
+    monkeypatch.setattr(standup, "REPO_ROOT", repo)
+    (repo / "tracked.py").write_text("x = 2\n", encoding="utf-8")
+    with pytest.raises(standup.StageFailedError, match="DIRTY"):
+        standup._start_run_branch("r1")
+    # clean tree -> branch created and checked out
+    subprocess.run(["git", "checkout", "-q", "--", "tracked.py"], cwd=repo,
+                   check=True, capture_output=True)
+    branch = standup._start_run_branch("r1")
+    assert branch == "standup/run-r1"
+    assert standup._current_branch() == branch
+
+
+def test_commit_stage_checkpoint_commits_repo_files_but_never_logs(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE pathspec teeth: the prewipe dumps + transcripts live under logs/
+    (untracked, NOT gitignored — the live repo shows them as ??), and a naive
+    `git add -A` would land multi-MB dump JSON on the run branch."""
+    repo = _init_repo(tmp_path)
+    monkeypatch.setattr(standup, "REPO_ROOT", repo)
+    branch = standup._start_run_branch("r2")
+    (repo / "tracked.py").write_text("x = 3\n", encoding="utf-8")
+    (repo / "logs").mkdir()
+    (repo / "logs" / "prewipe_dump.json").write_text("{}", encoding="utf-8")
+    before = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                            capture_output=True, text=True).stdout.strip()
+    standup._commit_stage_checkpoint("regen-system", "r2", branch)
+    after = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                           capture_output=True, text=True).stdout.strip()
+    assert after != before  # a checkpoint commit landed
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
+                            check=True, capture_output=True, text=True).stdout
+    assert "?? logs/" in status  # the dump was NOT committed
+    assert "tracked.py" not in status  # the repo file WAS
+    # clean pass -> no empty commit
+    standup._commit_stage_checkpoint("noop-stage", "r2", branch)
+    final = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                           capture_output=True, text=True).stdout.strip()
+    assert final == after
+    # run-branch off (None) -> untouched even when dirty
+    (repo / "tracked.py").write_text("x = 4\n", encoding="utf-8")
+    standup._commit_stage_checkpoint("any", "r2", None)
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=repo, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_resume_run_branch_refusals(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _init_repo(tmp_path)
+    monkeypatch.setattr(standup, "REPO_ROOT", repo)
+    # recorded branch not checked out (HEAD is main) -> refuse
+    with pytest.raises(standup.StageFailedError, match="not checked out"):
+        standup._resume_run_branch("standup/run-old")
+    # pre-run-branch state (None) -> WARN + continue without checkpoints
+    monkeypatch.setattr(standup, "_sync_run_branch_with_main",
+                        _boom_named("sync"))
+    assert standup._resume_run_branch(None) is None
+    assert "predates run-branch mode" in capsys.readouterr().out
+
+
+def test_sync_with_main_conflict_stops_never_auto_resolves(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def _fake_git(*args: str) -> Any:
+        calls.append(args)
+        if args[0] == "fetch":
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[0] == "merge":
+            return subprocess.CompletedProcess(args, 1, "CONFLICT", "")
+        if args[:2] == ("diff", "--name-only"):
+            return subprocess.CompletedProcess(args, 0, "shared/sheet_ids.py", "")
+        raise AssertionError(f"unexpected git {args}")
+
+    monkeypatch.setattr(standup, "_git", _fake_git)
+    with pytest.raises(standup.StageFailedError, match="CONFLICTED"):
+        standup._sync_run_branch_with_main()
+    # the conflict surface names the files and no resolution command ran
+    assert not any(a[0] in {"checkout", "reset", "commit"} for a in calls)
