@@ -382,6 +382,26 @@ def test_regen_expect_table_matches_registry_and_stages() -> None:
     assert regen_stages == set(standup.REGEN_EXPECT)
 
 
+def test_every_vc03_config_row_has_a_seeder() -> None:
+    """Every load-bearing ITS_Config row verify_cutover VC-03 asserts must be
+    SEEDED by some script — the 2026-07-23 rehearsal found 15 rows that had only
+    ever been hand-created, so a fresh tenant failed VC-03 with no scripted
+    remedy. A new ConfigRow in verify_cutover without a matching seeder literal
+    RED-lights here (add it to a seeder in the same PR)."""
+    vc_text = (REPO_ROOT / "scripts" / "verify_cutover.py").read_text(encoding="utf-8")
+    settings = set(re.findall(r'ConfigRow\(\s*"([^"]+)"', vc_text))
+    assert len(settings) > 30, "ConfigRow parse regressed"
+    corpus = (REPO_ROOT / "scripts" / "seed_its_config.py").read_text(encoding="utf-8")
+    for path in sorted((REPO_ROOT / "scripts" / "migrations").glob("*.py")):
+        corpus += path.read_text(encoding="utf-8")
+    unseeded = {s for s in settings if s not in corpus}
+    # system.docs_index_sheet_id is SELF-RECORDED by build_docs_index_sheet.py and
+    # the Box-root rows are auto-pasted by standup's box-roots stage — both appear
+    # in the corpus as literals, so no static exemptions are needed today.
+    assert not unseeded, (
+        f"VC-03 config rows with NO seeder anywhere: {sorted(unseeded)}")
+
+
 def test_restore_sheet_targets_are_valid_constants() -> None:
     text = (REPO_ROOT / "shared" / "sheet_ids.py").read_text(encoding="utf-8")
     for _ws, _sheet, constant in standup.RESTORE_SHEETS:
