@@ -285,6 +285,100 @@ CONFIG_ROWS: list[dict[str, Any]] = [
             "(true = ON; the §51 one-way rider applies). " + _REHEARSAL_NOTE
         ),
     },
+    # ---- 2026-07-23 config-parity batch (post-reload sweep: rows read by the
+    # runtime but present only by hand — the fieldops row-cap thresholds were
+    # WARNing config_row_missing EVERY 90s cycle, the 2026-07-13 storm class) --
+    {
+        "Setting": "progress_reports.hours_log.row_cap_warn_threshold",
+        "Workstream": "progress_reports",
+        "Value": "15000",
+        "Description": (
+            "Per-job Hours Log sheet row-count WARN threshold (fieldops_sync mirror pass). " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "progress_reports.equipment_status.row_cap_warn_threshold",
+        "Workstream": "progress_reports",
+        "Value": "15000",
+        "Description": (
+            "Per-job Equipment Status sheet row-count WARN threshold (fieldops_sync mirror pass). " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "progress_reports.material_list.row_cap_warn_threshold",
+        "Workstream": "progress_reports",
+        "Value": "15000",
+        "Description": (
+            "Per-job Material List sheet row-count WARN threshold (fieldops_sync mirror pass). " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "progress_reports.material_incidents.row_cap_warn_threshold",
+        "Workstream": "progress_reports",
+        "Value": "15000",
+        "Description": (
+            "Per-job Material Incidents sheet row-count WARN threshold (fieldops_sync mirror pass). " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "alerting.dedupe_window_minutes",
+        "Workstream": "global",
+        "Value": "60",
+        "Description": (
+            "Push-leg (Resend + Sentry) alert-dedupe window in minutes (shared/alert_dedupe.py). " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "smartsheet.sheet_count_ceiling",
+        "Workstream": "global",
+        "Value": "1500",
+        "Description": (
+            "Smartsheet plan sheet-count ceiling for the §51 A1 sheet_capacity margin check. " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "smartsheet.sheet_count_margin",
+        "Workstream": "global",
+        "Value": "50",
+        "Description": (
+            "Margin below the sheet-count ceiling at which the capacity check WARNs. " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "daemons.health_report_id",
+        "Workstream": "global",
+        "Value": "TBD",
+        "Description": (
+            "Placeholder for a future ITS_Daemon_Health report id (unbuilt; TBD by design). " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "mail_intake.safety.max_idle_hours",
+        "Workstream": "global",
+        "Value": "96",
+        "Description": (
+            "Legacy email-intake idle ceiling (lane retired 2026-06-05; kept for parity). " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "safety_reports.authorized_approvers",
+        "Workstream": "safety_reports",
+        "Value": "daniels@evergreenmirror.com,seths@evergreenmirror.com,benf@evergreenmirror.com",
+        "Description": (
+            "LEGACY approver list — NOT authoritative since F22 (workspace membership = approval authority); kept for parity only. " + _REHEARSAL_NOTE
+        ),
+    },
+    {
+        "Setting": "daemons.heartbeat_sheet_id",
+        "Workstream": "global",
+        # Seeded from the CURRENT sheet_ids constant, never a hardcoded id — the
+        # rebuilt tenant's Daemon_Health sheet id is whatever the regen flipped.
+        "Value": str(sheet_ids.SHEET_DAEMON_HEALTH),
+        "Description": (
+            "ITS_Daemon_Health sheet id (data copy of sheet_ids.SHEET_DAEMON_HEALTH "
+            "for report/reference use). " + _REHEARSAL_NOTE
+        ),
+    },
     {
         "Setting": "field_ops.fieldops_sync.incidents_enabled",
         "Workstream": "field_ops",
