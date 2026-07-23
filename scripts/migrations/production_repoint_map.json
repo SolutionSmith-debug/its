@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "source": "docs/operations/production_repoint_changeset.md (sections A-D), values copied verbatim; section-B additions verified against scripts/verify_cutover.py CONFIG_ROWS (sandbox_scan=True enrollment)",
+  "notes": [
+    "This file is DATA, not code, on purpose: the CI secrets job's production-identity guard (.gitleaks-identity.toml) blocks @evergreenrenewables.com emails from re-entering .py/.ts/.tsx source; the reviewed production values therefore live here, in a .json file the guard deliberately scopes out.",
+    "EXCLUDED — safety_reports.intake.mailbox (changeset section B row 4): the email-intake lane is LEGACY/dormant (portal PULL superseded it 2026-06-05) and the row is NOT VC-03-enrolled; repoint it only if email intake is ever resurrected.",
+    "EXCLUDED — every section-E send-scope gate (*_enabled / *.polling_enabled / scheduled_send_local): gate flips stay CL-13 manual + Seth (FIXED External-Send-Gate class). production_repoint.py structurally REFUSES to load a map containing any *_enabled setting.",
+    "ADDED beyond the changeset's section-B table — subcontracts.subcontract_send.from_mailbox and po_materials.rfq_send.from_mailbox: both built after the changeset was authored (SC-S4 2026-07-15, ADR-0004 R3) and both enrolled in verify_cutover CONFIG_ROWS with sandbox_scan=True; mirror values verified against seed_subcontracts_send_config.py / seed_rfq_send_config.py."
+  ],
+  "rows": [
+    {
+      "setting": "safety_reports.portal.worker_base_url",
+      "workstream": "safety_reports",
+      "from_mirror": "https://safety.evergreenmirror.com",
+      "to_production": "https://safety.evergreenrenewables.com",
+      "category": "A",
+      "notes": "Read by portal_poll / publish_daemon / portal_admin / fieldops_sync / po_poll. Production hostname is the CL-09 DNS decision — confirm the exact hostname with the operator before commit; the changeset's value is used verbatim here. One Setting name, THREE physical rows (one per Workstream cell) — this is row 1 of 3."
+    },
+    {
+      "setting": "safety_reports.portal.worker_base_url",
+      "workstream": "progress_reports",
+      "from_mirror": "https://safety.evergreenmirror.com",
+      "to_production": "https://safety.evergreenrenewables.com",
+      "category": "A",
+      "notes": "Read by progress_weekly_generate (get_setting is workstream-scoped, so the progress copy is a separate physical row). CL-09 hostname caveat as row 1. Row 2 of 3."
+    },
+    {
+      "setting": "safety_reports.portal.worker_base_url",
+      "workstream": "po_materials",
+      "from_mirror": "https://safety.evergreenmirror.com",
+      "to_production": "https://safety.evergreenrenewables.com",
+      "category": "A",
+      "notes": "Read by config_actuator (workstream-scoped copy). CL-09 hostname caveat as row 1. Row 3 of 3."
+    },
+    {
+      "setting": "safety_reports.weekly_send.from_mailbox",
+      "workstream": "safety_reports",
+      "from_mirror": "safety@evergreenmirror.com",
+      "to_production": "safety@evergreenrenewables.com",
+      "category": "B",
+      "notes": "Graph send-from mailbox for the weekly safety-report email (weekly_send). VC-03 sandbox-scanned."
+    },
+    {
+      "setting": "progress_reports.progress_send.from_mailbox",
+      "workstream": "progress_reports",
+      "from_mirror": "progress@evergreenmirror.com",
+      "to_production": "progress@evergreenrenewables.com",
+      "category": "B",
+      "notes": "Graph send-from mailbox for the weekly progress-report email (progress_send). VC-03 sandbox-scanned."
+    },
+    {
+      "setting": "po_materials.po_send.from_mailbox",
+      "workstream": "po_materials",
+      "from_mirror": "procurement@evergreenmirror.com",
+      "to_production": "procurement@evergreenrenewables.com",
+      "category": "B",
+      "notes": "Graph send-from mailbox for outbound PO email (po_send). VC-03 sandbox-scanned."
+    },
+    {
+      "setting": "subcontracts.subcontract_send.from_mailbox",
+      "workstream": "subcontracts",
+      "from_mirror": "procurement@evergreenmirror.com",
+      "to_production": "procurement@evergreenrenewables.com",
+      "category": "B",
+      "notes": "Graph send-from mailbox for outbound subcontract packages (subcontract_send; reuses procurement@ — no dedicated subcontracts mailbox). ADDED beyond the changeset's B table (built after it); VC-03 sandbox-scanned."
+    },
+    {
+      "setting": "po_materials.rfq_send.from_mailbox",
+      "workstream": "po_materials",
+      "from_mirror": "procurement@evergreenmirror.com",
+      "to_production": "procurement@evergreenrenewables.com",
+      "category": "B",
+      "notes": "Graph send-from mailbox for outbound RFQ email (rfq_send; RFQs and POs share procurement@). ADDED beyond the changeset's B table (ADR-0004 R3, built after it); VC-03 sandbox-scanned."
+    },
+    {
+      "setting": "system.operator_email",
+      "workstream": "global",
+      "from_mirror": "seths@evergreenmirror.com",
+      "to_production": "its@evergreenrenewables.com",
+      "category": "C",
+      "notes": "Last-resort Resend page recipient (operator alert email). VC-03 sandbox-scanned."
+    },
+    {
+      "setting": "system.heartbeat_url",
+      "workstream": "global",
+      "from_mirror": null,
+      "to_production": null,
+      "prompt_operator": true,
+      "category": "C",
+      "notes": "The real UptimeRobot ping URL is genuinely unknown until UptimeRobot provisioning — prompted from the attended operator at commit time, validated https://; declined prompt (empty/EOF) skips the row LOUDLY and leaves VC-09 as the gate."
+    },
+    {
+      "setting": "safety_reports.box.portal_root_folder_id",
+      "workstream": "safety_reports",
+      "from_mirror": null,
+      "to_production": null,
+      "resolve_box_root": "ITS Safety Reports",
+      "category": "D",
+      "notes": "Production Box root folder id — NEVER typed by hand; resolved LIVE at commit via box_client.list_folder('0') exact-name match (ambiguity/absence refuse), the standup.py _stage_box_roots pattern. Folder name copied from standup.BOX_ROOT_CONFIG_ROWS."
+    },
+    {
+      "setting": "progress_reports.box.portal_root_folder_id",
+      "workstream": "progress_reports",
+      "from_mirror": null,
+      "to_production": null,
+      "resolve_box_root": "ITS Progress Reports",
+      "category": "D",
+      "notes": "Production Box root folder id — resolved LIVE at commit, exact-name match, refuse ambiguity/absence. Folder name copied from standup.BOX_ROOT_CONFIG_ROWS."
+    }
+  ]
+}
