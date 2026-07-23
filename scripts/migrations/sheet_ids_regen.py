@@ -13,9 +13,9 @@ that duplicate the sheet-ID datum (HOUSE_REFLEXES §1 multi-surface fan-out):
                                      (resolved by column TITLE; heartbeats are
                                      column-id-keyed and go silently dark on a
                                      stale dict).
-  - operator_dashboard/system_map.py — ~24 `sheet_id=<literal>` MapNode entries
-                                     (import-light by design, so literals): rewritten
-                                     via the old->new integer remap.
+  - (operator_dashboard/system_map.py reads shared.sheet_ids directly since
+                                     2026-07-23 — no remap needed; the repo sweep still
+                                     catches any reintroduced literal.)
   - safety_reports/week_folder.py  — TEMPLATE_DAILY_REPORTS_SHEET_ID /
                                      TEMPLATE_WEEKLY_ROLLUP_SHEET_ID (legacy
                                      email-path week-scaffold templates).
@@ -77,7 +77,6 @@ BASE = "https://api.smartsheet.com/2.0"
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 SHEET_IDS_PATH = REPO_ROOT / "shared" / "sheet_ids.py"
-SYSTEM_MAP_PATH = REPO_ROOT / "operator_dashboard" / "system_map.py"
 WEEK_FOLDER_PATH = REPO_ROOT / "safety_reports" / "week_folder.py"
 
 # ---- canonical names (byte-exact; builder canon, em-dash discipline) ------
@@ -694,7 +693,7 @@ def main() -> int:
     # deleted ids) — remapping them to the rebuilt tenant's ids would arm a
     # re-run against the fresh workspaces; updating that allowlist must stay a
     # deliberate, reviewed code change (learned 2026-07-23, first rebuild).
-    remap_files: list[pathlib.Path] = [SYSTEM_MAP_PATH]
+    remap_files: list[pathlib.Path] = []
     remap_files += sorted((REPO_ROOT / "scripts" / "migrations").glob("*.py"))
     remap_files += sorted((REPO_ROOT / "tests").glob("*.py"))
     self_path = pathlib.Path(__file__).resolve()
@@ -709,8 +708,7 @@ def main() -> int:
             print(f"[ok] {remap_path.relative_to(REPO_ROOT)}: "
                   f"{n_hits} literal(s) remapped.")
 
-    skip = {SHEET_IDS_PATH.resolve(), SYSTEM_MAP_PATH.resolve(),
-            WEEK_FOLDER_PATH.resolve(), self_path}
+    skip = {SHEET_IDS_PATH.resolve(), WEEK_FOLDER_PATH.resolve(), self_path}
     skip |= {p.resolve() for p in remap_files}
     hits = sweep_repo_for_old_ids(remap, skip)
     if hits:

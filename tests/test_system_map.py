@@ -515,3 +515,16 @@ def test_spanner_containers_pass_clicks_through() -> None:
     assert ".sm-cell-span .sm-node { pointer-events: auto; }" in css, (
         "the spanner's own chip lost its pointer-events re-enable"
     )
+
+
+def test_system_map_carries_no_numeric_sheet_id_literals():
+    """The map reads sheet ids FROM shared/sheet_ids.py (single source of truth,
+    operator directive 2026-07-23) — a numeric literal here would recreate the
+    duplicated-ID surface the tenant rebuild had to remap. If a new node needs a
+    sheet id, reference the sheet_ids constant (add one if missing)."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / "operator_dashboard" / "system_map.py").read_text(encoding="utf-8")
+    import re
+    literals = re.findall(r"sheet_id=(\d+)", src)
+    assert not literals, f"numeric sheet_id literals in system_map.py: {literals}"
