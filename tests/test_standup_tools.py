@@ -659,6 +659,10 @@ def test_wipe_main_aborts_on_transient_dump_failure(
     monkeypatch.setattr(wipe, "_box_root_items", lambda: [])
     monkeypatch.setattr(wipe, "_confirm_phrase", lambda: True)
     monkeypatch.setattr(wipe, "DUMP_ROOT", tmp_path)
+    # past the phrase gate main() writes the stand-up ACT-fence marker; wipe is
+    # a bare scripts/ module the conftest live-state sweep cannot see, so
+    # redirect explicitly or the guard refuses the live ~/its/state write.
+    monkeypatch.setattr(wipe, "STANDUP_MARKER_PATH", tmp_path / "marker.json")
 
     def _transient_dump(ws: dict[str, Any], dump_dir: Path) -> tuple[int, list[str]]:
         raise _http_error("503 transient error", _FakeResponse(503))
