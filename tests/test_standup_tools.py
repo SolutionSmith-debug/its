@@ -672,3 +672,160 @@ def test_wipe_main_aborts_on_transient_dump_failure(
     monkeypatch.setattr(wipe, "_delete_box_folder", _boom)
     monkeypatch.setattr(sys, "argv", ["wipe_tenant.py", "--commit"])
     assert wipe.main() == 1
+
+
+# ---- standup: non-interactive contract + streamed output + run-state -------
+#
+# 2026-07-23 review items 2/3/4: the blind `input="y\n"*8` feed would silently
+# confirm ANY prompt a builder grows later (including a destructive one); child
+# output block-buffered illegibly (the mid-run PYTHONUNBUFFERED fix lived only
+# in the operator's shell); and 5 resume points meant 5 hand-typed --start-at
+# values. These tests prove the replacement contract BITES.
+
+
+def _child_script(tmp_path: Path, name: str, body: str) -> str:
+    (tmp_path / name).write_text(body, encoding="utf-8")
+    return name
+
+
+def test_run_script_streams_prefixed_output(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(standup, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(standup, "_current_stage", "tstage")
+    rel = _child_script(tmp_path, "child.py", "print('hello')\nprint('world')\n")
+    standup._run_script(rel)
+    out = capsys.readouterr().out
+    assert "[tstage/child] hello" in out
+    assert "[tstage/child] world" in out
+
+
+def test_run_script_sets_contract_env(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(standup, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(standup, "_current_stage", "env")
+    rel = _child_script(
+        tmp_path, "env_child.py",
+        "import os\nprint(os.environ.get('STANDUP_NONINTERACTIVE'),"
+        " os.environ.get('PYTHONUNBUFFERED'))\n")
+    standup._run_script(rel)
+    assert "[env/env_child] 1 1" in capsys.readouterr().out
+
+
+def test_run_script_unexpected_prompt_fails_loudly(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """THE contract's teeth: a brand-new prompt in a child (here, a synthetic
+    destructive one) hits the CLOSED stdin, raises EOFError, and FAILS the
+    stage — under the old blind y-feed it would have been silently confirmed."""
+    monkeypatch.setattr(standup, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(standup, "_current_stage", "prompt")
+    rel = _child_script(
+        tmp_path, "prompt_child.py",
+        "answer = input('Delete conflicting sheet? [y/N] ')\n"
+        "print('CONFIRMED', answer)\n")
+    with pytest.raises(standup.StageFailedError, match="exited"):
+        standup._run_script(rel)
+    assert "CONFIRMED" not in capsys.readouterr().out
+
+
+def test_run_script_tees_to_run_log(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(standup, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(standup, "_current_stage", "tee")
+    monkeypatch.setattr(standup, "_run_log_path", tmp_path / "run.log")
+    rel = _child_script(tmp_path, "tee_child.py", "print('logged-line')\n")
+    standup._run_script(rel)
+    assert "logged-line" in (tmp_path / "run.log").read_text(encoding="utf-8")
+
+
+def test_confirm_seams_auto_approve_only_under_env(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each of the six builder gates auto-approves ONLY under
+    STANDUP_NONINTERACTIVE=1 and NEVER touches stdin while doing so (input is
+    booby-trapped); without the env var the prompt remains the control."""
+    import build_box_roots as bbr
+    import build_safety_portal_workspace as bspw
+    import build_system_sheets as bss
+    import build_system_workspace as bsw
+    scripts_dir = REPO_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import seed_its_config as sic
+
+    def _boom(*a: Any, **k: Any) -> str:
+        raise AssertionError("stdin touched under STANDUP_NONINTERACTIVE")
+
+    monkeypatch.setenv("STANDUP_NONINTERACTIVE", "1")
+    monkeypatch.setattr("builtins.input", _boom)
+    assert bsw._confirm("x") is True
+    assert bss._confirm("x") is True
+    assert legacy._confirm("x") is True
+    assert sic._confirm("x") is True
+    assert bbr._confirm_live_writes(["A"], "its@example.com") is True
+    gate = bspw.LiveWriteGate(dry_run=False)
+    assert gate.allow("create X") is True
+    # dry-run stays dry even under the env var — auto-approve must never
+    # convert a dry run into live writes.
+    dry_gate = bspw.LiveWriteGate(dry_run=True)
+    assert dry_gate.allow("create X") is False
+
+    # Without the env var the prompt is the control again.
+    monkeypatch.delenv("STANDUP_NONINTERACTIVE")
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+    assert bsw._confirm("x") is True
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+    assert bsw._confirm("x") is False
+    assert sic._confirm("x") is False
+
+
+def test_resume_derives_first_incomplete_stage(tmp_path: Path) -> None:
+    names = ["a", "b", "c", "d"]
+    standup._write_state({
+        "run_id": "r1", "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False,
+                  "dump_dir": str(tmp_path)},
+        "completed": ["a", "b"], "stage_names": names, "stages": {},
+    }, tmp_path)
+    assert standup._resume_start_stage(
+        tmp_path, no_restore=False, skip_shares=False, stage_names=names) == "c"
+
+
+def test_resume_refusals(tmp_path: Path) -> None:
+    names = ["a", "b"]
+    # no state file
+    with pytest.raises(standup.StageFailedError, match="no run state"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=False, stage_names=names)
+    # completed run
+    standup._write_state({
+        "status": "complete",
+        "flags": {"no_restore": False, "skip_shares": False},
+        "completed": names,
+    }, tmp_path)
+    with pytest.raises(standup.StageFailedError, match="COMPLETE"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=False, stage_names=names)
+    # conflicting flags (recorded skip_shares=False, supplied True)
+    standup._write_state({
+        "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False},
+        "completed": ["a"],
+    }, tmp_path)
+    with pytest.raises(standup.StageFailedError, match="conflict"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=True, stage_names=names)
+
+
+def test_write_state_is_best_effort(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """A state-write failure WARNs and continues — bookkeeping must never kill
+    an otherwise-healthy attended run."""
+    def _oser(*a: Any, **k: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(standup.state_io, "atomic_write_json", _oser)
+    standup._write_state({"status": "running"}, tmp_path)  # must not raise
+    assert "run_state_write_failed" in capsys.readouterr().out

@@ -206,6 +206,7 @@ sheet is FAILED, refused-auto-number, or blocked-parent.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -622,7 +623,18 @@ def _headers() -> dict[str, str]:
 
 
 def _confirm(prompt: str) -> bool:
-    """Ask the operator to authorise live writes. True only on an explicit 'y'."""
+    """Ask the operator to authorise live writes. True only on an explicit 'y'.
+
+    STANDUP_NONINTERACTIVE=1 (set ONLY by the standup orchestrator, whose own
+    master y/N gate is the documented control for orchestrated runs) auto-
+    approves WITHOUT touching stdin — the orchestrator closes stdin, so any
+    UNEXPECTED prompt raises EOFError and fails the stage loudly instead of
+    being silently fed a 'y'. Standalone runs still prompt: the prompt IS the
+    control, and an env var does not sit in shell history the way a --yes flag
+    would."""
+    if os.environ.get("STANDUP_NONINTERACTIVE") == "1":
+        print(f"{prompt} [auto-approved: STANDUP_NONINTERACTIVE]")
+        return True
     return input(f"{prompt} [y/N] ").strip().lower() == "y"
 
 
