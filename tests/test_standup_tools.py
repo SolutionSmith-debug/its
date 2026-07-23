@@ -111,7 +111,9 @@ def test_wipe_refuses_while_daemons_loaded(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_wipe_plan_mode_never_deletes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(wipe, "require_daemons_down", lambda: None)
+    # plan mode calls _loaded_its_daemons directly (WARN-only branch) — stub it
+    # rather than require_daemons_down, or Linux CI dies on a missing launchctl.
+    monkeypatch.setattr(wipe, "_loaded_its_daemons", lambda: [])
     monkeypatch.setattr(wipe, "_list_workspaces",
                         lambda: [{"name": "ITS — System", "id": 680592632244100}])
     monkeypatch.setattr(wipe, "_box_root_items", lambda: [])
