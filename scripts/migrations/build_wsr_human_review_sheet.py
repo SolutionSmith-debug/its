@@ -12,7 +12,7 @@ verifies that actor is authorized; "auto-stamped" = identity recorded, NOT auto-
 The compiled weekly PDF also attaches to the row for one-click review.
 
 Schema (mirrors WPR_Pending_Review + the amendment-b additions):
-    Job / Project (primary) · Job ID (AUTO_NUMBER join key → active_jobs TO/CC) ·
+    Job / Project (primary) · Job ID (portal-assigned JOB-###### TEXT join key → active_jobs TO/CC) ·
     Week Of (Saturday) · Compiled PDF (Box link; PDF also attached) ·
     Email Body (editable, source of truth for send) · Recipient TO · CC (display) ·
     Approve for Scheduled Send · Send Now · Approved By/At · Send Status · Sent At · Notes
@@ -45,7 +45,7 @@ WORKSTREAM_OPTIONS = ["safety"]  # P1b cross-workstream send guard; WSR is the s
 COLUMN_SCHEMA: list[dict[str, Any]] = [
     {"title": "Job / Project", "type": "TEXT_NUMBER", "primary": True},
     {"title": "Job ID", "type": "TEXT_NUMBER",
-     "description": "The ITS_Active_Jobs AUTO_NUMBER Job ID — the join key weekly_send uses to resolve TO/CC."},
+     "description": "The ITS_Active_Jobs Job ID (portal-assigned JOB-######, plain TEXT — Slice 6) — the join key weekly_send uses to resolve TO/CC."},
     {"title": "Week Of", "type": "DATE", "description": "The Saturday that starts the Sat→Fri week (shared.safety_week.week_key)."},
     {"title": "Compiled PDF", "type": "TEXT_NUMBER",
      "description": "Box link to the compiled weekly packet. The PDF also attaches to this row for one-click review."},

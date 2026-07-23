@@ -51,7 +51,7 @@ def patch_rows(monkeypatch):
     return _install
 
 
-def test_get_job_resolves_by_autonumber_job_id(patch_rows):
+def test_get_job_resolves_by_job_id(patch_rows):
     patch_rows([
         _row("JOB-0001", "Bradley 1", slug="bradley-1", row_id=11,
              contact="safety@bradley.example"),
@@ -193,7 +193,7 @@ def test_row_to_job_portal_job_key_blank_when_column_absent():
 
 
 def test_get_job_resolves_by_portal_job_key_when_job_id_differs(patch_rows):
-    # The row's Job ID is the AUTO_NUMBER; its Portal Job Key is a DIFFERENT string (the
+    # Legacy pre-Slice-6 row: its Job ID and Portal Job Key are DIFFERENT strings (the
     # P2.5 cross-sheet bridge). A lookup by the bridge key resolves the row.
     row = _row("JOB-0001", "Bradley 1", row_id=11)
     row["Portal Job Key"] = "PKEY-42"

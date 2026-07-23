@@ -32,7 +32,7 @@ each submission to its job via the **Job ID**.
 
 | Column | Meaning |
 |---|---|
-| **Job ID** | Auto-Number (e.g. `JOB-000001`) — the permanent key. **Smartsheet fills it automatically**; never type or change it. |
+| **Job ID** | Plain text (e.g. `JOB-000017`) — the permanent key. **The portal assigns it** when a job is created in the portal, and the sync writes it into this cell. A row added directly in Smartsheet has no Job ID until the job syncs through the portal (the portal is the number authority). Never type or change it. |
 | Job Slug | Human-readable name (e.g. `bradley-1`). Was the old key; kept for readability. |
 | Project Name | Display name on the portal dropdown. |
 | Address | Full street address (auto-fills the form Work Location). |
@@ -51,7 +51,10 @@ each submission to its job via the **Job ID**.
 1. Open **ITS_Active_Jobs** → use the **New Job** form (or add a row directly).
 2. Fill: Project Name, Address, Stakeholder Name/Email/Phone, **Safety Reports
    Contact Email** (required), and set **Active = Active**.
-3. **Do not touch Job ID** — Smartsheet assigns the next `JOB-######` automatically.
+3. **Do not touch Job ID** — the portal assigns the next `JOB-######` and the
+   sync writes it into the row. A row added directly in the sheet stays blank
+   until the job has synced through the portal (the portal is the number
+   authority).
 4. The job appears in the portal dropdown on the next sync (cron/manual).
 
 > A job with **Active = Active but no Safety Reports Contact Email** will be
@@ -68,18 +71,15 @@ each submission to its job via the **Job ID**.
   does it by hand in the Smartsheet UI after confirming nothing reads it. Claude must
   never delete that column from a migration. Escalate to Seth if unsure.
 
-### Task C — One-time setup: the AUTO_NUMBER "Job ID" column
+### Task C — The "Job ID" column (no setup step)
 
-**When:** once, if the **Job ID** column is missing or is not an Auto-Number
-column (it cannot be created by the migration — the Smartsheet API does not allow
-creating Auto-Number columns).
-
-1. In the Smartsheet UI, open **ITS_Active_Jobs** → add a column **right after
-   Project Name**.
-2. Name it **`Job ID`**, type **System Columns → Auto-Number**.
-3. Format: prefix `JOB-`, 6-digit fill, starting number `1` (→ `JOB-000001`).
-4. Existing rows backfill automatically (`JOB-000001`…). Done — the portal and
-   `intake.py` now have a permanent key.
+The **Job ID** column is a plain **text** column — the migration
+(`scripts/migrations/extend_its_active_jobs_phase3.py`) creates it directly, and
+there is **no manual UI step**. The **portal** assigns each `JOB-######` when a
+job is created there, and the sync writes the number into this cell. Do **not**
+add or convert it to an Auto-Number column in the Smartsheet UI — that was the
+old (pre-2026-06-30) model. If the column is ever missing, escalate to Seth
+(fixing the schema is code, not a sheet edit).
 
 ### Task D — Retiring the legacy safety email-intake daemon (operator-manual)
 
@@ -102,6 +102,7 @@ The safety **mailbox poller** (`safety_reports/intake_poll.py`) is **RETIRED** a
 - A submission keeps landing in the **Review Queue** with reason
   `job_not_found` / `job_inactive` / `no_job_id` even though the job is Active with
   a Job ID — this is a code/sync issue (high-class), not a sheet edit.
-- The **Job ID** auto-number values look duplicated or wrong, or a row lost its
-  Job ID.
+- The **Job ID** values look duplicated or wrong, a row lost its Job ID, or a
+  row added directly in the sheet never receives one after the job has synced —
+  the portal assigns the numbers, so this is a code/sync issue, not a sheet edit.
 - Anything involving the portal deploy, secrets, the email send path, or code.

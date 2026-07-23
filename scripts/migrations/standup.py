@@ -28,9 +28,12 @@ What is deliberately SKIPPED (with reasons, so nobody hunts for a phantom):
                                    (SHEET_TRUSTED_CONTACTS=0 by design, pre-wipe parity).
     - The ~72 demo tracker sheets — content, not structure (in the dump if ever needed).
 
-Manual gates (API-impossible steps; the run PAUSES and waits):
-    - ITS_Active_Jobs AUTO_NUMBER "Job ID" column (Smartsheet API errorCode 1008) and
-      the "Portal Job Key" TEXT column — UI-only, prompted at the right moment.
+Manual gates: NONE remain. The former ITS_Active_Jobs AUTO_NUMBER gate was stale
+pre-Slice-6 doctrine — since P2.5 Slice 6 the portal assigns the canonical
+JOB-###### (Worker job_counter) and the mirror WRITES it, so 'Job ID' and
+'Portal Job Key' are plain TEXT columns extend_its_active_jobs_phase3.py now
+creates via the API. (The _manual_gate machinery stays for any future genuinely
+UI-only step.)
 
 Preconditions: all org.solutionsmith.its.* daemons UNLOADED (verified, same guard as
 wipe_tenant.py); Box OAuth as the dedicated ITS identity; ITS_SMARTSHEET_TOKEN in
@@ -346,13 +349,15 @@ def _stage_restore_rows(dump_dir: pathlib.Path) -> None:
 
 
 def _reconcile_progress_job_ids(sheet_ids: Any) -> None:
-    """Re-align ITS_Active_Jobs_Progress 'Job ID' with the safety sheet's values.
+    """Verify ITS_Active_Jobs_Progress 'Job ID' matches the safety sheet's values.
 
-    The safety sheet's 'Job ID' is the UI-created AUTO_NUMBER column, so restored
-    rows get freshly assigned numbers; the progress sheet's 'Job ID' is a plain
-    TEXT mirror restored with the PRE-wipe values. If auto-numbering did not
-    reproduce the old sequence the cross-sheet join splits — so reconcile by
-    'Project Name' and rewrite drifted progress values, WARN on unmatched rows.
+    Both sheets' 'Job ID' are plain TEXT restored VERBATIM from the dump (the
+    portal owns the JOB-###### number — Slice 6), so this is a belt-and-braces
+    consistency check, expected to be a no-op: it reconciles by 'Project Name',
+    rewrites any drifted progress value, and WARNs on rows with no safety
+    counterpart. (Its original premise — AUTO_NUMBER renumbering on the safety
+    side — was stale pre-Slice-6 doctrine; kept because a cheap cross-sheet
+    verify is worth keeping either way.)
     """
     from shared import smartsheet_client
     if not (getattr(sheet_ids, "SHEET_ACTIVE_JOBS", 0)
@@ -475,14 +480,11 @@ def build_stages(dump_dir: pathlib.Path | None, *, skip_shares: bool) -> list[St
             f"{MIGRATIONS}/build_orphaned_reports_sheet.py",
         )),
         _regen_entry("regen-safety-sheets"),
+        # phase3 now also creates the TEXT 'Job ID' + 'Portal Job Key' columns —
+        # both plain writable columns (the portal assigns JOB-######, Slice 6),
+        # so the former manual AUTO_NUMBER UI gate is GONE (it was stale
+        # pre-Slice-6 doctrine; an AUTO_NUMBER would reject every mirror write).
         ("active-jobs-phase3", run(f"{MIGRATIONS}/extend_its_active_jobs_phase3.py")),
-        ("manual-active-jobs-columns", lambda: _manual_gate(
-            "In the Smartsheet UI, on the NEW ITS_Active_Jobs sheet:\n"
-            "  1. Insert a column titled exactly 'Job ID', type Auto-Number,\n"
-            "     format JOB-#### (the API cannot create AUTO_NUMBER — errorCode 1008;\n"
-            "     extend_its_active_jobs_phase3 printed the same instruction).\n"
-            "  2. Insert a TEXT/NUMBER column titled exactly 'Portal Job Key'\n"
-            "     (the portal join key — fieldops mirror breaks without it).")),
         ("active-jobs-contact-cols",
          run(f"{MIGRATIONS}/add_active_jobs_contact_routing_columns.py")),
         ("progress-workspace", run(f"{MIGRATIONS}/build_progress_reporting_workspace.py")),

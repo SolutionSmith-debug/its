@@ -3,6 +3,11 @@
 **Repo/worktree:** `~/its-fieldops` (branch off `main`, currently `5cc4336`) · Worker+D1+React SPA expansion of the Evergreen Safety Portal
 **As of:** 2026-06-28 — Write-UI phase complete (PRs #319–#322 four-part verified). P2.2 reads (#308–#310) + P2.3 writes (#312–#317, six slices; #318 = docs PR) landed. P2.4 SoR mirror is **PARKED/BLOCKED**.
 
+> **Job-ID model note (added 2026-07-23):** superseded by P2.5 Slice 6 (2026-06-30) — "Job ID"
+> is now a plain TEXT column the mirror WRITES with the portal-assigned `JOB-######` (Worker
+> `job_counter`, migration 0022). The AUTO_NUMBER claims at the "reject writes" bullet and the
+> "pending manual-UI setup step" item below describe the pre-Slice-6 design.
+
 ---
 
 ## TL;DR — do this next
