@@ -26,10 +26,24 @@ Re-run after:
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from shared import sheet_ids, smartsheet_client
 from shared.defaults import DEFAULT_REVIEWER_CHAINS
+
+
+def _confirm(prompt: str) -> bool:
+    """y/N gate before the ITS_Config write (the builder-family seam shape).
+
+    STANDUP_NONINTERACTIVE=1 (set ONLY by the standup orchestrator, whose master
+    gate is the control) auto-approves without touching stdin — stdin is closed
+    under the orchestrator, so an unexpected prompt fails loudly (EOFError)
+    instead of being silently fed a 'y'. Standalone runs still prompt."""
+    if os.environ.get("STANDUP_NONINTERACTIVE") == "1":
+        print(f"{prompt} [auto-approved: STANDUP_NONINTERACTIVE]")
+        return True
+    return input(f"{prompt} [y/N] ").strip().lower() == "y"
 
 
 def _build_seed_rows() -> list[dict[str, str]]:
@@ -232,8 +246,7 @@ def main() -> None:
             print("STALE rows above need operator attention.")
         return
 
-    answer = input(f"\nWrite {len(added)} new row(s) to ITS_Config? [y/N] ").strip().lower()
-    if answer != "y":
+    if not _confirm(f"\nWrite {len(added)} new row(s) to ITS_Config?"):
         print("Aborted; no writes.")
         sys.exit(1)
 
