@@ -471,9 +471,20 @@ def _vc10_shares_by_workspace(manifest: dict[str, Any]) -> dict[int, tuple[dict,
     }
 
 
-def _install_vc10(monkeypatch, by_id: dict[int, tuple[dict, ...]]):
+def _vc10_names_by_workspace(manifest: dict[str, Any]) -> dict[int, str]:
+    return {getattr(sheet_ids, ws["constant"]): ws["name"]
+            for ws in manifest["workspaces"]}
+
+
+def _install_vc10(monkeypatch, by_id: dict[int, tuple[dict, ...]],
+                  names_by_id: dict[int, str] | None = None):
     monkeypatch.setattr(
         vc.smartsheet_client, "list_workspace_shares", lambda wid: by_id[wid]
+    )
+    if names_by_id is None:
+        names_by_id = _vc10_names_by_workspace(_manifest())
+    monkeypatch.setattr(
+        vc.smartsheet_client, "get_workspace_name", lambda wid: names_by_id[wid]
     )
 
 
@@ -593,3 +604,47 @@ def test_vc10_missing_manifest_file_fails_loud(monkeypatch, tmp_path):
     outcome = vc._check_approver_shares(vc.Options())
     assert not outcome.passed
     assert "manifest unreadable" in outcome.summary
+
+
+def test_vc10_stale_constant_wrong_live_name_fails(monkeypatch):
+    """Adversarial-review BLOCK fix (2026-07-23): a sheet_ids constant whose ID
+    resolves to a live workspace with a DIFFERENT name must FAIL named — VC-10
+    must never audit (and bless) the wrong object on a drifted pointer."""
+    manifest = _manifest()
+    by_id = _vc10_shares_by_workspace(manifest)
+    names = _vc10_names_by_workspace(manifest)
+    drifted = manifest["workspaces"][0]
+    drifted_id = getattr(sheet_ids, drifted["constant"])
+    names = {**names, drifted_id: "Recreated Unrelated Workspace"}
+    _install_vc10(monkeypatch, by_id, names)
+    outcome = vc._check_approver_shares(vc.Options())
+    assert not outcome.passed
+    assert "stale constant" in (outcome.details or "")
+    assert "Recreated Unrelated Workspace" in (outcome.details or "")
+    assert drifted["constant"] in (outcome.details or "")
+
+
+def test_vc10_one_workspace_fetch_error_does_not_blind_the_rest(monkeypatch):
+    """Per-workspace isolation: one dead/404 ID becomes a NAMED problem while
+    the remaining workspaces still get audited (a granular problem list at
+    cutover, not one generic 'raised' collapse)."""
+    manifest = _manifest()
+    by_id = _vc10_shares_by_workspace(manifest)
+    dead = manifest["workspaces"][0]
+    dead_id = getattr(sheet_ids, dead["constant"])
+
+    def _shares(wid):
+        if wid == dead_id:
+            raise smartsheet_client.SmartsheetNotFoundError("dead workspace id")
+        return by_id[wid]
+
+    monkeypatch.setattr(vc.smartsheet_client, "list_workspace_shares", _shares)
+    names = _vc10_names_by_workspace(manifest)
+    monkeypatch.setattr(
+        vc.smartsheet_client, "get_workspace_name", lambda wid: names[wid])
+    outcome = vc._check_approver_shares(vc.Options())
+    assert not outcome.passed
+    assert "SmartsheetNotFoundError" in (outcome.details or "")
+    # the other three workspaces were still checked and are clean
+    assert "3 checked workspace(s)" in outcome.summary
+    assert (outcome.details or "").count("live fetch failed") == 1

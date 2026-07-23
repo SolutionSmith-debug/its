@@ -34,8 +34,9 @@ VC-01  keychain        all required Keychain secrets present (18: 11 non-Box + B
                        triplet + ``ITS_PORTAL_PO_TOKEN`` + the config-actuator /
                        subcontract-poll daemon bearers + the operator-dashboard PIN)
 VC-02  launchd         every shipped ``org.solutionsmith.its.*`` plist loaded EXCEPT the
-                       dark-unloaded send daemons (``po-send`` — send-gate), which must
-                       NOT be loaded (no missing, no orphans, no dark send daemon running)
+                       dark-unloaded send daemons (``po-send`` + ``rfq-send`` — send-gate),
+                       which must NOT be loaded (no missing, no orphans, no dark send
+                       daemon running)
 VC-03  config          load-bearing ITS_Config rows present + non-default
                        (worker_base_url, from_mailbox rows, scheduled_send_local,
                        the polling/sync/intake gates, ``system.operator_email``,
@@ -170,8 +171,9 @@ LABEL_PREFIX = "org.solutionsmith.its."
 # launchd-UNLOADED at cutover so a dark external-send path is not even running
 # (send-gate defense-in-depth; operator decision 2026-07-12). VC-02 therefore does NOT
 # require them loaded, and FAILS if one IS loaded — a send daemon live at cutover is a
-# FIXED high-class External-Send-Gate event (Seth). A future subcontract-send goes here
-# too. First-enabling a send path = remove its label here + load its plist.
+# FIXED high-class External-Send-Gate event (Seth). (subcontract-send shipped as a
+# MUST-LOAD established lane — deliberately NOT in this set; SC-S4 landed 2026-07-15.)
+# First-enabling a send path = remove its label here + load its plist.
 DARK_UNLOADED_LABELS = frozenset({
     "org.solutionsmith.its.po-send",
     # RFQ send (ADR-0004 R3) ships DARK like po-send: a plist that exists but is NOT
@@ -916,7 +918,27 @@ def _check_approver_shares(opts: Options) -> CheckOutcome:
         if not workspace_id:
             problems.append(f"{label}: sheet_ids.{constant} missing or 0 — cannot check")
             continue
-        shares = smartsheet_client.list_workspace_shares(workspace_id)
+        # Live-identity assert (adversarial review 2026-07-23): the constant is a
+        # stored POINTER — prove the object it resolves to is still the workspace
+        # the manifest MEANS, or an ID-drifted constant silently audits the wrong
+        # object (false PASS, or a FAIL masking the real target). Per-workspace
+        # isolation: one dead/drifted ID must not blind the other legs.
+        try:
+            live_name = str(
+                smartsheet_client.get_workspace_name(workspace_id)).strip()
+            expected_name = str(ws.get("name", "")).strip()
+            if live_name != expected_name:
+                problems.append(
+                    f"{label}: sheet_ids.{constant}={workspace_id} resolves to a "
+                    f"live workspace named {live_name!r}, not {expected_name!r} — "
+                    "stale constant / regen pending; REFUSING to audit the wrong "
+                    "object")
+                continue
+            shares = smartsheet_client.list_workspace_shares(workspace_id)
+        except Exception as exc:  # noqa: BLE001 — named per-workspace, never blinds the rest
+            problems.append(
+                f"{label}: live fetch failed ({type(exc).__name__}: {exc})")
+            continue
         user_emails = {
             str(share["email"]).strip().lower()
             for share in shares

@@ -886,7 +886,8 @@ def test_resume_derives_first_incomplete_stage(tmp_path: Path) -> None:
         "completed": ["a", "b"], "stage_names": names, "stages": {},
     }, tmp_path)
     assert standup._resume_start_stage(
-        tmp_path, no_restore=False, skip_shares=False, stage_names=names) == "c"
+        tmp_path, no_restore=False, skip_shares=False,
+            no_run_branch=False, stage_names=names) == "c"
 
 
 def test_resume_refusals(tmp_path: Path) -> None:
@@ -894,7 +895,8 @@ def test_resume_refusals(tmp_path: Path) -> None:
     # no state file
     with pytest.raises(standup.StageFailedError, match="no run state"):
         standup._resume_start_stage(
-            tmp_path, no_restore=False, skip_shares=False, stage_names=names)
+            tmp_path, no_restore=False, skip_shares=False,
+            no_run_branch=False, stage_names=names)
     # completed run
     standup._write_state({
         "status": "complete",
@@ -903,7 +905,8 @@ def test_resume_refusals(tmp_path: Path) -> None:
     }, tmp_path)
     with pytest.raises(standup.StageFailedError, match="COMPLETE"):
         standup._resume_start_stage(
-            tmp_path, no_restore=False, skip_shares=False, stage_names=names)
+            tmp_path, no_restore=False, skip_shares=False,
+            no_run_branch=False, stage_names=names)
     # conflicting flags (recorded skip_shares=False, supplied True)
     standup._write_state({
         "status": "failed",
@@ -912,7 +915,8 @@ def test_resume_refusals(tmp_path: Path) -> None:
     }, tmp_path)
     with pytest.raises(standup.StageFailedError, match="conflict"):
         standup._resume_start_stage(
-            tmp_path, no_restore=False, skip_shares=True, stage_names=names)
+            tmp_path, no_restore=False, skip_shares=True,
+            no_run_branch=False, stage_names=names)
 
 
 def test_write_state_is_best_effort(
@@ -1212,3 +1216,143 @@ def test_sync_with_main_conflict_stops_never_auto_resolves(
         standup._sync_run_branch_with_main()
     # the conflict surface names the files and no resolution command ran
     assert not any(a[0] in {"checkout", "reset", "commit"} for a in calls)
+
+
+def test_start_run_branch_ignores_untracked_logs_dump(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P1 regression (2026-07-23 verify pass): the default restore flow REQUIRES
+    an untracked-not-ignored prewipe dump under logs/migrations — the dirty
+    gate must judge dirt with the same :(exclude)logs pathspec the checkpoints
+    use, or run-branch mode self-disables at the canonical wipe->standup flow."""
+    repo = _init_repo(tmp_path)
+    monkeypatch.setattr(standup, "REPO_ROOT", repo)
+    dump = repo / "logs" / "migrations" / "prewipe_20260807T000000Z"
+    dump.mkdir(parents=True)
+    (dump / "dump.json").write_text("{}", encoding="utf-8")
+    branch = standup._start_run_branch("r3")  # must NOT refuse
+    assert standup._current_branch() == branch
+    # real repo-file dirt beside the dump still refuses
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True,
+                   capture_output=True)
+    (repo / "tracked.py").write_text("x = 99\n", encoding="utf-8")
+    with pytest.raises(standup.StageFailedError, match="DIRTY"):
+        standup._start_run_branch("r4")
+
+
+def test_resume_refuses_no_run_branch_flag_conflict(tmp_path: Path) -> None:
+    """--resume --no-run-branch on a branch-mode run must REFUSE (it would
+    silently drop the recorded branch + checkpoints), and vice versa; a
+    pre-#687 state file (flag never recorded) resumes fine without the flag."""
+    names = ["a", "b"]
+    standup._write_state({
+        "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False,
+                  "no_run_branch": False},
+        "completed": ["a"], "stage_names": names, "stages": {},
+    }, tmp_path)
+    with pytest.raises(standup.StageFailedError, match="conflict"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=False,
+            no_run_branch=True, stage_names=names)
+    standup._write_state({
+        "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False,
+                  "no_run_branch": True},
+        "completed": ["a"], "stage_names": names, "stages": {},
+    }, tmp_path)
+    with pytest.raises(standup.StageFailedError, match="conflict"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=False,
+            no_run_branch=False, stage_names=names)
+    # pre-#687 state (no_run_branch never recorded) == default False, no conflict
+    standup._write_state({
+        "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False},
+        "completed": ["a"], "stage_names": names, "stages": {},
+    }, tmp_path)
+    assert standup._resume_start_stage(
+        tmp_path, no_restore=False, skip_shares=False,
+        no_run_branch=False, stage_names=names) == "b"
+
+
+def test_resume_corrupt_state_file_clean_refusal(tmp_path: Path) -> None:
+    """A truncated/corrupt state file must exit via the polished [abort]
+    StageFailedError refusal, never a raw JSONDecodeError traceback."""
+    (tmp_path / "standup_state.json").write_text('{"status": "fail',
+                                                 encoding="utf-8")
+    with pytest.raises(standup.StageFailedError, match="UNREADABLE"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=False,
+            no_run_branch=False, stage_names=["a"])
+
+
+def test_sync_with_main_non_conflict_failure_is_not_labeled_conflicted(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A merge that fails BEFORE it begins (rc!=0, no unmerged paths — e.g.
+    local changes the merge would overwrite) must not claim CONFLICTED with an
+    empty file list; it names the real refusal and quotes git."""
+
+    def _fake_git(*args: str) -> Any:
+        if args[0] == "fetch":
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[0] == "merge":
+            return subprocess.CompletedProcess(
+                args, 1, "", "error: Your local changes to the following files "
+                "would be overwritten by merge:\n  shared/sheet_ids.py")
+        if args[:2] == ("diff", "--name-only"):
+            return subprocess.CompletedProcess(args, 0, "", "")  # no unmerged
+        raise AssertionError(f"unexpected git {args}")
+
+    monkeypatch.setattr(standup, "_git", _fake_git)
+    with pytest.raises(standup.StageFailedError,
+                       match="FAILED before it began") as exc:
+        standup._sync_run_branch_with_main()
+    assert "CONFLICTED" not in str(exc.value)
+    assert "would be overwritten" in str(exc.value)
+
+
+def test_finish_refuses_when_daemons_still_loaded(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """P2 tooth (2026-07-23 verify pass): the third finish precondition —
+    daemons still loaded -> rc 1 BEFORE any cleanup/reload seam runs."""
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: True)
+    monkeypatch.setattr(standup, "_verify_regen_parity", lambda: True)
+    monkeypatch.setattr(standup, "_require_daemons_down", lambda: False)
+    for seam in ("_state_cleanup", "_reload_fleet", "_restart_dashboard",
+                 "_confirm", "_confirm_full_posture", "_await_heartbeats",
+                 "_post_reload_error_sweep", "_gate_report"):
+        monkeypatch.setattr(standup, seam, _boom_named(seam))
+    assert standup.finish_main(["--no-restore"]) == 1
+
+
+def test_finish_master_confirm_decline_runs_nothing(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declining the master finish confirm exits 0 with every mutating seam
+    untouched (the operator said no; nothing happened)."""
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: True)
+    monkeypatch.setattr(standup, "_verify_regen_parity", lambda: True)
+    monkeypatch.setattr(standup, "_require_daemons_down", lambda: True)
+    monkeypatch.setattr(standup, "_confirm", lambda *a, **k: False)
+    for seam in ("_state_cleanup", "_reload_fleet", "_restart_dashboard",
+                 "_await_heartbeats", "_post_reload_error_sweep",
+                 "_gate_report", "_confirm_full_posture"):
+        monkeypatch.setattr(standup, seam, _boom_named(seam))
+    assert standup.finish_main(["--no-restore"]) == 0
+
+
+def test_finish_notes_leftover_fence_marker(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """A clean finish over a leftover ACT-fence marker (abandoned run) prints
+    the fenced-until-age-out note; without the marker it stays silent. The
+    note never changes the exit code."""
+    monkeypatch.setattr(standup, "_verify_git_clean", lambda: True)
+    monkeypatch.setattr(standup, "_verify_regen_parity", lambda: True)
+    monkeypatch.setattr(standup, "_await_heartbeats", lambda *a, **k: [])
+    monkeypatch.setattr(standup, "_post_reload_error_sweep", lambda: 0)
+    monkeypatch.setattr(standup, "_gate_report", lambda dump_dir: None)
+    assert standup.finish_main(["--verify-only", "--no-restore"]) == 0
+    assert "fence marker" not in capsys.readouterr().out
+    standup.STANDUP_MARKER_PATH.write_text("{}", encoding="utf-8")
+    assert standup.finish_main(["--verify-only", "--no-restore"]) == 0
+    assert "fence marker still present" in capsys.readouterr().out

@@ -683,6 +683,13 @@ def test_list_workspace_shares_live(_token_available):
         assert share.get("email") or share.get("name") or share.get("groupId")
 
 
+def test_get_workspace_name_live(_token_available):
+    """Live §30 smoke for the VC-10 stale-constant guard: GET /workspaces/{id}
+    returns the human name for a live sheet_ids constant. Read-only."""
+    name = smartsheet_client.get_workspace_name(sheet_ids.WORKSPACE_SAFETY_PORTAL)
+    assert isinstance(name, str) and name.strip()
+
+
 # ---- attach_pdf_to_row: live multipart upload + idempotent replace ------
 
 
