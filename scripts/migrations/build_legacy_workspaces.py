@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import pathlib
 import sys
 from typing import Any
@@ -262,7 +263,15 @@ def _headers() -> dict[str, str]:
 
 
 def _confirm(prompt: str) -> bool:
-    """One y/N gate for the whole run (tests monkeypatch)."""
+    """One y/N gate for the whole run (tests monkeypatch).
+
+    STANDUP_NONINTERACTIVE=1 (set ONLY by the standup orchestrator, whose master
+    gate is the control) auto-approves without touching stdin — stdin is closed
+    under the orchestrator, so an unexpected prompt fails loudly (EOFError)
+    instead of being silently fed a 'y'. Standalone runs still prompt."""
+    if os.environ.get("STANDUP_NONINTERACTIVE") == "1":
+        print(f"{prompt} [auto-approved: STANDUP_NONINTERACTIVE]")
+        return True
     return input(f"{prompt} [y/N] ").strip().lower() == "y"
 
 

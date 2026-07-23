@@ -132,6 +132,7 @@ nothing — it is a no-op, not a failure, and the other three cutover builders a
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -382,6 +383,14 @@ def _confirm_live_writes(pending: list[str], login: str) -> bool:
     artifact.
     """
     listed = ", ".join(repr(n) for n in pending)
+    if os.environ.get("STANDUP_NONINTERACTIVE") == "1":
+        # Orchestrated run (standup.py): the master gate is the control and the
+        # Box identity was ALREADY printed by standup's box-roots stage before
+        # this subprocess ran — auto-approve without touching the closed stdin
+        # (an unexpected extra prompt still fails loudly via EOFError).
+        print(f"\nCreate {len(pending)} folder(s) at the Box ROOT of {login!r} "
+              f"({listed})? [auto-approved: STANDUP_NONINTERACTIVE]")
+        return True
     answer = input(
         f"\nCreate {len(pending)} folder(s) at the Box ROOT of {login!r} ({listed})? [y/N] "
     ).strip().lower()

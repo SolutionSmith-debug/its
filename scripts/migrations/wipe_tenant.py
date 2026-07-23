@@ -30,7 +30,11 @@ Guards (each fails CLOSED, each is separately tested)
        ~/its/logs/migrations/prewipe_<UTC>/ as JSON, plus a Box tree manifest
        (names/ids; file bytes are NOT downloaded — the operator declined content
        preservation, the dump is the deletion audit record + the row-restore
-       source for the stand-up). A dump failure aborts the wipe.
+       source for the stand-up). A dump failure aborts the wipe. Transient
+       fetch errors (429/5xx/timeouts) are retried bounded (`_rest_retry`) and
+       ABORT on exhaustion; only PERMANENT signatures (404 / errorCode
+       1006/1115 — broken shells with no content to preserve) are recorded as
+       "unreadable" and skipped.
 
 Deletion mechanics
     Smartsheet: DELETE /workspaces/{id} (cascades folders/sheets). Box:
@@ -63,6 +67,10 @@ from typing import Any
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 import requests  # type: ignore[import-untyped]  # noqa: E402
+
+# Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
+# it explicitly — the test_standup_tools.py import pattern).
+from _rest_retry import is_permanent_read_failure, request_with_retry  # noqa: E402
 
 from shared import box_client, keychain  # noqa: E402
 
@@ -98,6 +106,18 @@ class WipeRefusedError(RuntimeError):
     """A guard refused the wipe. Nothing (further) was deleted."""
 
 
+# The read-only observability tier stays up through a wipe/stand-up window:
+# the dashboard makes no background tenant writes, its ACT verbs are fenced by
+# the stand-up marker below (operator_dashboard/auth.py reads it), and the
+# stand-up epilogue restarts it onto the final constants. Everything else —
+# every daemon that WRITES on a cycle — must still be down.
+DAEMON_DOWN_EXEMPT = frozenset({"org.solutionsmith.its.dashboard"})
+
+# Set at --commit (before the dump), cleared by a SUCCESSFUL standup.py run —
+# the wipe->rebuild window stays fenced end to end. Manual unfence: delete it.
+STANDUP_MARKER_PATH = pathlib.Path.home() / "its" / "state" / "standup_in_progress.json"
+
+
 # ---- guards ---------------------------------------------------------------
 
 
@@ -112,7 +132,12 @@ def _loaded_its_daemons() -> list[str]:
 
 
 def require_daemons_down() -> None:
-    loaded = _loaded_its_daemons()
+    exempt_loaded = [d for d in _loaded_its_daemons() if d in DAEMON_DOWN_EXEMPT]
+    if exempt_loaded:
+        print(f"[info] exempt_daemons_loaded: {', '.join(exempt_loaded)} — the "
+              "read-only dashboard may stay up (ACT verbs are fenced by the "
+              "stand-up marker).")
+    loaded = [d for d in _loaded_its_daemons() if d not in DAEMON_DOWN_EXEMPT]
     if loaded:
         print(f"[abort] daemons_loaded: {len(loaded)} org.solutionsmith.its.* job(s) are "
               "still loaded — a live fleet would error-storm against deleted sheets and "
@@ -173,22 +198,20 @@ def _headers() -> dict[str, str]:
 
 
 def _list_workspaces() -> list[dict[str, Any]]:
-    r = requests.get(f"{BASE}/workspaces?includeAll=true", headers=_headers(), timeout=30)
-    r.raise_for_status()
+    r = request_with_retry("get", f"{BASE}/workspaces?includeAll=true",
+                           headers=_headers(), timeout=30)
     return list(r.json().get("data", []))
 
 
 def _workspace_tree(workspace_id: int) -> dict[str, Any]:
-    r = requests.get(f"{BASE}/workspaces/{workspace_id}?loadAll=true",
-                     headers=_headers(), timeout=120)
-    r.raise_for_status()
+    r = request_with_retry("get", f"{BASE}/workspaces/{workspace_id}?loadAll=true",
+                           headers=_headers(), timeout=120)
     return dict(r.json())
 
 
 def _workspace_shares(workspace_id: int) -> list[dict[str, Any]]:
-    r = requests.get(f"{BASE}/workspaces/{workspace_id}/shares?includeAll=true",
-                     headers=_headers(), timeout=30)
-    r.raise_for_status()
+    r = request_with_retry("get", f"{BASE}/workspaces/{workspace_id}/shares?includeAll=true",
+                           headers=_headers(), timeout=30)
     return list(r.json().get("data", []))
 
 
@@ -204,11 +227,11 @@ def _sheet_dump(sheet_id: int) -> dict[str, Any]:
     sheet: dict[str, Any] = {}
     raw_rows: list[dict[str, Any]] = []
     while True:
-        r = requests.get(
+        r = request_with_retry(
+            "get",
             f"{BASE}/sheets/{sheet_id}?pageSize=5000&page={page}"
             "&level=2&include=objectValue",
             headers=_headers(), timeout=120)
-        r.raise_for_status()
         sheet = r.json()
         raw_rows.extend(sheet.get("rows", []))
         total = int(sheet.get("totalRowCount") or 0)
@@ -269,11 +292,19 @@ def dump_workspace(ws: dict[str, Any], dump_dir: pathlib.Path,
     """Dump one workspace (tree + shares + every sheet) to JSON.
 
     Returns (sheets_dumped, unreadable) where `unreadable` names sheets whose
-    FETCH failed (e.g. the four zero-column ITS_Errors shells from the row-cap
-    incident return 1115/404 on read) — recorded and reported, not fatal: an
-    unreadable broken shell has no content to preserve, and blocking the whole
-    wipe on it would strand the operation. Any WRITE failure still propagates
-    (guard 4 — a dump we cannot persist aborts the wipe).
+    fetch failed with a PERMANENT signature — HTTP 404 or Smartsheet errorCode
+    1006/1115 (`_rest_retry.is_permanent_read_failure`), e.g. the four
+    zero-column ITS_Errors shells from the row-cap incident — recorded and
+    reported, not fatal: an unreadable broken shell has no content to preserve,
+    and blocking the whole wipe on it would strand the operation.
+
+    Everything ELSE fails CLOSED: transient errors (429/5xx/timeouts) are
+    retried by `request_with_retry` and PROPAGATE on exhaustion, and a
+    truncated dump (`sheet_dump_truncated`) propagates immediately — guard 4
+    then aborts the wipe with nothing deleted. Before 2026-07-23 both classes
+    were misclassified as "unreadable" and the wipe proceeded — a fail-open
+    data-loss path (the dump is the sole row-restore source). Any WRITE
+    failure still propagates (guard 4).
 
     Filenames carry the sheet id so duplicate names in one folder (the
     ITS_Errors quintuplet) can never silently overwrite each other. Reports /
@@ -298,7 +329,9 @@ def dump_workspace(ws: dict[str, Any], dump_dir: pathlib.Path,
         label = "/".join((*path, str(sheet_meta.get("name"))))
         try:
             dump = _sheet_dump(sheet_id)
-        except (requests.HTTPError, RuntimeError) as e:
+        except requests.HTTPError as e:
+            if not is_permanent_read_failure(e):
+                raise  # transient after retry exhaustion — guard 4 aborts, nothing deleted
             unreadable.append(f"{label} (id={sheet_id}): {e}")
             print(f"[WARN] sheet_unreadable: {label} (id={sheet_id}) — {e}. "
                   "Recorded and skipped (no content preserved for this sheet).")
@@ -383,11 +416,11 @@ def main() -> int:
         except WipeRefusedError:
             return 1
     else:
-        loaded = _loaded_its_daemons()
+        loaded = [d for d in _loaded_its_daemons() if d not in DAEMON_DOWN_EXEMPT]
         if loaded:
             print(f"[WARN] {len(loaded)} org.solutionsmith.its.* daemon(s) loaded — "
                   "fine for a read-only plan, but --commit will refuse until they "
-                  "are unloaded.\n")
+                  "are unloaded (the read-only dashboard is exempt).\n")
 
     live_ws = _list_workspaces()
     ws_deletable, ws_mismatch, ws_unlisted = match_allowlist(
@@ -429,6 +462,17 @@ def main() -> int:
     if not _confirm_phrase():
         print("[abort] confirmation phrase not matched; nothing deleted.")
         return 1
+
+    # Fence the dashboard's ACT verbs for the whole wipe->rebuild window
+    # (operator_dashboard/auth.py refuses actuation while this is fresh; a
+    # successful standup.py run clears it).
+    from shared import state_io
+    state_io.atomic_write_json(STANDUP_MARKER_PATH, {
+        "started_at_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "tool": "wipe_tenant",
+    })
+    print(f"[info] stand-up marker set ({STANDUP_MARKER_PATH}) — dashboard ACT "
+          "verbs fenced until the stand-up completes.")
 
     # ---- dump (guard 4: a dump we cannot capture/persist aborts the wipe) ----
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
