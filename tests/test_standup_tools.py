@@ -32,16 +32,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_allowlist_exact_match_is_deletable() -> None:
-    live = [{"name": "ITS — System", "id": 680592632244100}]
+    # Fixture derived FROM the allowlist: the pins are historical (the wiped
+    # tenant's ids, deliberately never remapped), so the test must never
+    # hardcode an id that can drift from them.
+    pin_name, pin_id = wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0]
+    live = [{"name": pin_name, "id": pin_id}]
     deletable, mismatches, unlisted = wipe.match_allowlist(
         live, wipe.SMARTSHEET_WORKSPACE_ALLOWLIST)
-    assert [d["id"] for d in deletable] == [680592632244100]
+    assert [d["id"] for d in deletable] == [pin_id]
     assert not mismatches and not unlisted
 
 
 def test_allowlist_name_id_drift_refuses() -> None:
     # Same name, DIFFERENT id — the drifted-tenant case must land in mismatches.
-    live = [{"name": "ITS — System", "id": 999}]
+    live = [{"name": wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0][0], "id": 999}]
     deletable, mismatches, _ = wipe.match_allowlist(
         live, wipe.SMARTSHEET_WORKSPACE_ALLOWLIST)
     assert not deletable
@@ -49,7 +53,8 @@ def test_allowlist_name_id_drift_refuses() -> None:
 
 
 def test_allowlist_id_reused_under_new_name_refuses() -> None:
-    live = [{"name": "Totally Different", "id": 680592632244100}]
+    live = [{"name": "Totally Different",
+             "id": wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0][1]}]
     deletable, mismatches, _ = wipe.match_allowlist(
         live, wipe.SMARTSHEET_WORKSPACE_ALLOWLIST)
     assert not deletable
@@ -69,7 +74,8 @@ def test_wipe_main_refuses_on_mismatch_even_with_phrase(
     """Guard 1 bites in main(): drifted pins abort BEFORE the phrase/dump/delete."""
     monkeypatch.setattr(wipe, "require_daemons_down", lambda: None)
     monkeypatch.setattr(wipe, "_list_workspaces",
-                        lambda: [{"name": "ITS — System", "id": 999}])
+                        lambda: [{"name": wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0][0],
+                                  "id": 999}])
     monkeypatch.setattr(wipe, "_box_root_items", lambda: [])
     monkeypatch.setattr(wipe, "_confirm_phrase", lambda: True)
 
@@ -86,7 +92,9 @@ def test_wipe_main_refuses_without_phrase(monkeypatch: pytest.MonkeyPatch) -> No
     """Guard 3 bites: a declined phrase deletes nothing."""
     monkeypatch.setattr(wipe, "require_daemons_down", lambda: None)
     monkeypatch.setattr(wipe, "_list_workspaces",
-                        lambda: [{"name": "ITS — System", "id": 680592632244100}])
+                        lambda: [dict(zip(("name", "id"),
+                                          wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0],
+                                          strict=True))])
     monkeypatch.setattr(wipe, "_box_root_items", lambda: [])
     monkeypatch.setattr(wipe, "_confirm_phrase", lambda: False)
 
@@ -115,7 +123,9 @@ def test_wipe_plan_mode_never_deletes(monkeypatch: pytest.MonkeyPatch) -> None:
     # rather than require_daemons_down, or Linux CI dies on a missing launchctl.
     monkeypatch.setattr(wipe, "_loaded_its_daemons", lambda: [])
     monkeypatch.setattr(wipe, "_list_workspaces",
-                        lambda: [{"name": "ITS — System", "id": 680592632244100}])
+                        lambda: [dict(zip(("name", "id"),
+                                          wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0],
+                                          strict=True))])
     monkeypatch.setattr(wipe, "_box_root_items", lambda: [])
 
     def _boom(*a: Any, **k: Any) -> None:

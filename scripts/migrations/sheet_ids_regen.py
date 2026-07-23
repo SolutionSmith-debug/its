@@ -690,13 +690,18 @@ def main() -> int:
     # system_map MapNodes, builder-local pins (build_wsr_human_review_sheet.py
     # hard-pins FOLDER_SAFETY_PORTAL — the standup interleave depends on this
     # rewrite landing BEFORE that builder runs), and test pins.
+    # wipe_tenant.py is EXEMPT: its allowlist pins the wipe TARGETS (historical,
+    # deleted ids) — remapping them to the rebuilt tenant's ids would arm a
+    # re-run against the fresh workspaces; updating that allowlist must stay a
+    # deliberate, reviewed code change (learned 2026-07-23, first rebuild).
     remap_files: list[pathlib.Path] = [SYSTEM_MAP_PATH]
     remap_files += sorted((REPO_ROOT / "scripts" / "migrations").glob("*.py"))
     remap_files += sorted((REPO_ROOT / "tests").glob("*.py"))
     self_path = pathlib.Path(__file__).resolve()
+    wipe_tool = (REPO_ROOT / "scripts" / "migrations" / "wipe_tenant.py").resolve()
     for remap_path in remap_files:
-        if remap_path.resolve() == self_path:
-            continue  # never rewrite this module's own registry/doc text mid-run
+        if remap_path.resolve() in (self_path, wipe_tool):
+            continue  # self: registry/doc text; wipe tool: see exemption above
         remap_text = remap_path.read_text(encoding="utf-8")
         remap_text, n_hits = rewrite_integer_remap(remap_text, remap)
         if n_hits:

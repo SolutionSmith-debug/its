@@ -9,7 +9,7 @@ rows by Setting+Workstream).
 What it does:
 
 1. Look up Picklist_Sync_Config inside ITS — System / 01 — Config (folder
-   164788727768964). If absent, create it with the column schema below.
+   1775005051709316). If absent, create it with the column schema below.
    Print the new sheet ID for `SHEET_PICKLIST_SYNC_CONFIG` bootstrap into
    `shared/sheet_ids.py`. If the sheet already exists, print the existing
    ID and skip the create.
@@ -65,7 +65,7 @@ from shared import keychain, sheet_ids, smartsheet_client  # noqa: E402
 BASE = "https://api.smartsheet.com/2.0"
 
 SHEET_NAME = "Picklist_Sync_Config"
-PARENT_FOLDER = sheet_ids.FOLDER_SYSTEM_CONFIG  # 164788727768964
+PARENT_FOLDER = sheet_ids.FOLDER_SYSTEM_CONFIG  # 1775005051709316
 
 LAST_RUN_AT_DESCRIPTION = (
     "ISO 8601 UTC timestamp of last successful sync. TEXT_NUMBER, not DATE — "

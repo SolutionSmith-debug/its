@@ -27,11 +27,11 @@ Purpose
 
 WHY THESE FOLDER NAMES (the decision this script encodes)
     Earlier briefs describe a single folder named "Safety Portal". That is STALE. Browsed
-    live 2026-07-21 (`browse_workspace(194283417429892)`), the workspace contains TWO
+    live 2026-07-21 (`browse_workspace(6820552519247748)`), the workspace contains TWO
     canonical ITS folders:
-        "00_Safety Portal"  id=6663869084002180   (ASCII underscore, no dash)
-        "00_Form Catalog"   id=3559329820370820
-    `sheet_ids.FOLDER_SAFETY_PORTAL` = 6663869084002180 — i.e. the constant the RUNTIME
+        "00_Safety Portal"  id=2261538947000196   (ASCII underscore, no dash)
+        "00_Form Catalog"   id=6765138574370692
+    `sheet_ids.FOLDER_SAFETY_PORTAL` = 2261538947000196 — i.e. the constant the RUNTIME
     actually consumes points at "00_Safety Portal", and its trailing comment ("… / Safety
     Portal") is a stale relic of the pre-2026-06-05 location under ITS — Operations.
     ITS_Forms_Catalog does NOT live beside the other three; it lives in its own second
@@ -68,7 +68,7 @@ Invariants (blast-radius controls — this runs against a CUSTOMER PRODUCTION te
     8. DUPLICATE-NAME AMBIGUITY IS LOUD. Smartsheet does not enforce unique workspace or
        folder names, and the shared `find_*_by_name_*` helpers return the FIRST match —
        which is demonstrably NOT always the live object (five sheets named "ITS_Errors"
-       coexist in "02 — Logs"; only 27291433258884 is live). Every find here counts ALL
+       coexist in "02 — Logs"; only 8015637140950916 is live). Every find here counts ALL
        exact-name matches and prints a [WARN] naming the ambiguity and every matching id
        when count > 1. It still adopts the first (never creates a duplicate), but the
        operator must reconcile before flipping any id.
