@@ -68,7 +68,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 # Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
 # it explicitly — the test_standup_tools.py import pattern).
 from _rest_retry import request_with_retry  # noqa: E402
-from _run_marker import DASHBOARD_LABEL, run_marker  # noqa: E402
 
 from shared import keychain, state_io  # noqa: E402
 
@@ -86,6 +85,10 @@ BASE = "https://api.smartsheet.com/2.0"
 # `input="y\n"*8` feed would have silently confirmed a future destructive
 # prompt ("delete conflicting sheet? [y/N]" being the feared class).
 NONINTERACTIVE_ENV = "STANDUP_NONINTERACTIVE"
+
+# The one launchd job the daemon-down guards EXEMPT (read-only dashboard; its
+# ACT verbs are fenced by the stand-up marker — see DAEMON_DOWN_EXEMPT below).
+DASHBOARD_LABEL = "org.solutionsmith.its.dashboard"
 
 # Run-state file (--resume bookkeeping + per-stage run forensics). Lives INSIDE
 # the prewipe dump dir — a run is 1:1 with a dump, so it rides the same
@@ -686,13 +689,40 @@ def _loaded_its_labels() -> list[str]:
                   if "org.solutionsmith.its." in line)
 
 
+# Same exemption as wipe_tenant.DAEMON_DOWN_EXEMPT: the read-only dashboard
+# stays up (no background tenant writes; ACT verbs fenced by the stand-up
+# marker below — operator_dashboard/auth.py, PR #674; `finish` restarts it
+# LAST so it re-imports the merged sheet_ids).
+DAEMON_DOWN_EXEMPT = frozenset({DASHBOARD_LABEL})
+
+# Written at LIVE-run start (refreshed on every resume — the fence max-age
+# window restarts), cleared ONLY on full completion so an aborted run stays
+# fenced across the fix->resume gap. operator_dashboard/auth.py reads it.
+STANDUP_MARKER_PATH = pathlib.Path.home() / "its" / "state" / "standup_in_progress.json"
+
+
+def _write_standup_marker() -> None:
+    state_io.atomic_write_json(STANDUP_MARKER_PATH, {
+        "started_at_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "tool": "standup",
+    })
+    print(f"[info] stand-up marker set ({STANDUP_MARKER_PATH}) — dashboard ACT "
+          "verbs fenced until this run completes.")
+
+
+def _clear_standup_marker() -> None:
+    STANDUP_MARKER_PATH.unlink(missing_ok=True)
+    print("[info] stand-up marker cleared — dashboard ACT verbs unfenced.")
+
+
 def _require_daemons_down() -> bool:
-    # The operator dashboard is EXEMPT: read-only panels + no background tenant
-    # writes, so it may stay observable over Tailscale mid-run. Its 5 PIN-gated
-    # ACT verbs are fenced by the standup-in-progress marker (_run_marker;
-    # dashboard side its#677) — and `finish` restarts it LAST so it re-imports
-    # the merged sheet_ids.
-    loaded = [label for label in _loaded_its_labels() if label != DASHBOARD_LABEL]
+    loaded = _loaded_its_labels()
+    exempt_loaded = [d for d in loaded if d in DAEMON_DOWN_EXEMPT]
+    if exempt_loaded:
+        print(f"[info] exempt_daemons_loaded: {', '.join(exempt_loaded)} — the "
+              "read-only dashboard may stay up (ACT verbs are fenced by the "
+              "stand-up marker).")
+    loaded = [d for d in loaded if d not in DAEMON_DOWN_EXEMPT]
     if loaded:
         print(f"[abort] daemons_loaded: {len(loaded)} org.solutionsmith.its.* job(s) "
               "still loaded — the stand-up rewrites shared/sheet_ids.py on the live "
@@ -1209,6 +1239,7 @@ def main() -> int:
         print("[skip] Operator declined; nothing run.")
         return 0
 
+    _write_standup_marker()
     run_id = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     log_dir = dump_dir if dump_dir is not None else DUMP_ROOT
     _run_log_path = log_dir / (f"standup_{run_id}.log" if dump_dir is not None
@@ -1231,40 +1262,44 @@ def main() -> int:
     }
     _write_state(state, dump_dir)
 
-    # The whole mutating stretch runs under the standup-in-progress marker so
-    # the dashboard's ACT fence (its#677) covers half-flipped-constants windows.
-    with run_marker("standup", run_id):
-        for name, fn in stages[start:]:
-            _current_stage = name
-            state["current_stage"] = name
-            state["stages"][name] = {
-                "started_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds")}
-            _write_state(state, dump_dir)
-            _emit(f"\n=== STAGE {name} ===")
-            try:
-                fn()
-            except KeyboardInterrupt:
-                state["status"] = "failed"
-                _write_state(state, dump_dir)
-                _emit(f"\n[abort] interrupted during stage {name!r}. Every builder is "
-                      f"idempotent — resume: python3 {MIGRATIONS}/standup.py --resume "
-                      f"(or --start-at {name})")
-                return 1
-            except Exception as exc:  # noqa: BLE001 — ANY stage failure gets the resume hint
-                state["status"] = "failed"
-                _write_state(state, dump_dir)
-                label = type(exc).__name__ if not isinstance(exc, StageFailedError) else "stage"
-                _emit(f"\n[abort] stage {name!r} failed ({label}): {exc}\n"
-                      f"Fix, then resume: python3 {MIGRATIONS}/standup.py --resume "
-                      f"(or --start-at {name})")
-                return 1
-            state["completed"].append(name)
-            state["stages"][name]["finished_utc"] = dt.datetime.now(
-                dt.UTC).isoformat(timespec="seconds")
-            _write_state(state, dump_dir)
-        state["status"] = "complete"
-        state["current_stage"] = None
+    # The whole mutating stretch runs under the stand-up ACT-fence marker
+    # (PR #674): written/refreshed here, cleared ONLY on full completion below,
+    # so the dashboard's fenced window covers the fix->resume gap too.
+    _write_standup_marker()
+    for name, fn in stages[start:]:
+        _current_stage = name
+        state["current_stage"] = name
+        state["stages"][name] = {
+            "started_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds")}
         _write_state(state, dump_dir)
+        _emit(f"\n=== STAGE {name} ===")
+        try:
+            fn()
+        except KeyboardInterrupt:
+            state["status"] = "failed"
+            _write_state(state, dump_dir)
+            _emit(f"\n[abort] interrupted during stage {name!r}. Every builder is "
+                  f"idempotent — resume: python3 {MIGRATIONS}/standup.py --resume "
+                  f"(or --start-at {name})")
+            return 1
+        except Exception as exc:  # noqa: BLE001 — ANY stage failure gets the resume hint
+            state["status"] = "failed"
+            _write_state(state, dump_dir)
+            label = type(exc).__name__ if not isinstance(exc, StageFailedError) else "stage"
+            _emit(f"\n[abort] stage {name!r} failed ({label}): {exc}\n"
+                  f"Fix, then resume: python3 {MIGRATIONS}/standup.py --resume "
+                  f"(or --start-at {name})")
+            return 1
+        state["completed"].append(name)
+        state["stages"][name]["finished_utc"] = dt.datetime.now(
+            dt.UTC).isoformat(timespec="seconds")
+        _write_state(state, dump_dir)
+    state["status"] = "complete"
+    state["current_stage"] = None
+    _write_state(state, dump_dir)
+    # Marker clears ONLY here (full completion) — an aborted run above returns
+    # early and stays fenced across the fix->resume gap (PR #674 lifecycle).
+    _clear_standup_marker()
     print(
         "\n[ok] Stand-up complete. Epilogue:\n"
         "  1. git diff — review the regenerated ID surfaces (sheet_ids.py, "

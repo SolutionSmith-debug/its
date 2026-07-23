@@ -71,7 +71,6 @@ import requests  # type: ignore[import-untyped]  # noqa: E402
 # Family-lib sibling (this dir is sys.path[0] when run as a script; tests insert
 # it explicitly — the test_standup_tools.py import pattern).
 from _rest_retry import is_permanent_read_failure, request_with_retry  # noqa: E402
-from _run_marker import DASHBOARD_LABEL, run_marker  # noqa: E402
 
 from shared import box_client, keychain  # noqa: E402
 
@@ -107,6 +106,18 @@ class WipeRefusedError(RuntimeError):
     """A guard refused the wipe. Nothing (further) was deleted."""
 
 
+# The read-only observability tier stays up through a wipe/stand-up window:
+# the dashboard makes no background tenant writes, its ACT verbs are fenced by
+# the stand-up marker below (operator_dashboard/auth.py reads it), and the
+# stand-up epilogue restarts it onto the final constants. Everything else —
+# every daemon that WRITES on a cycle — must still be down.
+DAEMON_DOWN_EXEMPT = frozenset({"org.solutionsmith.its.dashboard"})
+
+# Set at --commit (before the dump), cleared by a SUCCESSFUL standup.py run —
+# the wipe->rebuild window stays fenced end to end. Manual unfence: delete it.
+STANDUP_MARKER_PATH = pathlib.Path.home() / "its" / "state" / "standup_in_progress.json"
+
+
 # ---- guards ---------------------------------------------------------------
 
 
@@ -121,11 +132,12 @@ def _loaded_its_daemons() -> list[str]:
 
 
 def require_daemons_down() -> None:
-    # The operator dashboard is EXEMPT: read-only panels + no background tenant
-    # writes, so it may stay observable over Tailscale mid-wipe. Its 5 PIN-gated
-    # ACT verbs are fenced by the standup-in-progress marker (_run_marker;
-    # dashboard side its#677) — a fresh marker 503s them.
-    loaded = [label for label in _loaded_its_daemons() if label != DASHBOARD_LABEL]
+    exempt_loaded = [d for d in _loaded_its_daemons() if d in DAEMON_DOWN_EXEMPT]
+    if exempt_loaded:
+        print(f"[info] exempt_daemons_loaded: {', '.join(exempt_loaded)} — the "
+              "read-only dashboard may stay up (ACT verbs are fenced by the "
+              "stand-up marker).")
+    loaded = [d for d in _loaded_its_daemons() if d not in DAEMON_DOWN_EXEMPT]
     if loaded:
         print(f"[abort] daemons_loaded: {len(loaded)} org.solutionsmith.its.* job(s) are "
               "still loaded — a live fleet would error-storm against deleted sheets and "
@@ -404,11 +416,11 @@ def main() -> int:
         except WipeRefusedError:
             return 1
     else:
-        loaded = _loaded_its_daemons()
+        loaded = [d for d in _loaded_its_daemons() if d not in DAEMON_DOWN_EXEMPT]
         if loaded:
             print(f"[WARN] {len(loaded)} org.solutionsmith.its.* daemon(s) loaded — "
                   "fine for a read-only plan, but --commit will refuse until they "
-                  "are unloaded.\n")
+                  "are unloaded (the read-only dashboard is exempt).\n")
 
     live_ws = _list_workspaces()
     ws_deletable, ws_mismatch, ws_unlisted = match_allowlist(
@@ -451,16 +463,19 @@ def main() -> int:
         print("[abort] confirmation phrase not matched; nothing deleted.")
         return 1
 
+    # Fence the dashboard's ACT verbs for the whole wipe->rebuild window
+    # (operator_dashboard/auth.py refuses actuation while this is fresh; a
+    # successful standup.py run clears it).
+    from shared import state_io
+    state_io.atomic_write_json(STANDUP_MARKER_PATH, {
+        "started_at_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "tool": "wipe_tenant",
+    })
+    print(f"[info] stand-up marker set ({STANDUP_MARKER_PATH}) — dashboard ACT "
+          "verbs fenced until the stand-up completes.")
+
     # ---- dump (guard 4: a dump we cannot capture/persist aborts the wipe) ----
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-    with run_marker("wipe_tenant", stamp):
-        return _dump_and_delete(stamp, ws_deletable, box_deletable)
-
-
-def _dump_and_delete(stamp: str, ws_deletable: list[dict[str, Any]],
-                     box_deletable: list[dict[str, Any]]) -> int:
-    """The mutating tail of main() — runs under the standup-in-progress marker
-    (_run_marker) so the dashboard's ACT fence covers the whole window."""
     dump_dir = DUMP_ROOT / f"prewipe_{stamp}"
     dump_dir.mkdir(parents=True, exist_ok=False)
     print(f"\n[dump] -> {dump_dir}")

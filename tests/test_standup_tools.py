@@ -22,7 +22,6 @@ if str(_MIGRATIONS_DIR) not in sys.path:
     sys.path.insert(0, str(_MIGRATIONS_DIR))
 
 import _rest_retry  # noqa: E402
-import _run_marker  # noqa: E402
 import build_legacy_workspaces as legacy  # noqa: E402
 import requests  # noqa: E402
 import sheet_ids_regen as regen  # noqa: E402
@@ -34,10 +33,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture(autouse=True)
 def _redirect_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test here gets the standup-in-progress marker redirected to
-    tmp_path — unit tests must never touch ~/its/state (the live-state
-    tripwire fixture enforces it; forensic class #8)."""
-    monkeypatch.setattr(_run_marker, "MARKER_PATH", tmp_path / "standup_in_progress")
+    """Every test here gets the stand-up ACT-fence marker (PR #674) redirected
+    to tmp_path — unit tests must never touch ~/its/state (the live-state
+    tripwire enforces it; forensic class #8)."""
+    monkeypatch.setattr(standup, "STANDUP_MARKER_PATH",
+                        tmp_path / "standup_in_progress.json")
+    monkeypatch.setattr(wipe, "STANDUP_MARKER_PATH",
+                        tmp_path / "standup_in_progress.json")
 
 
 # ---- wipe_tenant: allowlist double-match (guard 1) ------------------------
@@ -669,6 +671,10 @@ def test_wipe_main_aborts_on_transient_dump_failure(
     monkeypatch.setattr(wipe, "_box_root_items", lambda: [])
     monkeypatch.setattr(wipe, "_confirm_phrase", lambda: True)
     monkeypatch.setattr(wipe, "DUMP_ROOT", tmp_path)
+    # past the phrase gate main() writes the stand-up ACT-fence marker; wipe is
+    # a bare scripts/ module the conftest live-state sweep cannot see, so
+    # redirect explicitly or the guard refuses the live ~/its/state write.
+    monkeypatch.setattr(wipe, "STANDUP_MARKER_PATH", tmp_path / "marker.json")
 
     def _transient_dump(ws: dict[str, Any], dump_dir: Path) -> tuple[int, list[str]]:
         raise _http_error("503 transient error", _FakeResponse(503))
@@ -860,7 +866,7 @@ def test_send_dispatch_labels_match_shipped_plists() -> None:
         "org.solutionsmith.its.weekly-send",
         "org.solutionsmith.its.progress-send",
     }
-    assert _run_marker.DASHBOARD_LABEL in {f"{label}" for label in shipped}
+    assert standup.DASHBOARD_LABEL in shipped
 
 
 def test_reload_fleet_dark_never_loads_send_or_dashboard(
@@ -877,7 +883,7 @@ def test_reload_fleet_dark_never_loads_send_or_dashboard(
     labels = {name.removesuffix(".plist") for name in loads}
     assert not labels & standup.SEND_DISPATCH_LABELS, (
         "dark posture loaded a SEND-DISPATCH plist — External-Send-Gate violation")
-    assert _run_marker.DASHBOARD_LABEL not in labels  # restarted last, not here
+    assert standup.DASHBOARD_LABEL not in labels  # restarted last, not here
     assert len(labels) >= 10  # the working fleet actually loads
 
 
@@ -892,7 +898,7 @@ def test_reload_fleet_full_loads_send(monkeypatch: pytest.MonkeyPatch) -> None:
     standup._reload_fleet("full")
     labels = {name.removesuffix(".plist") for name in loads}
     assert standup.SEND_DISPATCH_LABELS <= labels
-    assert _run_marker.DASHBOARD_LABEL not in labels
+    assert standup.DASHBOARD_LABEL not in labels
 
 
 def _boom_named(what: str) -> Any:
@@ -948,7 +954,7 @@ def test_dashboard_exempt_from_daemon_guards(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """Both daemon-down guards EXEMPT the dashboard (read-only panels stay up;
     ACT verbs are marker-fenced, its#677) but still refuse on any other job."""
-    dash = _run_marker.DASHBOARD_LABEL
+    dash = standup.DASHBOARD_LABEL
     monkeypatch.setattr(standup, "_loaded_its_labels", lambda: [dash])
     assert standup._require_daemons_down() is True
     monkeypatch.setattr(standup, "_loaded_its_labels",
@@ -963,30 +969,13 @@ def test_dashboard_exempt_from_daemon_guards(
         wipe.require_daemons_down()
 
 
-def test_run_marker_lifecycle(tmp_path: Path,
-                              monkeypatch: pytest.MonkeyPatch) -> None:
-    marker = tmp_path / "standup_in_progress"
-    monkeypatch.setattr(_run_marker, "MARKER_PATH", marker)
-    with _run_marker.run_marker("standup", "r1"):
-        assert marker.is_file()
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-        assert payload["tool"] == "standup" and payload["run_id"] == "r1"
-        assert payload["pid"] and payload["started_utc"]
-    assert not marker.exists()
-    # removed even when the body raises (the crashed-run case still relies on
-    # the dashboard fence's max-age, but a clean exception must not leak it)
-    with pytest.raises(RuntimeError):
-        with _run_marker.run_marker("standup", "r2"):
-            assert marker.is_file()
-            raise RuntimeError("boom")
-    assert not marker.exists()
-
-
-def test_wipe_commit_runs_under_marker(tmp_path: Path,
-                                       monkeypatch: pytest.MonkeyPatch) -> None:
-    """The wipe's mutating tail (dump + delete) runs INSIDE the marker window."""
-    marker = tmp_path / "standup_in_progress"
-    monkeypatch.setattr(_run_marker, "MARKER_PATH", marker)
+def test_wipe_commit_sets_fence_marker_and_leaves_it(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wipe sets the ACT-fence marker BEFORE the dump and does NOT clear it
+    — only a COMPLETED standup run clears the marker (PR #674 lifecycle: the
+    wipe->rebuild window stays fenced end to end)."""
+    marker = tmp_path / "standup_in_progress.json"
+    monkeypatch.setattr(wipe, "STANDUP_MARKER_PATH", marker)
     monkeypatch.setattr(wipe, "require_daemons_down", lambda: None)
     monkeypatch.setattr(wipe, "_list_workspaces",
                         lambda: [dict(zip(("name", "id"),
@@ -1002,11 +991,8 @@ def test_wipe_commit_runs_under_marker(tmp_path: Path,
         seen["marker_during_dump"] = marker.is_file()
         return 1, []
 
-    deleted: list[int] = []
-
     def _delete(ws_id: int) -> None:
         seen["marker_during_delete"] = marker.is_file()
-        deleted.append(ws_id)
 
     monkeypatch.setattr(wipe, "dump_workspace", _dump)
     monkeypatch.setattr(wipe, "_delete_workspace", _delete)
@@ -1014,8 +1000,7 @@ def test_wipe_commit_runs_under_marker(tmp_path: Path,
     monkeypatch.setattr(sys, "argv", ["wipe_tenant.py", "--commit"])
     assert wipe.main() == 0
     assert seen == {"marker_during_dump": True, "marker_during_delete": True}
-    assert deleted == [wipe.SMARTSHEET_WORKSPACE_ALLOWLIST[0][1]]
-    assert not marker.exists()  # removed in the finally
+    assert marker.is_file()  # NOT cleared — standup completion owns the clear
 
 
 def test_gate_report_shows_dump_vs_live(

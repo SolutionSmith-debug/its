@@ -111,16 +111,18 @@ is at minimum a config decision and every send-adjacent gate is a FIXED
 high-capability class — read the Description (an in-cell "do NOT set true
 until …" is doctrine per §44), then escalate the list to Seth, who flips.
 
-### Symptom 7 — a wipe or stand-up crashed and the dashboard ACT buttons return 503
+### Symptom 7 — the dashboard ACT buttons refuse with "stand-up in progress"
 
-**What you see:** dashboard ACT verbs (config edit, error resolve, …) return
-"stand-up in progress" while no run is actually running.
+**What you see:** dashboard ACT verbs (config edit, error resolve, …) refuse
+while the fence marker is fresh. This is CORRECT during a wipe→rebuild window —
+the marker is set by `wipe_tenant --commit`, refreshed by every `standup.py`
+run, and cleared ONLY when a stand-up run COMPLETES (an aborted run stays
+fenced across the fix→resume gap, on purpose — PR #674).
 
-**Tier-2 repair:** the fence reads `~/its/state/standup_in_progress` and
-fails OPEN after its max-age, so it clears itself within 24h. To clear it now:
-`rm ~/its/state/standup_in_progress` — this file is a display/fence marker,
-not data. (If the dashboard-side fence, its#677, has not landed yet, this
-symptom cannot occur.)
+**Tier-2 repair:** if a run genuinely crashed and no rebuild is in progress,
+the fence fails OPEN by itself after its max-age (6h). To unfence now:
+`rm ~/its/state/standup_in_progress.json` — the file is a fence marker, not
+data. Never delete it while a wipe or stand-up is actually running.
 
 ## Boundaries (the both-rule, §44)
 
@@ -133,9 +135,9 @@ anything touching the landing PR, git conflicts, or Keychain.
 ## Notes for the Developer-Operator
 
 - The wipe/stand-up daemon-down guards EXEMPT `org.solutionsmith.its.dashboard`
-  so the read-only panels stay observable over Tailscale mid-run. Until the
-  dashboard-side ACT fence (its#677) lands, the safer manual posture is to
-  unload the dashboard too for unattended stretches.
+  so the read-only panels stay observable over Tailscale mid-run; its ACT verbs
+  are fenced by the stand-up marker (`operator_dashboard/auth.py`, PR #674 —
+  fail-open past 6h so a crashed run never bricks the dashboard).
 - `finish --posture dark` (default) excludes ALL send-dispatch plists
   (po-send, rfq-send, subcontract-send, weekly-send, progress-send). Loading
   them is `--posture full` + a typed confirmation, or per-plist by hand — a
