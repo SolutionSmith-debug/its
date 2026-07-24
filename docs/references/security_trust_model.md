@@ -414,7 +414,7 @@ before it can chain into a traceback.
 
 ### Keychain secret names (names only — never values)
 
-<!-- src: operator_dashboard/act/registry.py:371-388 | verified 2026-07-14 -->
+<!-- src: operator_dashboard/act/registry.py:540-585 | verified 2026-07-24 -->
 The rotatable-credential registry is a **fixed list** — the dashboard refuses to
 rotate anything not on it. There is no free-form secret store.
 
@@ -425,10 +425,23 @@ rotate anything not on it. There is no free-form secret store.
 | `ITS_SENTRY_DSN` | Sentry DSN | keychain (paste) |
 | `ITS_BOX_CLIENT_ID` | Box OAuth client id | keychain (paste) |
 | `ITS_BOX_CLIENT_SECRET` | Box OAuth client secret | keychain (paste) |
+| `ITS_MS_TENANT_ID` | Microsoft 365 tenant id | keychain (paste) |
+| `ITS_MS_CLIENT_ID` | Microsoft Graph app (client) id | keychain (paste) |
+| `ITS_MS_CLIENT_SECRET` | Microsoft Graph client secret — **expires** | keychain (paste) |
 | `ITS_BOX_REFRESH_TOKEN` | Box OAuth refresh token | **box_guided** (never pasted) |
 | `PORTAL_PO_API_TOKEN` (mirror `ITS_PORTAL_PO_TOKEN`) | Worker PO bearer | worker + mirror |
+| `PORTAL_ESTIMATE_API_TOKEN` (mirror `ITS_PORTAL_ESTIMATE_TOKEN`) | Worker estimate bearer | worker + mirror |
+| `PORTAL_RFQ_API_TOKEN` (mirror `ITS_PORTAL_RFQ_TOKEN`) | Worker RFQ bearer | worker + mirror |
 | `PORTAL_CONFIG_API_TOKEN` (mirror `ITS_PORTAL_CONFIG_TOKEN`) | Worker config bearer | worker + mirror |
 | `PORTAL_ADMIN_API_TOKEN` (mirror `ITS_PORTAL_ADMIN_TOKEN`) | Worker admin bearer | worker + mirror |
+
+The three Microsoft Graph credentials are on the list because Graph is the only
+transport for every external send: the client secret **expires** on an Entra-ID-set
+lifetime, so an expiry the Successor-Operator cannot repair from the console is a
+total send outage with no path back except the Developer-Operator. Record the expiry
+date at seed time and calendar the rotation. All three re-seed together — a
+re-registered app changes tenant, client id, and secret at once, and re-seeding two
+of the three leaves Graph fail-closed.
 
 <!-- src: operator_dashboard/act/pin_change.py:1-8 (in-dashboard, current-PIN-gated PIN change) | verified 2026-07-15 -->
 `ITS_ANTHROPIC_KEY` (the sole LLM key) is read at runtime but is **not** rotated through
