@@ -55,14 +55,16 @@ to the production custom domain.
 
 ### B. Send FROM addresses (mailbox/identity rows)
 
-> **Phase-1 single-mailbox model (operator decision 2026-07-23):** all five send lanes send from
-> `its@evergreenrenewables.com`; per-lane shared mailboxes are the later `safety@` / `procurement@`
-> step. The two rows built after this doc was originally authored (`subcontract_send` / `rfq_send`)
-> are included below to match `production_repoint_map.json`.
+> **Phase-1 single-mailbox model (operator decision 2026-07-23, AMENDED 2026-07-24):** four of the
+> five send lanes send from `its@evergreenrenewables.com`; the fifth (`weekly_send`, safety) sends
+> from `safety@evergreenrenewables.com`, an **SMTP alias on the `its@` mailbox** — one mailbox, two
+> addresses, so the single-mailbox model holds. Per-lane shared **mailboxes** (`progress@` /
+> `procurement@`) are the later step. The two rows built after this doc was originally authored
+> (`subcontract_send` / `rfq_send`) are included below to match `production_repoint_map.json`.
 
 | Setting | Workstream | from (mirror) | to (production) | In VC-03? |
 |---|---|---|---|---|
-| `safety_reports.weekly_send.from_mailbox` | `safety_reports` | `safety@evergreenmirror.com` | `its@evergreenrenewables.com` | ✅ (scanned) |
+| `safety_reports.weekly_send.from_mailbox` | `safety_reports` | `safety@evergreenmirror.com` | `safety@evergreenrenewables.com` (alias on the `its@` mailbox — 2026-07-24 amendment) | ✅ (scanned) |
 | `progress_reports.progress_send.from_mailbox` | `progress_reports` | `progress@evergreenmirror.com` | `its@evergreenrenewables.com` | ✅ (scanned) |
 | `po_materials.po_send.from_mailbox` | `po_materials` | `procurement@evergreenmirror.com` | `its@evergreenrenewables.com` | ✅ **(newly enrolled this PR)** |
 | `subcontracts.subcontract_send.from_mailbox` | `subcontracts` | `procurement@evergreenmirror.com` | `its@evergreenrenewables.com` | ✅ (scanned — added post-authorship, SC-S4 2026-07-15) |

@@ -6,7 +6,7 @@
     "EXCLUDED — safety_reports.intake.mailbox (changeset section B row 4): the email-intake lane is LEGACY/dormant (portal PULL superseded it 2026-06-05) and the row is NOT VC-03-enrolled; repoint it only if email intake is ever resurrected.",
     "EXCLUDED — every section-E send-scope gate (*_enabled / *.polling_enabled / scheduled_send_local): gate flips stay CL-13 manual + Seth (FIXED External-Send-Gate class). production_repoint.py structurally REFUSES to load a map containing any *_enabled setting.",
     "ADDED beyond the changeset's section-B table — subcontracts.subcontract_send.from_mailbox and po_materials.rfq_send.from_mailbox: both built after the changeset was authored (SC-S4 2026-07-15, ADR-0004 R3) and both enrolled in verify_cutover CONFIG_ROWS with sandbox_scan=True; mirror values verified against seed_subcontracts_send_config.py / seed_rfq_send_config.py.",
-    "SECTION B — Phase-1 single-mailbox model (operator decision 2026-07-23): ALL five from_mailbox lanes target its@evergreenrenewables.com; per-lane shared mailboxes are the later safety@/procurement@ step. (system.operator_email already targeted its@.)"
+    "SECTION B — Phase-1 single-mailbox model (operator decision 2026-07-23, AMENDED 2026-07-24): FOUR of the five from_mailbox lanes target its@evergreenrenewables.com. The fifth — safety_reports.weekly_send.from_mailbox — targets safety@evergreenrenewables.com, an SMTP ALIAS on that same its@ mailbox, so the single-mailbox model still holds (one mailbox, two addresses). The procurement@/progress@ per-lane shared MAILBOXES remain the later step. (system.operator_email already targeted its@.)"
   ],
   "rows": [
     {
@@ -37,9 +37,9 @@
       "setting": "safety_reports.weekly_send.from_mailbox",
       "workstream": "safety_reports",
       "from_mirror": "safety@evergreenmirror.com",
-      "to_production": "its@evergreenrenewables.com",
+      "to_production": "safety@evergreenrenewables.com",
       "category": "B",
-      "notes": "Graph send-from mailbox for the weekly safety-report email (weekly_send). Phase-1 single-mailbox model (operator decision 2026-07-23); the shared safety@ mailbox is the later step. VC-03 sandbox-scanned."
+      "notes": "Graph send-from mailbox for the weekly safety-report email (weekly_send). AMENDED 2026-07-24 (operator decision): this lane alone sends from safety@, which is an SMTP ALIAS on the its@ mailbox — NOT a second mailbox. The D3 single-production-mailbox model is intact: the RBAC scope ITS-its-mailbox-only filters on PrimarySmtpAddress -eq its@, and an alias does not change the primary, so the resolved mailbox object still matches. The other four from_mailbox lanes remain its@. VC-03 sandbox-scanned (SANDBOX_DOMAIN_MARKER='evergreenmirror' — this value passes)."
     },
     {
       "setting": "progress_reports.progress_send.from_mailbox",

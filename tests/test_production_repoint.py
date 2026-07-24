@@ -150,12 +150,14 @@ def test_section_a_is_exactly_the_worker_base_url_trio() -> None:
 
 def test_section_b_mailbox_rows_match_changeset_plus_vc03_enrollment() -> None:
     specs = pr.load_map()
-    # Phase-1 single-mailbox model (operator decision 2026-07-23): ALL five
-    # from_mailbox lanes send from its@; per-lane shared mailboxes
-    # (safety@/progress@/procurement@) are the later step.
+    # Phase-1 single-mailbox model (operator decision 2026-07-23, AMENDED
+    # 2026-07-24): four of the five from_mailbox lanes send from its@; the
+    # safety lane alone sends from safety@, an SMTP ALIAS on the its@ mailbox
+    # (not a second mailbox — the D3 single-mailbox model holds). Per-lane
+    # shared MAILBOXES (progress@/procurement@) remain the later step.
     expected = {
         ("safety_reports.weekly_send.from_mailbox", "safety_reports",
-         f"its@{PROD_DOMAIN}"),
+         f"safety@{PROD_DOMAIN}"),
         ("progress_reports.progress_send.from_mailbox", "progress_reports",
          f"its@{PROD_DOMAIN}"),
         ("po_materials.po_send.from_mailbox", "po_materials",
