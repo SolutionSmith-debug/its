@@ -439,6 +439,42 @@ Review-Queue period-split enqueue, NEVER delete), not a Check-O rotation policy.
 **Trigger:** Phase 1.5 hardening pass (bucket with the other phase-1.5 items), or the
 first ledger to cross ~15k rows. **Tag:** `po_materials`, `subcontracts`, `phase-1.5`.
 
+## M365 client-secret expiry is undetected until it takes the whole send path down [OPEN 2026-07-24, high]
+
+The Entra-ID app client secret behind `ITS_MS_CLIENT_SECRET` **expires** on a tenant-set
+lifetime, and `shared/graph_client.py` is the sole transport for *every* external send —
+safety WSR, progress WPR, PO, RFQ, subcontract. Nothing in ITS knows the expiry date:
+`_get_token()` (`graph_client.py:191-193`) reads the three credentials from Keychain and
+only discovers the expiry when the MSAL client-credentials grant starts failing — i.e. at
+the moment of the first blocked send, across every send lane at once. PR #705 made all
+three M365 credentials dashboard-rotatable, so a Successor-Operator now has a **repair**
+path (Op Stds v21 §44 Tier-2); what is still missing is the **detection** path. The
+operator learns about the expiry from a failed send, never before it.
+
+Two gaps, both open:
+
+- **No advance warning.** No watchdog check, no `ITS_Config` row recording the expiry
+  date, no lead-time alert. The registry note added in #705 tells the operator to "record
+  the expiry at seed time and calendar the rotation" — that is **narrated, not enforced**
+  (Op Stds v21 §52), and it depends on a human remembering across a 6–24 month gap.
+- **No distinguishable failure signal.** A Graph auth failure at expiry surfaces as
+  whatever CRITICAL the calling send daemon happens to raise, so a Tier-2 operator cannot
+  map symptom → the §43 repair without escalating; nothing names "the M365 client secret
+  expired" or "expires in N days".
+
+Candidate shapes, **not decided** — the documentation-and-alerting design is the open
+question, not just the code: a `system.ms_client_secret_expires_at` ITS_Config row seeded
+when the production Entra app is registered plus a watchdog check warning at T-30/T-14/T-7;
+and/or a distinct `graph_auth_expired` error_code on the MSAL failure so the symptom is
+greppable and runbook-linkable; plus the §43 runbook entry that pairs the symptom with the
+now-existing console repair. The detection half is the load-bearing one — the repair half
+already shipped.
+
+**Trigger:** the cutover config-seed pass, or the Phase 1.5 hardening pass, whichever comes
+first — the expiry date can only be captured when the production Entra app is registered, so
+recording it is naturally a cutover step and is cheap to do then and expensive to reconstruct
+later. **Tag:** `operator_dashboard`, `security`, `phase-1.5`.
+
 ## PO attachments (Feature B) — conscious deferrals [OPEN 2026-07-13]
 
 From the Feature-B build (PO document attachments — the §34 doc-attachment pool → Mac screen →
