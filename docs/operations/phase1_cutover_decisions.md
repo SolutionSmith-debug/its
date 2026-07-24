@@ -79,6 +79,39 @@ Access Policy grants the app full mail read/write over the entire mailbox it
 covers, which is unacceptable blast radius on a human's mailbox. Checklist:
 CL-07 (reworded), CL-40.
 
+#### D3 amendment (2026-07-24) — safety@ alias ships in Phase 1
+
+The weekly safety-report lane (`safety_reports.weekly_send.from_mailbox`)
+repoints to `safety@evergreenrenewables.com` instead of `its@`. This does NOT
+overturn D3 — there is still exactly one production mailbox:
+
+- **`safety@` is an SMTP alias (proxy address) on the `its@` mailbox**, added
+  2026-07-24 (`Set-Mailbox -EmailAddresses @{add="smtp:safety@…"}` — additive,
+  lowercase `smtp:`, primary untouched). Not a second mailbox; a standalone
+  `safety@` mailbox remains the deferred shared-mailbox step.
+- **Graph authorization is unaffected.** The RBAC management scope
+  `ITS-its-mailbox-only` filters on
+  `PrimarySmtpAddress -eq 'its@evergreenrenewables.com'`; an alias does not
+  change the primary, so the resolved mailbox object still matches.
+- **Reply routing survives regardless of the From header.** Confirmed
+  empirically 2026-07-24 — `Get-TransportRule ITS-safety-client-replies-route`
+  reports `SentTo : {its@evergreenrenewables.com, its@evergreenrenewables.com}`
+  (Exchange resolved the alias to the mailbox's primary at rule-creation time).
+- **`SendFromAliasEnabled` is OFF** and is a SEPARATE, still-open cosmetic
+  decision: with it off, a successful alias send still stamps the From header
+  with the primary (`its@`), so the recipient sees `its@`, not `safety@`.
+  Turning it on is what makes the client actually see `safety@`.
+- **Known operator-side follow-up (not a code change):** the
+  `ITS-safety-client-replies-route` transport rule currently fires on *all*
+  external mail to the `its@` mailbox, so once the repoint sweep runs, replies
+  to PO/RFQ/subcontract/progress mail (all sent from `its@`) will also BCC the
+  four safety approvers. Seth is tightening the rule in PowerShell.
+- **Open resolution risk (see the changeset / `graph_client` note):** ITS puts
+  the from-mailbox in the Graph URL path (`/users/{from_mailbox}/sendMail`);
+  proxy-alias resolution on `/users/{id}` is undocumented. The smoke test
+  (`scripts/smoke_test_graph.py --mailbox safety@evergreenrenewables.com`)
+  settles it empirically before go-live; fallbacks recorded there.
+
 ### D4 — Sandbox left EMPTY after the dev wipe
 
 The `evergreenmirror.com` sandbox tenants stay empty after the development
