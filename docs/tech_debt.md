@@ -2437,3 +2437,52 @@ bigger, more dangerous surface than the reviewed PR's scope). **Trigger:** befor
 "already_present" approver's actual access level against the manifest's expected level — do not assume
 presence implies correct access. **Tag:** `migrations`, `cutover`, `CL-11`, `shares`, `F22`, `seth-owned`.
 
+## Six merged-and-clean worktrees await operator-run removal (PR #693 document-polish session + earlier) [OPEN 2026-07-23]
+
+`git worktree list` currently shows six task worktrees whose branch is already MERGED and whose working
+tree is clean — `~/its-pdf-polish` (`feat/pdf-polish`, PR #693, merged `1742a31`, this session) plus five
+Claude Code agent-managed worktrees under `~/its/.claude/worktrees/agent-*` left over from earlier sessions:
+`agent-a1270309…` (`feat/per-job-tracking-sheets`, PR #563), `agent-a77932f3…`
+(`fix/check-o-storm-mode-fallback`, PR #562), `agent-aba2b6d5…` (`feat/po-link-materials-catalog`, PR #505),
+`agent-ae5f7e6f…` (`feat/po-attachments-feature-b`, PR #564), `agent-af3d33cd…`
+(`feat/po-delivery-contacts-config`, PR #566) — all five confirmed `state=MERGED` via `gh pr list
+--state merged --head <branch>`. Per `docs/operations/worktree_discipline.md` and the git-guardrails
+convention (`git worktree remove --force`/`git clean -f`-class destructive ops are operator-only, not
+CC-run unprompted), removal is a manual cleanup step, same class as the already-tracked `~/its-standup`
+entry above. **Trigger:** next operator terminal session — for each: confirm `git status --short` is empty
+in the worktree, confirm the branch is `state=MERGED` (already done above for all six), then
+`git worktree remove ~/its-pdf-polish` / `git worktree remove ~/its/.claude/worktrees/agent-<id>` (add
+`--force` only if an untracked `.venv-wt`-style directory blocks the plain remove, as with `~/its-standup`),
+then `git worktree prune`. **Tag:** `worktree`, `operator-manual`, `cleanup`, `low-severity`.
+
+## `render_submission_pdf` is not byte-deterministic — pre-existing, deliberate, now explicitly documented (2026-07-23, PR #693)
+
+The document-polish session's byte-determinism adversarial-review lens verified PO/RFQ/subcontract-package/
+zip/quote-form renders are byte-identical across repeated in-process AND cross-process runs (different
+`PYTHONHASHSEED`s) — `render_submission_pdf` (the safety/progress form-PDF renderer in `form_pdf.py`) was
+NOT included in that determinism set and is not expected to be: it embeds a wall-clock "Filed at" style
+timestamp in the rendered output by design, so byte-identity across two renders of the same submission is
+not a meaningful property for it. This predates PR #693 and is not a regression the session introduced —
+it is recorded here because the adversarial-review pass surfaced it as worth naming explicitly rather than
+leaving it as an implicit assumption. **Trigger:** none — informational; revisit only if a future feature
+(e.g. a render-diff/dedup tool) needs safety/progress PDFs to be byte-deterministic, at which point the
+timestamp field would need to move out of the rendered bytes (e.g. into filename/metadata only).
+**Tag:** `form_pdf`, `determinism`, `informational`, `low-severity`.
+
+## `form_pdf._esc` does not escape quote characters — safe today only because no untrusted string reaches a Paragraph attribute-value slot (2026-07-23, PR #693 escaping red-team finding)
+
+The escaping red-team lens of PR #693's adversarial verify pass confirmed `_esc` (the HTML-escape helper
+feeding ReportLab `Paragraph` markup) correctly neutralizes `<`, `>`, and `&` across all five changed
+surfaces (positive+negative controls), but does not escape `"`/`'`. This is not exploitable today because
+every current call site interpolates escaped data only into Paragraph TEXT CONTENT, never into an
+attribute-value position (e.g. `color="..."` or `name="..."`) where an unescaped quote could break out of
+the attribute and inject markup. The residual risk is a future change that interpolates external/operator
+data into a `Paragraph` markup ATTRIBUTE rather than element content. **Discipline going forward:** never
+interpolate untrusted or operator-editable data into a ReportLab Paragraph markup attribute value (only
+into element content, which `_esc` already covers); if an attribute-position use case ever arises, extend
+`_esc` (or a dedicated attribute-escaper) to cover quotes before shipping it, and add a red-team test proving
+the injection is neutralized before merge (per the exec `CLAUDE.md` "adversarial review is
+definition-of-done on any trust-boundary surface" rule). **Trigger:** any future `form_pdf.py`/PO/RFQ/
+subcontract renderer change that interpolates data into a Paragraph markup attribute rather than content.
+**Tag:** `form_pdf`, `escaping`, `security`, `informational`, `low-severity`.
+
