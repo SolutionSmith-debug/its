@@ -545,11 +545,15 @@ _SECRETS: list[SecretEntry] = [
     SecretEntry("ITS_BOX_CLIENT_SECRET", "Box OAuth client secret", "keychain"),
     # The three Microsoft Graph credentials (`shared/graph_client.py:191-193`). The
     # client secret EXPIRES on an Entra-ID-set lifetime, and Graph is the only
-    # transport for every external send — so an expiry the operator cannot repair
-    # from here is a total send outage with no path back except Seth. That is a
-    # ship-and-leave hole, not a convenience gap, which is why all three are
-    # rotatable (tenant + client id ride along: a re-registered app changes all
-    # three together, and re-seeding two of three leaves Graph fail-closed).
+    # transport for every external send, so an unnoticed expiry takes every send
+    # lane down at once. Rotating them here is DEVELOPER-OPERATOR SELF-SERVICE
+    # under the §44 v21.x rider (ratified 2026-07-14): current-credential-gated
+    # self-rotation by the holder, saving a terminal round-trip. It does NOT make
+    # an expired Graph credential a Tier-2 repair — Class C is
+    # Developer-Operator-only, secrets/auth is a FIXED high-capability class, and
+    # a Successor-Operator who meets this still escalates. All three ride
+    # together: a re-registered app changes tenant, client id and secret at once,
+    # and re-seeding two of three leaves Graph fail-closed.
     # Static re-seedable values, so plain `keychain` — NOT `box_guided`, which
     # exists for the single-consumer token that rotates on every use.
     SecretEntry("ITS_MS_TENANT_ID", "Microsoft 365 tenant id", "keychain"),
