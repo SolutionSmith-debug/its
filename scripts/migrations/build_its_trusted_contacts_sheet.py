@@ -56,18 +56,20 @@ ROLE_OPTIONS = [
 
 STATUS_OPTIONS = ["ACTIVE", "DISABLED", "PENDING_VERIFICATION"]
 
+# Developer rationale (kept OUT of the column descriptions below, which are the
+# operator-facing UI prose and must stay ≤250 chars — Smartsheet errorCode 1041
+# 400s the whole sheet create over the limit): the Project/Workstream Scope columns
+# are TEXT_NUMBER, not native multi-PICKLIST, because the multi-PICKLIST SDK shape
+# is inconsistent and cross-sheet sync doesn't cover multi-select yet. A tech-debt
+# entry tracks the graduation to native multi-PICKLIST.
 PROJECT_SCOPE_DESCRIPTION = (
     "JSON list of project slugs the contact is authorized for. Wildcard "
-    '`["*"]` matches any project. Example: `["bradley_1", "huntley"]`. '
-    "TEXT_NUMBER (not native multi-PICKLIST) — multi-PICKLIST SDK shape is "
-    "inconsistent and cross-sheet sync doesn't cover multi-select yet. "
-    "Tech-debt entry tracks graduation."
+    '`["*"]` matches any project. Example: `["bradley_1", "huntley"]`.'
 )
 
 WORKSTREAM_SCOPE_DESCRIPTION = (
     "JSON list of workstream slugs the contact is authorized for. Wildcard "
-    '`["*"]` matches any workstream. Example: `["safety_reports"]`. '
-    "Same TEXT_NUMBER-vs-multi-PICKLIST rationale as Project Scope."
+    '`["*"]` matches any workstream. Example: `["safety_reports"]`.'
 )
 
 COLUMN_SCHEMA: list[dict[str, Any]] = [

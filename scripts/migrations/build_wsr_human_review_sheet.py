@@ -1,7 +1,7 @@
 """Build WSR_human_review — the Phase-5 weekly review/approve/send surface.
 
 Creates the central review sheet in the standalone "ITS –– Safety Portal" workspace's
-"Safety Portal" folder (FOLDER id 2261538947000196; amendment b). This is NOT the old
+"Safety Portal" folder (`sheet_ids.FOLDER_SAFETY_PORTAL`; amendment b). This is NOT the old
 WPR_Pending_Review (which lives in ITS — Human Review) — it supersedes it for the
 portal safety flow.
 
@@ -32,9 +32,9 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]
 
 import requests  # type: ignore[import-untyped]  # noqa: E402
 
-from shared import keychain, smartsheet_client  # noqa: E402
+from shared import keychain, sheet_ids, smartsheet_client  # noqa: E402
 
-FOLDER_SAFETY_PORTAL = 2261538947000196  # ITS –– Safety Portal / Safety Portal
+FOLDER_ID = sheet_ids.FOLDER_SAFETY_PORTAL  # ITS –– Safety Portal folder (existing)
 SHEET_NAME = "WSR_human_review"
 # Lifecycle: PENDING → SENDING (write-ahead marker, weekly_send Stage 6) → SENT;
 # FAILED (retryable) / HELD (operator hold) are off-path. SENDING is a transient
@@ -79,7 +79,7 @@ COLUMN_SCHEMA: list[dict[str, Any]] = [
 
 def _existing_sheet_id() -> int | None:
     token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
-    r = requests.get(f"https://api.smartsheet.com/2.0/folders/{FOLDER_SAFETY_PORTAL}",
+    r = requests.get(f"https://api.smartsheet.com/2.0/folders/{FOLDER_ID}",
                      headers={"Authorization": f"Bearer {token}"}, timeout=30)
     r.raise_for_status()
     for s in r.json().get("sheets", []):
@@ -92,7 +92,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build WSR_human_review (Phase-5 review surface).")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    print(f"[info] Target folder: ITS –– Safety Portal / Safety Portal ({FOLDER_SAFETY_PORTAL})")
+    print(f"[info] Target folder: ITS –– Safety Portal / Safety Portal ({FOLDER_ID})")
     print(f"[info] Mode: {'DRY-RUN' if args.dry_run else 'LIVE WRITE'}\n")
 
     existing = _existing_sheet_id()
@@ -105,7 +105,7 @@ def main() -> int:
         print(f"[dry-run] Would create {SHEET_NAME!r} with columns: {[c['title'] for c in COLUMN_SCHEMA]}.")
         return 0
 
-    new_id = smartsheet_client.create_sheet_in_folder(FOLDER_SAFETY_PORTAL, SHEET_NAME, COLUMN_SCHEMA)
+    new_id = smartsheet_client.create_sheet_in_folder(FOLDER_ID, SHEET_NAME, COLUMN_SCHEMA)
     print(f"[ok] created {SHEET_NAME!r} (sheet_id={new_id}).")
     print(f"[bootstrap] Update shared/sheet_ids.py:\n    SHEET_WSR_HUMAN_REVIEW = {new_id}")
     return 0
