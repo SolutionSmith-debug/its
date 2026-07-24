@@ -19,8 +19,9 @@ schematic. Nodes carry the JOIN KEYS that tie the map to every other surface:
 - ``runbook``         — the §43 successor-remediation doc served at /doc/….
 - ``docs``            — extra (label, path) doc links for the detail rail.
 
-Sheet nodes additionally carry an operator-grade brief in the companion
-``sheet_briefs.py`` (kept separate so this registry stays scannable).
+EVERY node additionally carries an operator-grade brief in the companion
+``node_briefs.py`` (kept separate so this registry stays scannable) — a new
+node ships its brief in the same PR, enforced by ``tests/test_system_map.py``.
 
 Layout is data too: ``lane`` (the left→right TRUST GRADIENT: field → cloud
 queue → ‖HMAC wall‖ → generation → records/review → ‖SEND GATE‖ → send →
