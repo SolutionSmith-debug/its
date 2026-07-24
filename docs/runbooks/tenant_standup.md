@@ -145,6 +145,14 @@ anything touching the landing PR, git conflicts, or Keychain.
   checklist's bridge step then loads exactly the three established lanes
   (weekly/progress/subcontract-send) per-plist — `--posture full` is NOT the
   bridge (it would load po/rfq-send too).
+- `--skip-restore-sheet NAME` (repeatable) holds back one named restore sheet
+  from the row-restore stage — it stays as the builders left it (empty). The
+  production stand-up shape restores the reference sheets (vendors /
+  subcontractors / master DBs / equipment) while both Active-Jobs sheets start
+  empty: `--dump <dump> --skip-shares --skip-restore-sheet ITS_Active_Jobs
+  --skip-restore-sheet ITS_Active_Jobs_Progress`. An unknown name aborts at
+  startup listing the valid names; `--resume` with a different skip set
+  refuses like any other flag conflict (Symptom 2).
 - Run-branch mode (#687, default ON): every run gets a `standup/run-<UTC>`
   branch with per-stage checkpoints; a dirty-tree refusal names REPO files
   only (`logs/` never counts); `--resume` merges `origin/main` onto the run
