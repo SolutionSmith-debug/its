@@ -363,11 +363,12 @@ Order: intake → mirrors/trackers → compile → **send paths last**.
   Verify: Cloudflare dashboard → Members shows `its@evergreenrenewables.com`
   as Super-Admin + billing owner; plan page shows Workers Paid; re-run the
   CL-21 login probe → `200` (no 1102) after the transfer.
-- [ ] **CL-42 — Daniel-token decision record acknowledged (manual).** The
-  Phase-1 Smartsheet identity is Daniel Stephens' personal PAT (workspace
-  owner; F22 self-exclusion filter DELIBERATELY not shipped — it would block
-  Daniel's own approvals; accepted residual: a token API write can mint an
-  approval indistinguishable from Daniel's human one). §44 high-class,
+- [ ] **CL-42 — Phase-1 Smartsheet identity decision acknowledged (manual).**
+  The Phase-1 Smartsheet token identity is an operator-designated personal PAT
+  (a workspace owner). The F22 self-exclusion filter is DELIBERATELY not
+  shipped for Phase 1 — per the Op Stds §46 owner-inclusion residual, the token
+  identity is inherently within the approver set, so filtering it would remove
+  that account's legitimate approval authority. §44 high-class,
   operator-ratified 2026-07-23.
   Verify: `docs/operations/phase1_cutover_decisions.md` (D1) read by whoever
   walks this checklist, and the tech-debt entry "F22 token-identity

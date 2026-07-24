@@ -2488,16 +2488,13 @@ subcontract renderer change that interpolates data into a Paragraph markup attri
 
 ## F22 token-identity self-exclusion filter — DEFERRED until the dedicated its@ Smartsheet token [DEFERRED 2026-07-23]
 
-Phase 1 runs on Daniel Stephens' personal Smartsheet PAT (D1,
-`docs/operations/phase1_cutover_decisions.md`); Daniel owns all ITS workspaces, so his email is
-automatically in every F22 approver set (Smartsheet `/shares` includes the workspace owner —
-`shared/smartsheet_client.py::list_workspace_share_emails` applies NO accessLevel filter, ~:2066;
-proven in the `logs/migrations/prewipe_20260723T030026Z` workspace dumps). A self-exclusion filter
-(subtract the token identity's own email from the approver set, so a token API write cannot mint a
-valid approval) is therefore DELIBERATELY not shipped now — it would block Daniel's own human
-approvals. Accepted residual: an API write via the token mints an approval indistinguishable from
-Daniel's (cell-history `modifiedBy` is email-only, `shared/approval_verification.py:35-38`) — the
-same posture the mirror ran under Seth's token.
+Phase 1 runs on an operator-designated personal Smartsheet PAT (D1,
+`docs/operations/phase1_cutover_decisions.md`); that account owns all ITS workspaces, so — per the
+Op Stds §46 owner-inclusion open question — the token identity is inherently within every F22
+approver set. A self-exclusion filter (subtract the token identity's own email from the approver
+set) is therefore DELIBERATELY not shipped now: it would also remove that account's legitimate
+human approval authority. Accepted residual = the §46 owner-inclusion residual (identity is matched
+email-only, `shared/approval_verification.py:35-38`) — the same posture the mirror ran under.
 
 **Scoped design (build when triggered):** ONE seam —
 `safety_reports/send_poll_core.py::_load_authorized_approvers` (~:220, currently returns
@@ -2511,9 +2508,9 @@ the subtraction empties the set → `verify_approval` blocks ALL sends fail-clos
 bug. Tests to touch: `tests/test_weekly_send_poll.py:132-160` (the `_load_authorized_approvers`
 trio), `tests/test_send_poll_core.py`, `tests/test_approval_verification.py`.
 
-**Revisit when:** the its@ Smartsheet identity migration (dedicated its@ seat replaces Daniel's
-PAT) — ship the filter in the same change that swaps the token. **Tag:** `f22`, `security`,
-`send-gate`, `cutover`, `seth-owned`.
+**Revisit when:** the its@ Smartsheet identity migration (a dedicated its@ seat replaces the
+operator-designated personal PAT) — ship the filter in the same change that swaps the token.
+**Tag:** `f22`, `security`, `send-gate`, `cutover`, `seth-owned`.
 
 ## resend_client.DEFAULT_FROM swap — blocked on CL-10 solutionsmith sender-domain verification [OPEN 2026-07-23]
 

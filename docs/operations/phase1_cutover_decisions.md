@@ -26,40 +26,33 @@ the single-production-mailbox model, the sandbox disposition, and the staged
 
 ## The five decisions
 
-### D1 — Smartsheet identity: Daniel Stephens' personal PAT (for now)
+### D1 — Smartsheet identity: an operator-designated personal PAT (for now)
 
 **Decision (§44 high-class, operator-ratified; changeable later).** ITS runs
-Phase 1 on Daniel Stephens' personal Smartsheet PAT. Daniel's account runs the
-production stand-up and OWNS all ITS workspaces.
+Phase 1 on an operator-designated personal Smartsheet PAT. That account runs
+the production stand-up and OWNS all ITS workspaces. (The specific identity is
+held in the operator's own records / the planning layer, not restated here.)
 
-**The F22 self-exclusion filter is DELIBERATELY NOT shipped now.** Shipping it
-would block Daniel's own approvals, because the workspace owner's email is
-automatically part of the F22 approver set:
+**The F22 self-exclusion filter is DELIBERATELY NOT shipped now.** The F22
+authorized-approver set is a workspace's individual USER-share list, and — as
+Op Stds §46 already records (the "owner-inclusion open question") — a
+workspace owner's account is inherently within that set. Because Phase 1's
+token identity is also a workspace owner (and an intended approver), a
+self-exclusion filter that subtracts the token identity would also remove that
+account's legitimate approval authority. So the filter waits for a dedicated,
+approval-free token identity (see migration trigger below).
 
-- The F22 authorized-approver set is the workspace's share-email list —
-  `shared/smartsheet_client.py::list_workspace_share_emails` (raw REST
-  `GET /workspaces/{id}/shares?includeAll=true`, ~:2023–2070) applies **no
-  accessLevel filter** (~:2066): every share record carrying an email counts,
-  and Smartsheet's `/shares` response **includes the workspace owner** —
-  proven empirically in the `logs/migrations/prewipe_20260723T030026Z`
-  workspace dumps (2026-07-23 sandbox wipe).
-- Approval identity is matched on **email only**: Smartsheet cell-history
-  `modifiedBy` exposes `{name, email}` with no stable user id
-  (`shared/approval_verification.py:35-38`).
-- The consuming seam is
-  `safety_reports/send_poll_core.py::_load_authorized_approvers` (:191–:220),
-  fail-closed, returning that share-email frozenset verbatim.
+Mechanism references (reconstructable from code, at the §46 level): the
+approver set is `shared/smartsheet_client.py::list_workspace_share_emails`;
+approval identity is matched email-only
+(`shared/approval_verification.py:35-38`); the consuming seam is
+`safety_reports/send_poll_core.py::_load_authorized_approvers` (:191–:220),
+fail-closed.
 
-Consequence: with one email (Daniel's) holding both the token identity and an
-approver role, a self-exclusion filter cannot be enabled without emptying his
-approval authority — so one email cannot hold both roles *with the hole
-closed*. The filter waits for a dedicated token identity (see migration
-trigger below).
-
-**Accepted residual.** An API write made via the token can mint an approval
-(flip the checkbox → cell-history `modifiedBy` = Daniel) indistinguishable
-from Daniel's human approval. This is the SAME posture the mirror validation
-period ran under Seth's token — accepted, not new.
+**Accepted residual.** The Op Stds §46 owner-inclusion residual applies for
+Phase 1: the token identity sits within the approver set. This is the SAME
+posture the mirror validation period ran under — accepted, not new. Closure =
+the deferred self-exclusion filter, gated on a dedicated token identity.
 
 **Migration path / trigger.** A dedicated `its@` Smartsheet seat + the
 self-exclusion filter (subtract the token identity's own email from the
