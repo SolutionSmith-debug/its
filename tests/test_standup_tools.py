@@ -12,6 +12,7 @@ import json
 import re
 import subprocess
 import sys
+import types
 from pathlib import Path
 from typing import Any, cast
 
@@ -558,6 +559,77 @@ def test_restore_sheet_targets_are_valid_constants() -> None:
         assert re.search(rf"^{constant}\s*=", text, re.MULTILINE), constant
 
 
+# ---- standup: --skip-restore-sheet selector (jobless reference restore) ----
+
+
+def test_skip_restore_sheet_accepts_every_restore_sheet_name() -> None:
+    """Validity guard: every RESTORE_SHEETS name is a legal selector value
+    (the flag's domain IS the tuple's sheet-name column), dedupe preserves
+    first occurrence, and the empty set stays empty."""
+    names = [sheet for _ws, sheet, _const in standup.RESTORE_SHEETS]
+    assert standup._validate_skip_restore_sheets(names) == tuple(names)
+    assert standup._validate_skip_restore_sheets(
+        [names[0], names[0]]) == (names[0],)
+    assert standup._validate_skip_restore_sheets([]) == ()
+
+
+def test_skip_restore_sheet_unknown_name_refused() -> None:
+    """A typo'd --skip-restore-sheet refuses at startup and lists the valid
+    names — silently restoring a sheet the operator meant to hold back is the
+    failure mode."""
+    with pytest.raises(standup.StageFailedError, match="unknown sheet name") as exc:
+        standup._validate_skip_restore_sheets(["ITS_Active_Jobz"])
+    msg = str(exc.value)
+    assert "ITS_Active_Jobz" in msg
+    for _ws, sheet, _const in standup.RESTORE_SHEETS:
+        assert sheet in msg  # the refusal enumerates every valid name
+
+
+def test_skip_restore_sheet_leaves_stage_graph_unchanged() -> None:
+    """The selector filters INSIDE restore-rows; the stage list (membership
+    and order — restore-rows included) is identical with and without it."""
+    base = [n for n, _ in standup.build_stages(
+        Path("/tmp/x"), skip_shares=False, skip_restore_sheets=())]
+    skipped = [n for n, _ in standup.build_stages(
+        Path("/tmp/x"), skip_shares=False,
+        skip_restore_sheets=("ITS_Active_Jobs", "ITS_Active_Jobs_Progress"))]
+    assert skipped == base
+    assert "restore-rows" in skipped
+
+
+def test_skip_restore_sheet_filters_only_named_sheet(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """The control bites BOTH ways: the skipped sheet gets ZERO add-rows posts
+    (plus the [skip] line), while the non-skipped sheet still restores."""
+    monkeypatch.setattr(standup, "RESTORE_SHEETS", (
+        ("WS", "SheetA", "SHEET_A"), ("WS", "SheetB", "SHEET_B")))
+    ids = types.SimpleNamespace(SHEET_A=111, SHEET_B=222)
+    monkeypatch.setattr(standup, "_fresh_sheet_ids", lambda: ids)
+    dump = {"columns": [{"title": "Name", "primary": True}],
+            "rows": [{"Name": "row-1"}]}
+    monkeypatch.setattr(standup, "_find_dump_sheet",
+                        lambda _dir, _ws, _sheet: dump)
+    from shared import smartsheet_client
+    monkeypatch.setattr(smartsheet_client, "list_columns_with_options",
+                        lambda _sid: [{"title": "Name", "id": 1}])
+    monkeypatch.setattr(smartsheet_client, "get_rows", lambda _sid: [])
+    posted: list[str] = []
+
+    def _fake_post(method: str, url: str, **kwargs: Any) -> Any:
+        posted.append(url)
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(standup, "request_with_retry", _fake_post)
+    monkeypatch.setattr(standup, "_reconcile_progress_job_ids",
+                        lambda _ids: None)
+    standup._stage_restore_rows(tmp_path, ("SheetA",))
+    assert posted == [f"{standup.BASE}/sheets/222/rows"]
+    out = capsys.readouterr().out
+    assert "[skip] restore skipped by --skip-restore-sheet: 'SheetA'" in out
+    assert "'SheetB': restored 1 row(s)" in out
+
+
 def test_resolve_dump_dir_refusals(tmp_path: Path,
                                    monkeypatch: pytest.MonkeyPatch) -> None:
     """No dump -> refuse (never a silent fresh-tenant fallback); two dumps ->
@@ -917,6 +989,48 @@ def test_resume_refusals(tmp_path: Path) -> None:
         standup._resume_start_stage(
             tmp_path, no_restore=False, skip_shares=True,
             no_run_branch=False, stage_names=names)
+
+
+def test_resume_refuses_skip_restore_sheet_conflict(tmp_path: Path) -> None:
+    """--resume with a different --skip-restore-sheet set REFUSES in BOTH
+    directions (a different set produces different restore work); the same
+    set in a different order is NOT a conflict (membership, not order); a
+    pre-selector state file (flag never recorded) == [] resumes fine."""
+    names = ["a", "b"]
+    both = ["ITS_Active_Jobs", "ITS_Active_Jobs_Progress"]
+    standup._write_state({
+        "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False,
+                  "no_run_branch": False, "skip_restore_sheets": []},
+        "completed": ["a"], "stage_names": names, "stages": {},
+    }, tmp_path)
+    with pytest.raises(standup.StageFailedError, match="conflict"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=False, no_run_branch=False,
+            skip_restore_sheets=both, stage_names=names)
+    standup._write_state({
+        "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False,
+                  "no_run_branch": False, "skip_restore_sheets": both},
+        "completed": ["a"], "stage_names": names, "stages": {},
+    }, tmp_path)
+    with pytest.raises(standup.StageFailedError, match="conflict"):
+        standup._resume_start_stage(
+            tmp_path, no_restore=False, skip_shares=False, no_run_branch=False,
+            skip_restore_sheets=[], stage_names=names)
+    # same membership, reversed order -> no conflict, resumes at 'b'
+    assert standup._resume_start_stage(
+        tmp_path, no_restore=False, skip_shares=False, no_run_branch=False,
+        skip_restore_sheets=list(reversed(both)), stage_names=names) == "b"
+    # pre-selector state file (flag never recorded) == default [], no conflict
+    standup._write_state({
+        "status": "failed",
+        "flags": {"no_restore": False, "skip_shares": False},
+        "completed": ["a"], "stage_names": names, "stages": {},
+    }, tmp_path)
+    assert standup._resume_start_stage(
+        tmp_path, no_restore=False, skip_shares=False, no_run_branch=False,
+        skip_restore_sheets=[], stage_names=names) == "b"
 
 
 def test_write_state_is_best_effort(
