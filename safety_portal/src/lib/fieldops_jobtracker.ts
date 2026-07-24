@@ -52,6 +52,25 @@ export async function fetchJobDetail(
   return (await res.json()) as JobDetailResponse;
 }
 
+/** One configured delivery contact — a suggestion for the job-create Safety CC <datalist>. Mirrors
+ *  the DeliveryContact shape worker/po.ts serves at GET /api/po/config (the SAME §50-edited bundle).
+ *  Only entries with an `email` are usable as a CC suggestion (the CC field holds an email). */
+export interface DeliveryContact {
+  name: string;
+  phone?: string;
+  email?: string;
+}
+
+/** GET /api/fieldops/delivery-contacts — the configured delivery-contact suggestion list for the
+ *  job-create Safety CC field's <datalist>. Gated cap.jobtracker.manage server-side (the job
+ *  creator's own cap). SUGGESTIONS ONLY — free-text CC entry always stays accepted. */
+export async function getDeliveryContacts(): Promise<DeliveryContact[]> {
+  const res = await fetch("/api/fieldops/delivery-contacts", { credentials: "same-origin" });
+  if (!res.ok) return raiseApiError(res);
+  const body = (await res.json()) as { delivery_contacts?: DeliveryContact[] };
+  return body.delivery_contacts ?? [];
+}
+
 // ── WRITE (P2.3 routes; same-origin cookie POST) ─────────────────────────────────────────────────
 // NB: the READ routes are PLURAL (/api/fieldops/jobs…); the P2.3 WRITE routes are SINGULAR
 // (/api/fieldops/job…, /api/fieldops/task…). Mirror the worker exactly — see fieldops_job_write.ts /

@@ -3,6 +3,10 @@ import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
 import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 import { MAX_ADDRESS } from "./constants";
+// Feature (2026-07-24): the job-create Safety CC <datalist> is fed from the SAME §50-edited
+// delivery-contacts bundle the PO builder uses (worker/po.ts imports this too). Bundled at BUILD
+// time; served read-only by GET /api/fieldops/delivery-contacts below (jobtracker-cap-gated).
+import deliveryContactsConfig from "../../po_materials/config/delivery_contacts.json";
 
 // P2.3 Slice 2 + P2.5 Slice 1 — JOB WRITE (create / lifecycle / contacts).
 // cap.jobtracker.manage (admin-only). Send-free (D1 only).
@@ -164,6 +168,19 @@ function parseRouting(body: Record<string, unknown>): RoutingResult {
 }
 
 export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): void {
+  // GET /api/fieldops/delivery-contacts — the configured delivery-contact suggestion list feeding
+  // the job-create Safety CC <datalist>. Gated cap.jobtracker.manage (the job creator's OWN cap) so
+  // a plain job creator reads it WITHOUT holding cap.po.manage (GET /api/po/config is PO-admin-only,
+  // a different capability). Read-only + bound: returns ONLY the { name, phone, email } already in
+  // the §50-edited bundle — no leak, no mutation, no W4 audit row. Mirrors the delivery_contacts
+  // shape worker/po.ts serves at GET /api/po/config.
+  app.get(
+    "/api/fieldops/delivery-contacts",
+    gates.requireSession,
+    gates.requireCapability("cap.jobtracker.manage"),
+    (c) => c.json({ delivery_contacts: deliveryContactsConfig.contacts }),
+  );
+
   // POST /api/fieldops/job — create a portal-origin job with full routing SoR (+ optional client).
   app.post(
     "/api/fieldops/job",
@@ -189,6 +206,14 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
       const routed = parseRouting(body);
       if (!routed.ok) return c.json({ error: routed.error }, 400);
       const r = routed.routing;
+
+      // CREATE-ONLY: at least one Safety CC recipient is REQUIRED on a new job (up to the MAX_CC cap
+      // that parseCc already enforces). The weekly safety email CCs these addresses; a job created
+      // with none would silently ship to the primary recipient only. This guard lives HERE, NOT in
+      // the shared parseRouting/parseCc — the /contacts EDIT route below MUST still allow blanking
+      // the CC list (operator decision: required is create-only). Evaluated before the client insert
+      // + number allocation so a rejected create burns nothing.
+      if (r.safety_cc.length === 0) return c.json({ error: "safety_cc_required" }, 400);
 
       // Client linkage: an existing client_id (verified) OR an inline new_client. Validate shapes.
       const clientIdRaw = typeof body.client_id === "number" && Number.isInteger(body.client_id) ? body.client_id : null;

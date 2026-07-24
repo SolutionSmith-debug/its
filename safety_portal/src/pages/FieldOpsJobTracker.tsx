@@ -142,8 +142,24 @@ function routingFormFromJob(job: api.JobDetail): RoutingForm {
   };
 }
 
-// CC editor: up to MAX_CC email rows, each independently editable / removable.
-function CcEditor({ label, ccs, onChange }: { label: string; ccs: string[]; onChange: (next: string[]) => void }) {
+// CC editor: up to MAX_CC email rows, each independently editable / removable. `contacts` (present
+// only on the create form's SAFETY CC editor) turns each input into a suggest-or-free-text combobox
+// via a <datalist> of configured delivery-contact EMAILS — free-text entry stays fully accepted (a
+// datalist never restricts input). Progress CC (and every edit-form CcEditor) passes no contacts.
+function CcEditor({
+  label,
+  ccs,
+  onChange,
+  contacts,
+}: {
+  label: string;
+  ccs: string[];
+  onChange: (next: string[]) => void;
+  contacts?: api.DeliveryContact[];
+}) {
+  // Only contacts WITH an email are usable — the CC field holds an email, not a name.
+  const suggestions = (contacts ?? []).filter((c) => c.email && c.email.trim());
+  const listId = suggestions.length > 0 ? `${label.replace(/\s+/g, "-").toLowerCase()}-options` : undefined;
   return (
     <div className="dash-row" role="group" aria-label={label}>
       <span className="dash-card__label">{label} (≤{MAX_CC}):</span>{" "}
@@ -154,6 +170,7 @@ function CcEditor({ label, ccs, onChange }: { label: string; ccs: string[]; onCh
             value={cc}
             placeholder="email@example.com"
             maxLength={320}
+            list={listId}
             onChange={(e) => onChange(ccs.map((c, j) => (j === i ? e.target.value : c)))}
           />{" "}
           <ChipX
@@ -171,6 +188,15 @@ function CcEditor({ label, ccs, onChange }: { label: string; ccs: string[]; onCh
       >
         + Add CC
       </button>
+      {listId && (
+        <datalist id={listId}>
+          {suggestions.map((c) => (
+            <option key={c.email} value={c.email!}>
+              {c.name}
+            </option>
+          ))}
+        </datalist>
+      )}
     </div>
   );
 }
@@ -182,11 +208,15 @@ function RoutingFields({
   routing,
   onChange,
   showName = true,
+  safetyCcContacts,
 }: {
   routing: RoutingForm;
   onChange: (next: RoutingForm) => void;
   /** false on the CREATE form, which owns its dedicated Project-name field. */
   showName?: boolean;
+  /** Delivery-contact suggestions for the SAFETY CC <datalist> — passed only by the create form.
+   *  The Progress CC editor never receives it (safety-only, per the feature scope). */
+  safetyCcContacts?: api.DeliveryContact[];
 }) {
   const set = (patch: Partial<RoutingForm>) => onChange({ ...routing, ...patch });
   return (
@@ -279,7 +309,7 @@ function RoutingFields({
           <input value={routing.safety_contact_name} onChange={(e) => set({ safety_contact_name: e.target.value })} placeholder="Safety contact name" maxLength={256} />{" "}
           <input value={routing.safety_contact_email} onChange={(e) => set({ safety_contact_email: e.target.value })} placeholder="Safety contact email" maxLength={320} />
         </div>
-        <CcEditor label="Safety CC" ccs={routing.safety_cc} onChange={(safety_cc) => set({ safety_cc })} />
+        <CcEditor label="Safety CC" ccs={routing.safety_cc} onChange={(safety_cc) => set({ safety_cc })} contacts={safetyCcContacts} />
       </fieldset>
       <fieldset className="dash-section" aria-label="Progress Reports">
         <legend className="dash-card__label">Progress Reports</legend>
@@ -387,6 +417,9 @@ export function FieldOpsJobTracker({
   const [newJobClient, setNewJobClient] = useState("");
   const [newJobOpen, setNewJobOpen] = useState(false);
   const [createRouting, setCreateRouting] = useState<RoutingForm>(EMPTY_ROUTING); // P2.5 routing SoR
+  // Delivery-contact suggestions for the create form's Safety CC <datalist> (fetched when the form
+  // opens). Best-effort: a load failure leaves it empty → no datalist, free-text CC entry still works.
+  const [deliveryContacts, setDeliveryContacts] = useState<api.DeliveryContact[]>([]);
   // Detail manage controls
   const [taskDesc, setTaskDesc] = useState("");
   const [taskPerson, setTaskPerson] = useState(""); // add-task assignee (personnel id, "" = unassigned)
@@ -494,6 +527,23 @@ export function FieldOpsJobTracker({
   useEffect(() => {
     if (view === "detail" && selectedJob && isSubcontractor) loadMyCrew();
   }, [view, selectedJob?.job_id, isSubcontractor]);
+
+  // Load the delivery-contact suggestions when the create form opens (only the create form's Safety
+  // CC field uses them). Best-effort — a failure leaves the list empty so the field degrades to
+  // plain free-text (no datalist), never blocking job creation.
+  useEffect(() => {
+    if (!newJobOpen || !canManage) return;
+    let live = true;
+    api
+      .getDeliveryContacts()
+      .then((cs) => live && setDeliveryContacts(cs))
+      .catch(() => {
+        /* best-effort: datalist absent, free-text CC entry still works */
+      });
+    return () => {
+      live = false;
+    };
+  }, [newJobOpen, canManage]);
 
   async function loadMore() {
     if (!cursor || loading) return;
@@ -669,6 +719,14 @@ export function FieldOpsJobTracker({
     const projectName = newJobName.trim();
     if (!projectName) {
       setActionMsg({ ok: false, text: "Project name is required." });
+      return;
+    }
+    // Safety CC is REQUIRED on create (up to the ≤MAX_CC cap the editor already enforces) — the
+    // weekly safety email CCs these recipients. Create-only: the routing EDIT path still allows
+    // blanking the CC list. The Worker independently re-enforces (400 safety_cc_required).
+    const safetyCcFilled = createRouting.safety_cc.map((s) => s.trim()).filter(Boolean);
+    if (safetyCcFilled.length === 0) {
+      setActionMsg({ ok: false, text: "At least one Safety CC recipient is required." });
       return;
     }
     setActionBusy(true);
@@ -1616,7 +1674,7 @@ export function FieldOpsJobTracker({
                   maxLength={256}
                 />
               </div>
-              <RoutingFields routing={createRouting} onChange={setCreateRouting} showName={false} />
+              <RoutingFields routing={createRouting} onChange={setCreateRouting} showName={false} safetyCcContacts={deliveryContacts} />
               <div className="dash-row">
                 <button type="submit" disabled={actionBusy} className="btn--primary">Create</button>{" "}
                 <button
