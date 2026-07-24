@@ -39,7 +39,7 @@ from sentry_sdk import capture_message
 
 from . import keychain
 
-ENVIRONMENT = "sandbox"
+ENVIRONMENT = "production"
 RELEASE_PREFIX = "its@"
 
 
