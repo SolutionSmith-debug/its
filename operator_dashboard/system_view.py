@@ -23,7 +23,7 @@ from fastapi.templating import Jinja2Templates
 
 from operator_dashboard.cache import cached
 from operator_dashboard.config import SMARTSHEET_TTL_SECONDS
-from operator_dashboard.sheet_briefs import SHEET_BRIEFS
+from operator_dashboard.node_briefs import NODE_BRIEFS
 from operator_dashboard.sources.base import clean, fmt_timedelta
 from operator_dashboard.system_map import (
     BANDS,
@@ -324,7 +324,7 @@ def register_system_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "heartbeat_age": _heartbeat_age_by_node().get(node_id),
                 "gate_state": _gate_state_by_node().get(node_id),
                 "ts_joins": _troubleshoot_joins().get(node_id, []),
-                "brief": SHEET_BRIEFS.get(node_id),
+                "brief": NODE_BRIEFS.get(node_id),
                 "permalink": _sheet_permalink(node.sheet_id) if node.sheet_id else None,
             },
         )

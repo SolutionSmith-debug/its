@@ -8,6 +8,7 @@ files, the troubleshooting tree) is monkeypatched or verified fail-soft.
 """
 from __future__ import annotations
 
+import html
 import sys
 from pathlib import Path
 from typing import Any
@@ -229,38 +230,74 @@ def test_docs_links_exist_and_are_servable() -> None:
             )
 
 
-def test_every_sheet_node_with_id_has_an_operator_brief() -> None:
-    """Depth contract: a Smartsheet node on the map must explain itself to a
-    non-technical operator — every sheet-kind node with a real sheet_id carries
-    a brief in sheet_briefs.py, and every brief keys a real node."""
-    from operator_dashboard.sheet_briefs import SHEET_BRIEFS
+def test_every_map_node_has_an_operator_brief() -> None:
+    """Depth contract: EVERY node on the map must explain itself to a
+    non-technical operator, not just the Smartsheet ones.
 
-    missing = sorted(
-        n.id for n in NODES if n.kind == "sheet" and n.sheet_id and n.id not in SHEET_BRIEFS
-    )
+    A tile the operator can click but that answers no "what is this / what do I
+    do" question is a dead end on the one page meant to teach the machine. This
+    is also the registry tooth: a new daemon/sheet/surface ships its brief in
+    the SAME PR (HOUSE_REFLEXES §1), or this fails naming it.
+    """
+    from operator_dashboard.node_briefs import NODE_BRIEFS
+
+    missing = sorted(n.id for n in NODES if n.id not in NODE_BRIEFS)
     assert not missing, (
-        f"sheet nodes with no operator brief: {missing} — add a SheetBrief in "
-        "operator_dashboard/sheet_briefs.py"
+        f"map nodes with no operator brief: {missing} — add a NodeBrief in "
+        "operator_dashboard/node_briefs.py"
     )
-    orphans = sorted(k for k in SHEET_BRIEFS if k not in NODES_BY_ID)
+    orphans = sorted(k for k in NODE_BRIEFS if k not in NODES_BY_ID)
     assert not orphans, f"briefs keyed to nonexistent nodes: {orphans}"
 
 
 def test_briefs_never_assert_live_state() -> None:
     """HOUSE_REFLEXES §5: static text states what a thing MEANS, never what it
     is currently set to — live state is one ITS_Config read away and drifts."""
-    from operator_dashboard.sheet_briefs import SHEET_BRIEFS
+    from operator_dashboard.node_briefs import NODE_BRIEFS
 
     # NB "at the moment of sending" is timing SEMANTICS (recipients resolve at
     # send time) — only bare tense-of-now phrases are banned.
     banned = ("currently", "ships dark", "as of 20", "right now")
     offenders = [
         f"{node_id}: {phrase!r}"
-        for node_id, brief in SHEET_BRIEFS.items()
+        for node_id, brief in NODE_BRIEFS.items()
         for phrase in banned
-        if phrase in brief.what.lower() or phrase in brief.columns.lower()
+        if phrase in brief.what.lower() or phrase in brief.key_line.lower()
     ]
     assert not offenders, f"briefs asserting live state: {offenders}"
+
+
+def test_briefs_keep_the_shape_the_rail_renders() -> None:
+    """The rail renders `what` as paragraphs and `key_line` behind its label —
+    both assumptions have to hold in the data, or a brief renders as one wall of
+    text or as a bolded label with nothing after it.
+
+    The length band is anti-slop teeth: the corpus reads as one voice only while
+    every entry stays in the same register, and an unbounded brief drifts toward
+    an essay in a 300px rail.
+
+    Deliberately NOT asserted: that a paragraph opens "Day-to-day". It is the
+    house convention (and documented in node_briefs.py), but the three
+    borrowed-slot approval-desk briefs answer "what you do" in ¶1 and spend ¶2 on
+    a schema caveat — pinning the phrasing would force a worse brief.
+    """
+    from operator_dashboard.node_briefs import NODE_BRIEFS
+
+    problems: list[str] = []
+    for node_id, brief in NODE_BRIEFS.items():
+        paragraphs = brief.what.split("\n\n")
+        if len(paragraphs) < 2:
+            problems.append(f"{node_id}: {len(paragraphs)} paragraph(s), expected 2+")
+        words = len(brief.what.split())
+        if not 40 <= words <= 125:
+            problems.append(f"{node_id}: {words} words, outside the 40-125 band")
+        if brief.key_line and not brief.key_label:
+            problems.append(f"{node_id}: key_line with no key_label — renders unlabeled")
+        if brief.key_label and not brief.key_line:
+            problems.append(f"{node_id}: key_label with no key_line — renders as a bare label")
+        if len(brief.key_line.split()) > 32:
+            problems.append(f"{node_id}: key_line is a paragraph, not a one-liner")
+    assert not problems, f"briefs breaking the rail's rendering contract: {problems}"
 
 
 def test_every_registered_watchdog_letter_is_badged_on_a_node() -> None:
@@ -427,6 +464,41 @@ def test_sheet_node_rail_renders_brief_docs_and_permalink(
     r = client.get("/system/node/sheet_config")
     assert "/doc/references/its_config_dictionary.md" in r.text
     assert "/doc/runbooks/token_write_capability.md" in r.text
+
+
+def test_every_node_rail_renders_its_brief(offline_joins: None) -> None:
+    """End-to-end proof of the depth contract: click ANY tile — daemon, script,
+    the portal, Box, the send door — and the rail answers "what is this / what do
+    you do", not just the Smartsheet tiles.
+
+    Asserted through the real route + template, so a data-side brief that the
+    template never renders (a renamed field, a lost `{% if %}`) fails here.
+    """
+    from operator_dashboard.node_briefs import NODE_BRIEFS
+
+    client = TestClient(create_app())
+    for node in NODES:
+        r = client.get(f"/system/node/{node.id}")
+        assert r.status_code == 200, f"{node.id}: rail returned {r.status_code}"
+        # Jinja autoescapes, so compare against the unescaped body — several
+        # briefs open on an apostrophe ("The portal's back end").
+        body = html.unescape(r.text)
+        assert "What this is" in body, f"{node.id}: rail rendered no brief block"
+        brief = NODE_BRIEFS[node.id]
+        opener = brief.what.split(",")[0].split(" — ")[0][:40]
+        assert opener in body, f"{node.id}: brief text absent from the rail"
+        if brief.key_line:
+            assert brief.key_label in body, f"{node.id}: key_line rendered without its label"
+
+
+def test_non_sheet_node_rail_carries_a_labeled_key_line(offline_joins: None) -> None:
+    """A daemon's at-a-glance row must render under its OWN label — the rail used
+    to hardcode "Key columns", which is meaningless for a daemon."""
+    client = TestClient(create_app())
+    r = client.get("/system/node/po_poll")
+    assert r.status_code == 200
+    assert "Key signals" in r.text
+    assert "Key columns" not in r.text
 
 
 def test_permalink_fetch_is_fail_soft(offline_joins: None, monkeypatch: pytest.MonkeyPatch) -> None:

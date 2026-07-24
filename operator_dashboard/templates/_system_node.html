@@ -14,7 +14,7 @@
   <div class="sm-brief">
     <h4>What this is · what you do</h4>
     {% for para in brief.what.split('\n\n') %}<p>{{ para }}</p>{% endfor %}
-    {% if brief.columns %}<p class="sm-brief-cols"><b>Key columns</b> — {{ brief.columns }}</p>{% endif %}
+    {% if brief.key_line %}<p class="sm-brief-cols"><b>{{ brief.key_label }}</b> — {{ brief.key_line }}</p>{% endif %}
   </div>
   {% endif %}
 
