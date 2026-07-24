@@ -150,19 +150,22 @@ def test_section_a_is_exactly_the_worker_base_url_trio() -> None:
 
 def test_section_b_mailbox_rows_match_changeset_plus_vc03_enrollment() -> None:
     specs = pr.load_map()
+    # Phase-1 single-mailbox model (operator decision 2026-07-23): ALL five
+    # from_mailbox lanes send from its@; per-lane shared mailboxes
+    # (safety@/progress@/procurement@) are the later step.
     expected = {
         ("safety_reports.weekly_send.from_mailbox", "safety_reports",
-         f"safety@{PROD_DOMAIN}"),
+         f"its@{PROD_DOMAIN}"),
         ("progress_reports.progress_send.from_mailbox", "progress_reports",
-         f"progress@{PROD_DOMAIN}"),
+         f"its@{PROD_DOMAIN}"),
         ("po_materials.po_send.from_mailbox", "po_materials",
-         f"procurement@{PROD_DOMAIN}"),
+         f"its@{PROD_DOMAIN}"),
         # Built after the changeset doc; both verified enrolled in verify_cutover
         # CONFIG_ROWS with sandbox_scan=True (asserted below, not just claimed).
         ("subcontracts.subcontract_send.from_mailbox", "subcontracts",
-         f"procurement@{PROD_DOMAIN}"),
+         f"its@{PROD_DOMAIN}"),
         ("po_materials.rfq_send.from_mailbox", "po_materials",
-         f"procurement@{PROD_DOMAIN}"),
+         f"its@{PROD_DOMAIN}"),
     }
     actual = {(s.setting, s.workstream, s.to_production) for s in specs if s.category == "B"}
     assert actual == expected
