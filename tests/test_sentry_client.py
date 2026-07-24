@@ -39,7 +39,7 @@ def test_get_client_initializes_sdk_with_dsn_from_keychain(mocker):
     init.assert_called_once()
     kwargs = init.call_args.kwargs
     assert kwargs["dsn"] == "https://fake-ITS_SENTRY_DSN@sentry.test/1"
-    assert kwargs["environment"] == "sandbox"
+    assert kwargs["environment"] == "production"
     # Performance monitoring off — this client is for CRITICAL capture only.
     assert kwargs["traces_sample_rate"] == 0.0
     assert kwargs["send_default_pii"] is False
