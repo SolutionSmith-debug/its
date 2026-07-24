@@ -49,7 +49,7 @@ through Phase C go/no-go BEFORE this list starts),
 | VC-09 `heartbeat-url` | CL-27 |
 | VC-10 `approver-shares` | CL-11 (+ CL-37's subcontracts leg) |
 | full run (all ten) | CL-30 |
-| (manual-only items) | CL-01, CL-05–CL-10, CL-13, CL-15–CL-17, CL-19–CL-23, CL-28, CL-29, CL-31–CL-35, CL-37–CL-39 |
+| (manual-only items) | CL-01, CL-05–CL-10, CL-13, CL-15–CL-17, CL-19–CL-23, CL-28, CL-29, CL-31–CL-35, CL-37–CL-42 |
 
 ## Procedure
 
@@ -58,10 +58,13 @@ through Phase C go/no-go BEFORE this list starts),
 - [ ] **CL-01 — burn-in go/no-go recorded.** The Jul-31 host go/no-go verdict
   exists in a session log (`ls docs/session_logs/2026-07-31*` or later naming
   it). No-go = the cutover date moves; do not proceed.
-- [ ] **CL-02 — Keychain complete on the production host** (18 secrets: 11
-  non-Box + Box triplet + `ITS_PORTAL_PO_TOKEN` + the config-actuator (`ITS_PORTAL_CONFIG_TOKEN`)
-  and subcontract-poll (`ITS_PORTAL_SUB_TOKEN`) daemon bearers + the operator-dashboard
-  PIN (`ITS_OPERATOR_PIN`)).
+- [ ] **CL-02 — Keychain complete on the production host** (20 secrets per
+  `scripts/verify_cutover.py` `REQUIRED_SECRETS`: 11 non-Box + Box triplet +
+  `ITS_PORTAL_PO_TOKEN` + the four dark-daemon bearers — config-actuator
+  (`ITS_PORTAL_CONFIG_TOKEN`), subcontract-poll (`ITS_PORTAL_SUB_TOKEN`),
+  estimate (`ITS_PORTAL_ESTIMATE_TOKEN`), RFQ (`ITS_PORTAL_RFQ_TOKEN`) — + the
+  operator-dashboard PIN (`ITS_OPERATOR_PIN`)). Don't trust this prose count:
+  `REQUIRED_SECRETS` is the composition of record.
   Verify: `python -m scripts.verify_cutover --only keychain` → PASS. (VC-01)
 - [ ] **CL-03 — every must-load daemon runs on the production host only** (the shipped
   plist set minus `DARK_UNLOADED_LABELS` — VC-02 derives the exact set; 18 of the 20
@@ -84,15 +87,22 @@ through Phase C go/no-go BEFORE this list starts),
   re-seeded `ITS_MS_*` triplet.
   Verify: `python scripts/smoke_test_graph.py` (read-only) exits 0.
 - [ ] **CL-06 — EXO ServicePrincipal + Application Access Policy applied**
-  (PowerShell done in July, before the Sep-1 deprecation).
-  Verify: `Test-ApplicationAccessPolicy -Identity safety@evergreenrenewables.com
+  (PowerShell done in July, before the Sep-1 deprecation; AAP scoped to the
+  single production mailbox per CL-07 / CL-40).
+  Verify: `Test-ApplicationAccessPolicy -Identity its@evergreenrenewables.com
   -AppId <ITS_MS_CLIENT_ID>` → `AccessCheckResult: Granted`, and the same for
   a non-ITS mailbox → `Denied`.
-- [ ] **CL-07 — production mailboxes exist:** `safety@`, `progress@`,
-  `procurement@` on `evergreenrenewables.com`; `progress@` + `procurement@`
-  also on the mirror (rehearsal path, its#460).
-  Verify: Graph read of each mailbox succeeds (smoke script per mailbox), or
-  EXO `Get-Mailbox safety@evergreenrenewables.com` etc. returns each.
+- [ ] **CL-07 — single production mailbox exists:** `its@evergreenrenewables.com`
+  — ALL send lanes (safety, progress, procurement/PO, RFQ, subcontracts) send
+  from this ONE mailbox for Phase 1; every `*.from_mailbox` ITS_Config row
+  repoints to it (the CL-12 sweep). Later identity splits (a `safety@`,
+  `procurement@`, …) use **SHARED mailboxes** (free, no license) — NEVER a
+  personal mailbox: the Application Access Policy grants the app full mail
+  read/write over the entire mailbox it covers (decision record:
+  `docs/operations/phase1_cutover_decisions.md` D3). Mirror rehearsal
+  mailboxes (its#460) are unaffected.
+  Verify: Graph read of `its@evergreenrenewables.com` succeeds (smoke script),
+  or EXO `Get-Mailbox its@evergreenrenewables.com` returns it.
 - [ ] **CL-08 — DKIM/SPF verified for the production sending domain.**
   Verify: `dig TXT evergreenrenewables.com +short` contains the SPF record
   including M365 (`include:spf.protection.outlook.com`), and
@@ -333,6 +343,38 @@ Order: intake → mirrors/trackers → compile → **send paths last**.
   Verify: the production `wrangler` env/route points at the production custom domain; the mirror
   Worker is untouched (still resolves + serves).
 
+### Phase-1 identity & account decisions (2026-07-23 — see `phase1_cutover_decisions.md`)
+
+- [ ] **CL-40 — single-mailbox AAP scope verified (manual).** The Exchange
+  Application Access Policy is scoped to `its@evergreenrenewables.com` ONLY —
+  the app cannot touch any other mailbox (D3,
+  `docs/operations/phase1_cutover_decisions.md`).
+  Verify: `Test-ApplicationAccessPolicy -Identity its@evergreenrenewables.com
+  -AppId <ITS_MS_CLIENT_ID>` → `Granted`, AND the same cmdlet against at least
+  one PERSONAL mailbox (e.g. `jacobs@evergreenrenewables.com`) → `Denied`.
+  Paste both results into the cutover session log.
+- [ ] **CL-41 — Cloudflare account transferred + Workers Paid on the
+  transferred account (manual).** The existing dedicated Cloudflare account is
+  owned/billed by `its@evergreenrenewables.com` (Super-Admin invite accepted,
+  payment method on file, Workers Paid active on THIS account — the CL-21
+  Paid-plan check must hold post-transfer). No Worker / D1 / zone migration;
+  the portal stays on `safety.evergreenmirror.com` through Phase 1 (D2,
+  `phase1-hybrid` profile).
+  Verify: Cloudflare dashboard → Members shows `its@evergreenrenewables.com`
+  as Super-Admin + billing owner; plan page shows Workers Paid; re-run the
+  CL-21 login probe → `200` (no 1102) after the transfer.
+- [ ] **CL-42 — Daniel-token decision record acknowledged (manual).** The
+  Phase-1 Smartsheet identity is Daniel Stephens' personal PAT (workspace
+  owner; F22 self-exclusion filter DELIBERATELY not shipped — it would block
+  Daniel's own approvals; accepted residual: a token API write can mint an
+  approval indistinguishable from Daniel's human one). §44 high-class,
+  operator-ratified 2026-07-23.
+  Verify: `docs/operations/phase1_cutover_decisions.md` (D1) read by whoever
+  walks this checklist, and the tech-debt entry "F22 token-identity
+  self-exclusion filter" still names the migration trigger (the dedicated
+  `its@` Smartsheet seat). No mechanical check — this row exists so the
+  posture is a recorded decision, not an accident.
+
 ### Final gate + Day-7
 
 - [ ] **CL-30 — THE GATE:** `python -m scripts.verify_cutover` (full run, no
@@ -376,7 +418,7 @@ plist or installer change is a code change (high-class).
 
 ## Validation
 
-The cutover is done when CL-01 … CL-32, CL-34–CL-37, and CL-39 are all checked,
+The cutover is done when CL-01 … CL-32, CL-34–CL-37, and CL-39–CL-42 are all checked,
 CL-30's full `verify_cutover` output (exit 0) is pasted in the cutover session log,
 and CL-33 is scheduled with a named date. (CL-38 is a deferred SC-S4 build
 dependency — explicitly NOT required for Aug-7 done.) Anything less is §52

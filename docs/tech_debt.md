@@ -2486,3 +2486,46 @@ definition-of-done on any trust-boundary surface" rule). **Trigger:** any future
 subcontract renderer change that interpolates data into a Paragraph markup attribute rather than content.
 **Tag:** `form_pdf`, `escaping`, `security`, `informational`, `low-severity`.
 
+## F22 token-identity self-exclusion filter — DEFERRED until the dedicated its@ Smartsheet token [DEFERRED 2026-07-23]
+
+Phase 1 runs on Daniel Stephens' personal Smartsheet PAT (D1,
+`docs/operations/phase1_cutover_decisions.md`); Daniel owns all ITS workspaces, so his email is
+automatically in every F22 approver set (Smartsheet `/shares` includes the workspace owner —
+`shared/smartsheet_client.py::list_workspace_share_emails` applies NO accessLevel filter, ~:2066;
+proven in the `logs/migrations/prewipe_20260723T030026Z` workspace dumps). A self-exclusion filter
+(subtract the token identity's own email from the approver set, so a token API write cannot mint a
+valid approval) is therefore DELIBERATELY not shipped now — it would block Daniel's own human
+approvals. Accepted residual: an API write via the token mints an approval indistinguishable from
+Daniel's (cell-history `modifiedBy` is email-only, `shared/approval_verification.py:35-38`) — the
+same posture the mirror ran under Seth's token.
+
+**Scoped design (build when triggered):** ONE seam —
+`safety_reports/send_poll_core.py::_load_authorized_approvers` (~:220, currently returns
+`smartsheet_client.list_workspace_share_emails(config.f22_workspace_id)` verbatim) subtracts a new
+`shared/smartsheet_client.get_current_user_email()` (`GET /users/me`, mirroring the
+`list_workspace_share_emails` raw-REST pattern at ~:2021–2070, decorated `@_breaker_guard` +
+`@_transient_retry` — which REQUIRES adding the name to `APPROVED_RETRY_ENROLLMENT` in
+`tests/test_smartsheet_retry.py`, a set-equality assertion that RED-lights otherwise).
+EMPTY_ALLOWLIST interaction: on an automation-only workspace (token identity is the sole share)
+the subtraction empties the set → `verify_approval` blocks ALL sends fail-closed — intended, not a
+bug. Tests to touch: `tests/test_weekly_send_poll.py:132-160` (the `_load_authorized_approvers`
+trio), `tests/test_send_poll_core.py`, `tests/test_approval_verification.py`.
+
+**Revisit when:** the its@ Smartsheet identity migration (dedicated its@ seat replaces Daniel's
+PAT) — ship the filter in the same change that swaps the token. **Tag:** `f22`, `security`,
+`send-gate`, `cutover`, `seth-owned`.
+
+## resend_client.DEFAULT_FROM swap — blocked on CL-10 solutionsmith sender-domain verification [OPEN 2026-07-23]
+
+`shared/resend_client.py` still ships `DEFAULT_FROM = "onboarding@resend.dev"` (:56) — the Resend
+sandbox sender. Swapping to a real sender is a follow-up to the alerting-constants PR and is
+BLOCKED on CL-10 (`docs/operations/cutover_checklist.md`): the solutionsmith sender domain must
+show `Verified` in the Resend dashboard first — an unverified-domain `from` makes Resend reject
+every CRITICAL alert email, which is the out-of-band alert leg (worse than the sandbox sender).
+One-line constant change once CL-10 is green; operator alerts only, NOT a customer send path
+(Invariant 1 untouched).
+
+**Revisit when:** CL-10 shows the solutionsmith domain `Verified` in Resend — swap `DEFAULT_FROM`
+in the same session and live-fire one test alert to confirm delivery. **Tag:** `alerting`,
+`resend`, `cutover`, `CL-10`, `low-severity`.
+
