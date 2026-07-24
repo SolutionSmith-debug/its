@@ -447,9 +447,11 @@ safety WSR, progress WPR, PO, RFQ, subcontract. Nothing in ITS knows the expiry 
 `_get_token()` (`graph_client.py:191-193`) reads the three credentials from Keychain and
 only discovers the expiry when the MSAL client-credentials grant starts failing — i.e. at
 the moment of the first blocked send, across every send lane at once. PR #705 made all
-three M365 credentials dashboard-rotatable, so a Successor-Operator now has a **repair**
-path (Op Stds v21 §44 Tier-2); what is still missing is the **detection** path. The
-operator learns about the expiry from a failed send, never before it.
+three M365 credentials dashboard-rotatable, which gives the **Developer-Operator** a
+console **repair** path (§44 v21.x rider — current-credential-gated self-rotation by the
+holder; Class C is Developer-Operator-only and a Successor-Operator still escalates on
+secrets/auth). What is missing is the **detection** path. The operator learns about the
+expiry from a failed send, never before it.
 
 Two gaps, both open:
 
@@ -458,9 +460,10 @@ Two gaps, both open:
   the expiry at seed time and calendar the rotation" — that is **narrated, not enforced**
   (Op Stds v21 §52), and it depends on a human remembering across a 6–24 month gap.
 - **No distinguishable failure signal.** A Graph auth failure at expiry surfaces as
-  whatever CRITICAL the calling send daemon happens to raise, so a Tier-2 operator cannot
-  map symptom → the §43 repair without escalating; nothing names "the M365 client secret
-  expired" or "expires in N days".
+  whatever CRITICAL the calling send daemon happens to raise, so nothing names "the M365
+  client secret expired" or "expires in N days". A Successor-Operator escalates on
+  secrets/auth regardless, but today they cannot even tell Seth *what* broke — the
+  escalation carries a generic send failure, not a diagnosis.
 
 Candidate shapes, **not decided** — the documentation-and-alerting design is the open
 question, not just the code: a `system.ms_client_secret_expires_at` ITS_Config row seeded

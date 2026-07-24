@@ -437,11 +437,15 @@ rotate anything not on it. There is no free-form secret store.
 
 The three Microsoft Graph credentials are on the list because Graph is the only
 transport for every external send: the client secret **expires** on an Entra-ID-set
-lifetime, so an expiry the Successor-Operator cannot repair from the console is a
-total send outage with no path back except the Developer-Operator. Record the expiry
-date at seed time and calendar the rotation. All three re-seed together — a
-re-registered app changes tenant, client id, and secret at once, and re-seeding two
-of the three leaves Graph fail-closed.
+lifetime, so an unnoticed expiry takes every send lane down at once. Rotating them
+here is **Developer-Operator self-service** under the §44 v21.x rider (ratified
+2026-07-14) — current-credential-gated self-rotation by the holder, which saves a
+terminal round-trip. It does **not** make an expired Graph credential a Tier-2
+repair: Class C is Developer-Operator-only, secrets/auth is a FIXED
+high-capability class, and **a Successor-Operator who meets this escalates** rather
+than rotating it. Record the expiry date at seed time and calendar the rotation.
+All three re-seed together — a re-registered app changes tenant, client id, and
+secret at once, and re-seeding two of the three leaves Graph fail-closed.
 
 <!-- src: operator_dashboard/act/pin_change.py:1-8 (in-dashboard, current-PIN-gated PIN change) | verified 2026-07-15 -->
 `ITS_ANTHROPIC_KEY` (the sole LLM key) is read at runtime but is **not** rotated through
