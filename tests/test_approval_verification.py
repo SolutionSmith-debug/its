@@ -16,7 +16,7 @@ from shared import approval_verification
 from shared.approval_verification import VerdictReason, verify_approval
 from shared.smartsheet_client import CellHistoryEvent, SmartsheetError
 
-SHEET = 8489603961933700
+SHEET = 7264675665235844
 ROW = 4242
 COLUMN = "Approved for Send"
 ALLOW = frozenset({"daniels@evergreenmirror.com", "seths@evergreenmirror.com"})
