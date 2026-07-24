@@ -48,10 +48,13 @@ ALERTING_MAX_ALERTS_PER_HOUR = 15
 # when system.operator_email cannot be read from ITS_Config (e.g. the Smartsheet
 # circuit breaker is OPEN during the very outage the prolonged-open CRITICAL page
 # must reach the operator about — the ITS_Config read short-circuits). ITS_Config's
-# system.operator_email takes precedence whenever readable; this is the last-resort
-# recipient so an out-of-band page still delivers during a total Smartsheet outage
-# (Resend is HTTP, unaffected). Per-customer-repo invariant: replace at fork time.
-OPERATOR_EMAIL_FALLBACK = "seths@evergreenmirror.com"
+# system.operator_email takes precedence whenever readable; this is the LAST-RESORT
+# CRITICAL-page recipient used exactly when ITS_Config is unreachable, so it MUST be
+# tenant-independent: a mirror mailbox dies at mirror retirement, and a
+# production-tenant mailbox would die in precisely the production-tenant outage this
+# fallback exists to page through (Resend is HTTP, unaffected). Decision 2026-07-23.
+# Per-customer-repo invariant: replace at fork time (with a tenant-independent address).
+OPERATOR_EMAIL_FALLBACK = "seth@solutionsmith.org"
 
 # Circuit breaker (F08) — fallbacks for shared/circuit_breaker.py's Smartsheet
 # breaker. Each is operator-tunable via an ITS_Config row (workstream="global")
