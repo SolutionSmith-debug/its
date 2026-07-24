@@ -47,6 +47,10 @@ Run from ~/its while daemons are down:
     python3 scripts/migrations/standup.py --list
     python3 scripts/migrations/standup.py [--dump DIR] [--start-at STAGE] [--skip-shares]
     python3 scripts/migrations/standup.py --resume      # restart from the run state
+    # PRODUCTION stand-up: restore the reference sheets only (vendors /
+    # subcontractors / master DBs / equipment), both Active-Jobs sheets empty:
+    python3 scripts/migrations/standup.py --dump DIR --skip-shares \
+        --skip-restore-sheet ITS_Active_Jobs --skip-restore-sheet ITS_Active_Jobs_Progress
 """
 from __future__ import annotations
 
@@ -60,7 +64,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
@@ -384,7 +388,21 @@ def _find_dump_sheet(dump_dir: pathlib.Path, workspace: str, sheet: str,
     return matches[0] if matches else None
 
 
-def _stage_restore_rows(dump_dir: pathlib.Path) -> None:
+def _validate_skip_restore_sheets(names: Sequence[str]) -> tuple[str, ...]:
+    """Refuse LOUDLY at startup on a --skip-restore-sheet name not in
+    RESTORE_SHEETS — a typo would silently RESTORE the sheet the operator
+    meant to hold back (the production stand-up's Active-Jobs case)."""
+    valid = [sheet for _ws, sheet, _const in RESTORE_SHEETS]
+    unknown = sorted(set(names) - set(valid))
+    if unknown:
+        raise StageFailedError(
+            f"--skip-restore-sheet: unknown sheet name(s) {unknown} — "
+            f"valid names: {valid}")
+    return tuple(dict.fromkeys(names))
+
+
+def _stage_restore_rows(dump_dir: pathlib.Path,
+                        skip_restore_sheets: Sequence[str] = ()) -> None:
     """Restore data-bearing SoR rows from the pre-wipe dump (idempotent by primary).
 
     Raw REST (not smartsheet_client.add_rows) so structured objectValues —
@@ -392,11 +410,16 @@ def _stage_restore_rows(dump_dir: pathlib.Path) -> None:
     ITS_Subcontractors "Trades" — round-trip intact; a title-keyed plain value
     would flatten them to a display string the API rejects. Cells map dump
     title -> REBUILT sheet column id; dump columns absent on the rebuilt
-    schema are reported, never silently dropped.
+    schema are reported, never silently dropped. Sheets named in
+    skip_restore_sheets (--skip-restore-sheet, validated at startup) are held
+    back entirely — they stay as the builders left them (empty).
     """
     from shared import smartsheet_client
     sheet_ids = _fresh_sheet_ids()
     for workspace, sheet_name, constant in RESTORE_SHEETS:
+        if sheet_name in skip_restore_sheets:
+            print(f"[skip] restore skipped by --skip-restore-sheet: {sheet_name!r}")
+            continue
         target_id = getattr(sheet_ids, constant, 0)
         if not target_id:
             print(f"[WARN] restore skipped: {constant} unresolved (sheet {sheet_name!r})")
@@ -454,6 +477,10 @@ def _stage_restore_rows(dump_dir: pathlib.Path) -> None:
                     f"restore add-rows failed for {sheet_name!r}: "
                     f"HTTP {r.status_code} {r.text[:300]}")
         print(f"[ok] {sheet_name!r}: restored {len(payload)} row(s) from dump.")
+    # Unconditional even when --skip-restore-sheet held back the Active-Jobs
+    # sheets: both rebuilt sheets are then simply EMPTY, so the reconcile reads
+    # two empty row sets and no-ops ("already aligned") — cheaper and less
+    # drift-prone than a special case.
     _reconcile_progress_job_ids(sheet_ids)
 
 
@@ -570,7 +597,8 @@ def _stage_final_verify() -> None:
 Stage = tuple[str, Callable[[], None]]
 
 
-def build_stages(dump_dir: pathlib.Path | None, *, skip_shares: bool) -> list[Stage]:
+def build_stages(dump_dir: pathlib.Path | None, *, skip_shares: bool,
+                 skip_restore_sheets: Sequence[str] = ()) -> list[Stage]:
     def run(script: str, *args: str) -> Callable[[], None]:
         return lambda: _run_script(script, *args)
 
@@ -635,7 +663,8 @@ def build_stages(dump_dir: pathlib.Path | None, *, skip_shares: bool) -> list[St
         ("docs-index", run(f"{MIGRATIONS}/build_docs_index_sheet.py")),
     ]
     if dump_dir is not None:
-        stages.append(("restore-rows", lambda: _stage_restore_rows(dump_dir)))
+        stages.append(("restore-rows",
+                       lambda: _stage_restore_rows(dump_dir, skip_restore_sheets)))
     stages.append(("seeders", lambda: _run_many(
         f"{MIGRATIONS}/seed_its_forms_catalog.py",
         f"{MIGRATIONS}/extend_its_forms_catalog_parent_variant.py",
@@ -879,6 +908,7 @@ def _write_state(state: dict[str, Any], dump_dir: pathlib.Path | None) -> None:
 
 def _resume_start_stage(dump_dir: pathlib.Path | None, *, no_restore: bool,
                         skip_shares: bool, no_run_branch: bool,
+                        skip_restore_sheets: Sequence[str] = (),
                         stage_names: list[str]) -> str:
     """Derive the restart stage from the persisted run state, refusing LOUDLY on
     every ambiguous case: no state, a corrupt state file, a completed run, or
@@ -902,12 +932,21 @@ def _resume_start_stage(dump_dir: pathlib.Path | None, *, no_restore: bool,
             "--resume: the recorded run is COMPLETE — start a fresh run, or pass "
             "--start-at explicitly to re-run a stage")
     recorded = state.get("flags", {})
-    # .get(k, False): pre-#687 state files never recorded no_run_branch; absent
-    # means the run used the mode's default (False), not a conflict.
-    supplied = {"no_restore": no_restore, "skip_shares": skip_shares,
-                "no_run_branch": no_run_branch}
-    conflicts = {k: (recorded.get(k, False), v) for k, v in supplied.items()
-                 if recorded.get(k, False) != v}
+    # .get(k, <default>): older state files never recorded the newer flags
+    # (no_run_branch pre-#687, skip_restore_sheets pre-selector); absent means
+    # the run used the flag's default, not a conflict. skip sets compare SORTED —
+    # repeat order is meaningless, only membership changes the restore work.
+    supplied: dict[str, Any] = {
+        "no_restore": no_restore, "skip_shares": skip_shares,
+        "no_run_branch": no_run_branch,
+        "skip_restore_sheets": sorted(skip_restore_sheets)}
+    recorded_norm: dict[str, Any] = {
+        "no_restore": recorded.get("no_restore", False),
+        "skip_shares": recorded.get("skip_shares", False),
+        "no_run_branch": recorded.get("no_run_branch", False),
+        "skip_restore_sheets": sorted(recorded.get("skip_restore_sheets") or [])}
+    conflicts = {k: (recorded_norm[k], v) for k, v in supplied.items()
+                 if recorded_norm[k] != v}
     if conflicts:
         raise StageFailedError(
             f"--resume: supplied flags conflict with the recorded run "
@@ -1332,6 +1371,13 @@ def main() -> int:
                         help="Fresh-tenant mode: skip row/share restore entirely.")
     parser.add_argument("--skip-shares", action="store_true",
                         help="Skip the workspace share restore stage.")
+    parser.add_argument("--skip-restore-sheet", action="append", default=[],
+                        metavar="NAME", dest="skip_restore_sheet",
+                        help="Hold back ONE named RESTORE_SHEETS sheet from the row "
+                             "restore (repeatable; unknown names abort at startup). "
+                             "Production stand-up shape: skip ITS_Active_Jobs and "
+                             "ITS_Active_Jobs_Progress to restore the reference "
+                             "sheets while both Active-Jobs sheets start empty.")
     parser.add_argument("--start-at", default=None, metavar="STAGE",
                         help="Resume from a named stage (see --list). The explicit "
                              "manual override — wins over --resume.")
@@ -1346,6 +1392,11 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="Print stages and exit.")
     args = parser.parse_args()
 
+    try:
+        skip_restore_sheets = _validate_skip_restore_sheets(args.skip_restore_sheet)
+    except StageFailedError as exc:
+        print(f"[abort] {exc}")
+        return 1
     dump_dir: pathlib.Path | None = None
     if not args.no_restore:
         try:
@@ -1353,7 +1404,8 @@ def main() -> int:
         except StageFailedError as exc:
             print(f"[abort] {exc}")
             return 1
-    stages = build_stages(dump_dir, skip_shares=args.skip_shares)
+    stages = build_stages(dump_dir, skip_shares=args.skip_shares,
+                          skip_restore_sheets=skip_restore_sheets)
 
     if args.list:
         for name, _fn in stages:
@@ -1375,7 +1427,8 @@ def main() -> int:
             resume_stage = _resume_start_stage(
                 dump_dir, no_restore=args.no_restore,
                 skip_shares=args.skip_shares,
-                no_run_branch=args.no_run_branch, stage_names=names)
+                no_run_branch=args.no_run_branch,
+                skip_restore_sheets=skip_restore_sheets, stage_names=names)
         except StageFailedError as exc:
             print(f"[abort] {exc}")
             return 1
@@ -1423,6 +1476,7 @@ def main() -> int:
         "started_utc": run_id,
         "flags": {"no_restore": args.no_restore, "skip_shares": args.skip_shares,
                   "no_run_branch": args.no_run_branch,
+                  "skip_restore_sheets": sorted(skip_restore_sheets),
                   "dump_dir": str(dump_dir) if dump_dir else None},
         "stage_names": names,
         "run_branch": run_branch,
