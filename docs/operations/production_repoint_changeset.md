@@ -19,10 +19,11 @@ Aug-3 cutover (operator + Seth).** It is the CL-12 sweep's worksheet, gated afte
 > **Mechanized (2026-07-23):** §A–D are applied by
 > `scripts/migrations/production_repoint.py` from its reviewed data file
 > `production_repoint_map.json` (PLAN default; typed-phrase `--commit`; DRIFTED
-> rows refuse the sweep; §E structurally excluded). The map ADDS two §B rows
-> built after this doc was authored — `subcontracts.subcontract_send.from_mailbox`
-> and `po_materials.rfq_send.from_mailbox` (both VC-03 sandbox-scan-enrolled) —
-> and EXCLUDES the LEGACY `safety_reports.intake.mailbox` row. The §Approver-model
+> rows refuse the sweep; §E structurally excluded). The map carries two §B rows
+> built after this doc was originally authored — `subcontracts.subcontract_send.from_mailbox`
+> and `po_materials.rfq_send.from_mailbox` (both VC-03 sandbox-scan-enrolled, now
+> reflected in the §B table below) — and EXCLUDES the LEGACY
+> `safety_reports.intake.mailbox` row. The §Approver-model
 > share swap is applied by `seed_production_shares.py` (+ its manifest) and
 > verified by `verify_cutover --only approver-shares` (VC-10), replacing the
 > hand `python -c` diff below.
@@ -33,8 +34,10 @@ Smartsheet + Box edit, **not a code change**.
 
 ## Procedure — the ITS_Config production sweep (CL-12)
 
-Production domain throughout: **evergreenrenewables.com** (re-**NEW**-ables). Mailboxes:
-`safety@` / `progress@` / `procurement@`. Box + operator identity: `its@evergreenrenewables.com`.
+Production domain throughout: **evergreenrenewables.com** (re-**NEW**-ables). **Phase-1
+single-mailbox model (operator decision 2026-07-23): ALL send lanes send from
+`its@evergreenrenewables.com`; per-lane shared mailboxes are the later `safety@` / `progress@` /
+`procurement@` step.** Box + operator identity: `its@evergreenrenewables.com`.
 
 ### A. worker_base_url — ONE Setting name, THREE physical rows (one per Workstream cell)
 
@@ -52,11 +55,18 @@ to the production custom domain.
 
 ### B. Send FROM addresses (mailbox/identity rows)
 
+> **Phase-1 single-mailbox model (operator decision 2026-07-23):** all five send lanes send from
+> `its@evergreenrenewables.com`; per-lane shared mailboxes are the later `safety@` / `procurement@`
+> step. The two rows built after this doc was originally authored (`subcontract_send` / `rfq_send`)
+> are included below to match `production_repoint_map.json`.
+
 | Setting | Workstream | from (mirror) | to (production) | In VC-03? |
 |---|---|---|---|---|
-| `safety_reports.weekly_send.from_mailbox` | `safety_reports` | `safety@evergreenmirror.com` | `safety@evergreenrenewables.com` | ✅ (scanned) |
-| `progress_reports.progress_send.from_mailbox` | `progress_reports` | `progress@evergreenmirror.com` | `progress@evergreenrenewables.com` | ✅ (scanned) |
-| `po_materials.po_send.from_mailbox` | `po_materials` | `procurement@evergreenmirror.com` | `procurement@evergreenrenewables.com` | ✅ **(newly enrolled this PR)** |
+| `safety_reports.weekly_send.from_mailbox` | `safety_reports` | `safety@evergreenmirror.com` | `its@evergreenrenewables.com` | ✅ (scanned) |
+| `progress_reports.progress_send.from_mailbox` | `progress_reports` | `progress@evergreenmirror.com` | `its@evergreenrenewables.com` | ✅ (scanned) |
+| `po_materials.po_send.from_mailbox` | `po_materials` | `procurement@evergreenmirror.com` | `its@evergreenrenewables.com` | ✅ **(newly enrolled this PR)** |
+| `subcontracts.subcontract_send.from_mailbox` | `subcontracts` | `procurement@evergreenmirror.com` | `its@evergreenrenewables.com` | ✅ (scanned — added post-authorship, SC-S4 2026-07-15) |
+| `po_materials.rfq_send.from_mailbox` | `po_materials` | `procurement@evergreenmirror.com` | `its@evergreenrenewables.com` | ✅ (scanned — added post-authorship, ADR-0004 R3) |
 | `safety_reports.intake.mailbox` | `safety_reports` | `safety@evergreenmirror.com` | `safety@evergreenrenewables.com` (only if email intake resurrected) | ⬜ (email-intake path LEGACY/dormant — portal PULL superseded it) |
 
 ### C. System-global rows
