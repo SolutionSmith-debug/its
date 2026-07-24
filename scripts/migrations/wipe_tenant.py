@@ -42,10 +42,12 @@ Deletion mechanics
     [skip] (idempotent re-run). A partial failure leaves the remainder intact
     and exits nonzero; re-running resumes safely.
 
-The allowlist pins the LIVE sandbox ids captured 2026-07-22. After the rebuild,
-the old ids are dead and this script can delete nothing — updating the pins is a
-deliberate PR-reviewed code change, which is exactly the friction a repeat wipe
-should carry.
+The allowlist pins the LIVE sandbox ids captured 2026-07-23 — re-pinned after
+the #670 wipe->rebuild replaced every id (the 2026-07-22 pins were dead, so the
+tool could delete nothing). sheet_ids_regen deliberately EXEMPTS this file from
+automatic remap: after any rebuild the old ids are dead and updating the pins is
+a deliberate PR-reviewed code change, which is exactly the friction a repeat
+wipe should carry.
 
 Auth: ITS_SMARTSHEET_TOKEN (Keychain) for Smartsheet; the shared Box OAuth
 identity via shared/box_client (token refresh on use is normal).
@@ -78,27 +80,28 @@ BASE = "https://api.smartsheet.com/2.0"
 CONFIRM_PHRASE = "NUKE THE SANDBOX"
 DUMP_ROOT = pathlib.Path.home() / "its" / "logs" / "migrations"
 
-# ---- the allowlist (name AND id must both match; captured live 2026-07-22) ----
+# ---- the allowlist (name AND id must both match; captured live 2026-07-23,
+# re-pinned after the #670 rebuild replaced every id) ----
 
 SMARTSHEET_WORKSPACE_ALLOWLIST: tuple[tuple[str, int], ...] = (
-    ("Evergreen Portfolio Template (Demo Seed)", 685696395569028),
-    ("Evergreen Portfolio Template (Master)", 3333320395253636),
-    ("Forefront Portfolio — ITS Demo", 4129485730670468),
+    ("Forefront Portfolio — ITS Demo", 6153011522234244),
+    # ADMIN (not OWNER) — the live API refuses the delete; kept pinned on purpose.
     ("Forfront IL portfolio", 2228567565199236),
-    ("ITS –– Safety Portal", 194283417429892),
-    ("ITS — Archive", 5528280611743620),
-    ("ITS — Human Review", 8561891980142468),
-    ("ITS — Operations", 7217130472007556),
-    ("ITS — Progress Reporting", 5988851429730180),
-    ("ITS — Purchase Orders", 6191118619568004),
-    ("ITS — Subcontracts", 6073264716965764),
-    ("ITS — System", 680592632244100),
+    ("ITS –– Safety Portal", 6820552519247748),
+    ("ITS — Archive", 1649411894863748),
+    ("ITS — Human Review", 3056786778417028),
+    ("ITS — Operations", 5027111615391620),
+    ("ITS — Progress Reporting", 171668267132804),
+    ("ITS — Purchase Orders", 1860518127396740),
+    ("ITS — Subcontracts", 8545548824274820),
+    ("ITS — System", 2730369263921028),
 )
 
 BOX_ROOT_ALLOWLIST: tuple[tuple[str, str], ...] = (
+    # Not owned by the ITS Box auth — the live delete is refused; kept pinned on purpose.
     ("ITS DATA", "382010286207"),
-    ("ITS_Safety_Portal", "388017263015"),
-    ("ITS_Progress_Reporting", "396689250929"),
+    ("ITS Safety Reports", "402472263997"),
+    ("ITS Progress Reports", "402472283537"),
 )
 
 
