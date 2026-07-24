@@ -5,7 +5,8 @@
     "This file is DATA, not code, on purpose: the CI secrets job's production-identity guard (.gitleaks-identity.toml) blocks @evergreenrenewables.com emails from re-entering .py/.ts/.tsx source; the reviewed production values therefore live here, in a .json file the guard deliberately scopes out.",
     "EXCLUDED — safety_reports.intake.mailbox (changeset section B row 4): the email-intake lane is LEGACY/dormant (portal PULL superseded it 2026-06-05) and the row is NOT VC-03-enrolled; repoint it only if email intake is ever resurrected.",
     "EXCLUDED — every section-E send-scope gate (*_enabled / *.polling_enabled / scheduled_send_local): gate flips stay CL-13 manual + Seth (FIXED External-Send-Gate class). production_repoint.py structurally REFUSES to load a map containing any *_enabled setting.",
-    "ADDED beyond the changeset's section-B table — subcontracts.subcontract_send.from_mailbox and po_materials.rfq_send.from_mailbox: both built after the changeset was authored (SC-S4 2026-07-15, ADR-0004 R3) and both enrolled in verify_cutover CONFIG_ROWS with sandbox_scan=True; mirror values verified against seed_subcontracts_send_config.py / seed_rfq_send_config.py."
+    "ADDED beyond the changeset's section-B table — subcontracts.subcontract_send.from_mailbox and po_materials.rfq_send.from_mailbox: both built after the changeset was authored (SC-S4 2026-07-15, ADR-0004 R3) and both enrolled in verify_cutover CONFIG_ROWS with sandbox_scan=True; mirror values verified against seed_subcontracts_send_config.py / seed_rfq_send_config.py.",
+    "SECTION B — Phase-1 single-mailbox model (operator decision 2026-07-23): ALL five from_mailbox lanes target its@evergreenrenewables.com; per-lane shared mailboxes are the later safety@/procurement@ step. (system.operator_email already targeted its@.)"
   ],
   "rows": [
     {
@@ -36,41 +37,41 @@
       "setting": "safety_reports.weekly_send.from_mailbox",
       "workstream": "safety_reports",
       "from_mirror": "safety@evergreenmirror.com",
-      "to_production": "safety@evergreenrenewables.com",
+      "to_production": "its@evergreenrenewables.com",
       "category": "B",
-      "notes": "Graph send-from mailbox for the weekly safety-report email (weekly_send). VC-03 sandbox-scanned."
+      "notes": "Graph send-from mailbox for the weekly safety-report email (weekly_send). Phase-1 single-mailbox model (operator decision 2026-07-23); the shared safety@ mailbox is the later step. VC-03 sandbox-scanned."
     },
     {
       "setting": "progress_reports.progress_send.from_mailbox",
       "workstream": "progress_reports",
       "from_mirror": "progress@evergreenmirror.com",
-      "to_production": "progress@evergreenrenewables.com",
+      "to_production": "its@evergreenrenewables.com",
       "category": "B",
-      "notes": "Graph send-from mailbox for the weekly progress-report email (progress_send). VC-03 sandbox-scanned."
+      "notes": "Graph send-from mailbox for the weekly progress-report email (progress_send). Phase-1 single-mailbox model (operator decision 2026-07-23); the shared progress@ mailbox is the later step. VC-03 sandbox-scanned."
     },
     {
       "setting": "po_materials.po_send.from_mailbox",
       "workstream": "po_materials",
       "from_mirror": "procurement@evergreenmirror.com",
-      "to_production": "procurement@evergreenrenewables.com",
+      "to_production": "its@evergreenrenewables.com",
       "category": "B",
-      "notes": "Graph send-from mailbox for outbound PO email (po_send). VC-03 sandbox-scanned."
+      "notes": "Graph send-from mailbox for outbound PO email (po_send). Phase-1 single-mailbox model (operator decision 2026-07-23); the shared procurement@ mailbox is the later step. VC-03 sandbox-scanned."
     },
     {
       "setting": "subcontracts.subcontract_send.from_mailbox",
       "workstream": "subcontracts",
       "from_mirror": "procurement@evergreenmirror.com",
-      "to_production": "procurement@evergreenrenewables.com",
+      "to_production": "its@evergreenrenewables.com",
       "category": "B",
-      "notes": "Graph send-from mailbox for outbound subcontract packages (subcontract_send; reuses procurement@ — no dedicated subcontracts mailbox). ADDED beyond the changeset's B table (built after it); VC-03 sandbox-scanned."
+      "notes": "Graph send-from mailbox for outbound subcontract packages (subcontract_send). Phase-1 single-mailbox model (operator decision 2026-07-23); the later shared-mailbox step reuses procurement@ (no dedicated subcontracts mailbox). ADDED beyond the changeset's B table (built after it); VC-03 sandbox-scanned."
     },
     {
       "setting": "po_materials.rfq_send.from_mailbox",
       "workstream": "po_materials",
       "from_mirror": "procurement@evergreenmirror.com",
-      "to_production": "procurement@evergreenrenewables.com",
+      "to_production": "its@evergreenrenewables.com",
       "category": "B",
-      "notes": "Graph send-from mailbox for outbound RFQ email (rfq_send; RFQs and POs share procurement@). ADDED beyond the changeset's B table (ADR-0004 R3, built after it); VC-03 sandbox-scanned."
+      "notes": "Graph send-from mailbox for outbound RFQ email (rfq_send). Phase-1 single-mailbox model (operator decision 2026-07-23); at the later shared-mailbox step RFQs and POs share procurement@. ADDED beyond the changeset's B table (ADR-0004 R3, built after it); VC-03 sandbox-scanned."
     },
     {
       "setting": "system.operator_email",

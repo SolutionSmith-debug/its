@@ -1,29 +1,42 @@
 #!/usr/bin/env python3
 """Smoke test for ITS Microsoft Graph integration.
 
-OPERATIONAL — makes REAL network calls and sends REAL email.
-Sandbox-only: mailbox addresses hardcoded to evergreenmirror.com.
+OPERATIONAL — makes REAL network calls and sends REAL email. Attended-run only.
+
+Mailbox addresses are parameterized via argparse; the defaults are the sandbox
+(evergreenmirror.com) mailboxes, so a no-args run behaves exactly as before:
+
+    python3 scripts/smoke_test_graph.py
+
+Production-tenant run (Phase-1 cutover) — substitute the real production
+domain on the command line. NEVER commit a production email literal to this
+file: the CI `secrets` job (.gitleaks-identity.toml) blocks any production-
+domain address in .py sources.
+
+    python3 scripts/smoke_test_graph.py \\
+        --mailbox its@<production-domain> \\
+        --to <operator>@<production-domain> \\
+        --denied-mailbox <persona>@<production-domain>
 
 Re-run after:
   - Client secret rotation
   - Entra app re-registration or scope changes
   - Application Access Policy modifications
-  - Live-tenant cutover (after duplicating with customer-domain mailboxes)
-
-Parameterization of mailbox addresses deferred until Customer 2 onboarding.
+  - Live-tenant cutover (with the production mailbox flags as above)
 
 Verifies the full chain end-to-end:
   1. Keychain credentials are readable
   2. MSAL client-credentials auth against Entra ID app registration works
-  3. Mail.Read scope works (lists inbox of safety@)
-  4. Application Access Policy enforcement (persona mailbox correctly blocked)
-  5. Mail.Send scope works (sends test mail from safety@ to seths@)
+  3. Mail.Read scope works (lists inbox of --mailbox)
+  4. Application Access Policy enforcement (--denied-mailbox correctly blocked)
+  5. Mail.Send scope works (sends test mail from --mailbox to --to)
 
 Run after Entra app registration, Keychain seeding, and Application Access Policy.
 Re-run after any client secret rotation or scope change.
 """
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -34,6 +47,50 @@ try:
 except ImportError as e:
     print(f"❌ Missing dependency: {e.name}. Run: pip3 install --user msal requests")
     sys.exit(1)
+
+# Sandbox (mirror-tenant) defaults — a no-args run is byte-identical to the
+# pre-parameterization behavior. Production mailboxes are passed as CLI flags
+# only, never hardcoded here (CI `secrets` job blocks production literals).
+DEFAULT_MAILBOX = "safety@evergreenmirror.com"  # policy-Granted: inbox read + send-from
+DEFAULT_TO = "seths@evergreenmirror.com"  # test-mail recipient
+DEFAULT_DENIED_MAILBOX = "jacobs@evergreenmirror.com"  # policy-Denied probe
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Attended Graph smoke test: Keychain → MSAL token → Mail.Read on the "
+            "granted mailbox → Application Access Policy denied-probe → Mail.Send. "
+            "Sends a REAL email."
+        )
+    )
+    parser.add_argument(
+        "--mailbox",
+        default=DEFAULT_MAILBOX,
+        help=(
+            "Policy-GRANTED mailbox: its inbox is read (Mail.Read) and the test "
+            "mail is sent FROM it (Mail.Send). Default: %(default)s"
+        ),
+    )
+    parser.add_argument(
+        "--to",
+        default=DEFAULT_TO,
+        help="Recipient of the test mail. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--denied-mailbox",
+        default=DEFAULT_DENIED_MAILBOX,
+        help=(
+            "Mailbox EXPECTED to be blocked by the Application Access Policy "
+            "(the Denied probe). Default: %(default)s"
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def _short(address: str) -> str:
+    """Display shorthand for a mailbox: local part + '@' (e.g. 'safety@')."""
+    return address.split("@", 1)[0] + "@"
 
 
 def keychain_get(service: str) -> str:
@@ -115,7 +172,12 @@ def send_mail(token: str, from_mailbox: str, to: str, subject: str, body: str) -
     return False, f"HTTP {r.status_code}: {msg}"
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    mailbox_short = _short(args.mailbox)
+    to_short = _short(args.to)
+    denied_short = _short(args.denied_mailbox)
+
     print("ITS Microsoft Graph smoke test")
     print("=" * 60)
 
@@ -123,8 +185,8 @@ def main() -> None:
     token = get_access_token()
     print(f"      ✅ Token acquired ({len(token)} chars)")
 
-    print("\n[2/4] Reading inbox of safety@ (Mail.Read + policy = Granted)...")
-    status, msg = list_inbox(token, "safety@evergreenmirror.com")
+    print(f"\n[2/4] Reading inbox of {mailbox_short} (Mail.Read + policy = Granted)...")
+    status, msg = list_inbox(token, args.mailbox)
     if status == 200:
         print(f"      ✅ {msg}")
     else:
@@ -132,26 +194,26 @@ def main() -> None:
         if status == 403:
             print("      → Application Access Policy may still be propagating (up to 30 min).")
             print("        Wait 10 min and re-run. If still 403, check policy with:")
-            print("        Test-ApplicationAccessPolicy -Identity safety@evergreenmirror.com -AppId <appid>")
+            print(f"        Test-ApplicationAccessPolicy -Identity {args.mailbox} -AppId <appid>")
         sys.exit(1)
 
-    print("\n[3/4] Verifying persona mailbox is BLOCKED (jacobs@ = Denied)...")
-    status, msg = list_inbox(token, "jacobs@evergreenmirror.com")
+    print(f"\n[3/4] Verifying persona mailbox is BLOCKED ({denied_short} = Denied)...")
+    status, msg = list_inbox(token, args.denied_mailbox)
     if status == 403:
         print(f"      ✅ Correctly denied: {msg}")
     elif status == 200:
-        print(f"      ❌ SECURITY ISSUE: jacobs@ should be denied but returned: {msg}")
+        print(f"      ❌ SECURITY ISSUE: {denied_short} should be denied but returned: {msg}")
         print("      → Application Access Policy is not enforcing. Investigate before proceeding.")
         sys.exit(1)
     else:
         print(f"      ⚠️  Unexpected response: {msg}")
         print("      → May be propagation lag. Re-run in 10 min.")
 
-    print("\n[4/4] Sending test mail from safety@ to seths@ (Mail.Send)...")
+    print(f"\n[4/4] Sending test mail from {mailbox_short} to {to_short} (Mail.Send)...")
     ok, msg = send_mail(
         token,
-        from_mailbox="safety@evergreenmirror.com",
-        to="seths@evergreenmirror.com",
+        from_mailbox=args.mailbox,
+        to=args.to,
         subject="ITS Graph smoke test — automated",
         body=(
             "This message was sent by smoke_test_graph.py via Microsoft Graph using\n"
@@ -167,7 +229,7 @@ def main() -> None:
 
     print("\n" + "=" * 60)
     print("✅ All checks passed. graph_client.py can now be wired up.")
-    print("   Check seths@ inbox for the test message (From: safety@evergreenmirror.com).")
+    print(f"   Check {to_short} inbox for the test message (From: {args.mailbox}).")
 
 
 if __name__ == "__main__":
