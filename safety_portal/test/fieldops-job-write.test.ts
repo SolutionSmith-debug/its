@@ -1,6 +1,9 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
-import { call, provision, login, p as j, seedJob as seedJobRow } from "./helpers";
+import { call, provision, login, p as j, g, seedJob as seedJobRow } from "./helpers";
+// The SAME §50-edited bundle the Worker serves — asserted served-equals-source, never a pinned
+// literal (HOUSE_REFLEXES §5 / po.test.ts pattern), so an operator edit never RED-lights this test.
+import deliveryContactsConfig from "../../po_materials/config/delivery_contacts.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // P2.3 Slice 2 + P2.5 Slice 1/6 — JOB WRITE (create/lifecycle/contacts).
@@ -12,8 +15,11 @@ import { call, provision, login, p as j, seedJob as seedJobRow } from "./helpers
 
 
 // Slice 6: the portal assigns the Job ID. Create a job and return the SERVER-assigned JOB-######.
+// Safety CC is REQUIRED on create (2026-07-24); default one so tests that don't exercise the CC
+// itself still create successfully. A test that passes its own safety_cc (incl. FULL) keeps it.
 async function createOk(cookie: string, body: Record<string, unknown>): Promise<string> {
-  const res = await j(cookie, "/api/fieldops/job", body);
+  const withCc = "safety_cc" in body ? body : { ...body, safety_cc: ["cc@x.com"] };
+  const res = await j(cookie, "/api/fieldops/job", withCc);
   expect(res.status, await res.clone().text()).toBe(201);
   return ((await res.json()) as { job_id: string }).job_id;
 }
@@ -49,7 +55,7 @@ describe("POST /api/fieldops/job (create)", () => {
   it("gate: anon → 401, submitter (no manage cap) → 403, admin → 201", async () => {
     expect((await call("/api/fieldops/job", { method: "POST", body: JSON.stringify({ project_name: "X" }) })).status).toBe(401);
     expect((await j(submitter, "/api/fieldops/job", { project_name: "X" })).status).toBe(403);
-    expect((await j(admin, "/api/fieldops/job", { project_name: "X" })).status).toBe(201);
+    expect((await j(admin, "/api/fieldops/job", { project_name: "X", safety_cc: ["cc@x.com"] })).status).toBe(201);
   });
 
   it("Slice 6: assigns sequential JOB-###### from the counter (seed 16 → first JOB-000017)", async () => {
@@ -87,7 +93,7 @@ describe("POST /api/fieldops/job (create)", () => {
   });
 
   it("client_id is verified (422 unknown_client) / linked when valid", async () => {
-    expect((await j(admin, "/api/fieldops/job", { project_name: "Z", client_id: 99999 })).status).toBe(422);
+    expect((await j(admin, "/api/fieldops/job", { project_name: "Z", client_id: 99999, safety_cc: ["cc@x.com"] })).status).toBe(422);
     await env.DB.prepare("INSERT INTO clients (name) VALUES ('Real')").run();
     const cid = (await env.DB.prepare("SELECT id FROM clients WHERE name='Real'").first<{ id: number }>())!.id;
     const id = await createOk(admin, { project_name: "Y", client_id: cid });
@@ -102,13 +108,13 @@ describe("POST /api/fieldops/job (create)", () => {
   });
 
   it("new_client over-long fields → 400 (every body string reaching D1 is bounded)", async () => {
-    const res = await j(admin, "/api/fieldops/job", { project_name: "X", new_client: { name: "Acme Co", email: "x".repeat(321) } });
+    const res = await j(admin, "/api/fieldops/job", { project_name: "X", safety_cc: ["cc@x.com"], new_client: { name: "Acme Co", email: "x".repeat(321) } });
     expect(res.status).toBe(400);
   });
 
   it("counter_unavailable → 500 fail-closed when the job_counter ROW is missing (no malformed id)", async () => {
     await env.DB.prepare("DELETE FROM job_counter").run(); // seed row gone, table present
-    const res = await j(admin, "/api/fieldops/job", { project_name: "X" });
+    const res = await j(admin, "/api/fieldops/job", { project_name: "X", safety_cc: ["cc@x.com"] });
     expect(res.status).toBe(500);
     expect(((await res.json()) as any).error).toBe("counter_unavailable");
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs").first<{ n: number }>()).toMatchObject({ n: 0 });
@@ -119,7 +125,7 @@ describe("POST /api/fieldops/job (create)", () => {
     // The literal deploy-order fault: D1 throws "no such table" — allocateJobNumber catches it and
     // collapses to the SAME clean counter_unavailable (not an opaque internal_error). Fail-closed.
     await env.DB.prepare("DROP TABLE job_counter").run();
-    const res = await j(admin, "/api/fieldops/job", { project_name: "X" });
+    const res = await j(admin, "/api/fieldops/job", { project_name: "X", safety_cc: ["cc@x.com"] });
     expect(res.status).toBe(500);
     expect(((await res.json()) as any).error).toBe("counter_unavailable");
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs").first<{ n: number }>()).toMatchObject({ n: 0 });
@@ -356,5 +362,59 @@ describe("0057 — job_no + structured address", () => {
     const row = await jobRow(jobId);
     expect(row.job_no).toBe("2025.007");
     expect(row.address_city).toBe("Peoria");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Safety CC on create — REQUIRED-ON-CREATE + the delivery-contacts read route (2026-07-24).
+// The weekly safety email CCs jobs.safety_cc; a job created with none silently ships to the
+// primary recipient only. Required is CREATE-ONLY — the /contacts EDIT route still allows blanking.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("Safety CC required-on-create + delivery-contacts read route", () => {
+  it("(i) create with an empty safety_cc → 400 safety_cc_required (no number burned)", async () => {
+    // Absent key.
+    const noKey = await j(admin, "/api/fieldops/job", { project_name: "NoCC" });
+    expect(noKey.status).toBe(400);
+    expect(((await noKey.json()) as any).error).toBe("safety_cc_required");
+    // Explicit empty array (parseCc → []).
+    const emptyArr = await j(admin, "/api/fieldops/job", { project_name: "NoCC", safety_cc: [] });
+    expect(emptyArr.status).toBe(400);
+    expect(((await emptyArr.json()) as any).error).toBe("safety_cc_required");
+    // A whitespace-only entry is skipped by parseCc → still empty → refused.
+    const blank = await j(admin, "/api/fieldops/job", { project_name: "NoCC", safety_cc: ["   "] });
+    expect(blank.status).toBe(400);
+    // No row written, and the counter never advanced — the next valid create is still JOB-000017.
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs").first<{ n: number }>()).toMatchObject({ n: 0 });
+    expect(await createOk(admin, { project_name: "ok", safety_cc: ["s@x.com"] })).toBe("JOB-000017");
+  });
+
+  it("(ii) create with ≥1 valid safety_cc → 201 + the row stores the CC", async () => {
+    const id = await createOk(admin, { project_name: "HasCC", safety_cc: ["cc1@x.com", "cc2@x.com"] });
+    const row = await jobRow(id);
+    expect(JSON.parse(row.safety_cc)).toEqual(["cc1@x.com", "cc2@x.com"]);
+  });
+
+  it("(iii) REGRESSION: the /contacts EDIT route still ACCEPTS an empty safety_cc (required is create-only)", async () => {
+    const id = await createOk(admin, { project_name: "EditMe", safety_cc: ["cc1@x.com"] });
+    // An edit that omits safety_cc (full-overwrite → clears it) must SUCCEED — never 400.
+    const res = await j(admin, `/api/fieldops/job/${id}/contacts`, { address: "1 Main St" });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(JSON.parse((await jobRow(id)).safety_cc)).toEqual([]); // blanked, as the edit path allows
+    // An explicit empty array also succeeds.
+    const res2 = await j(admin, `/api/fieldops/job/${id}/contacts`, { safety_cc: [] });
+    expect(res2.status).toBe(200);
+  });
+
+  it("(iv) GET /api/fieldops/delivery-contacts serves the config to a jobtracker-manage holder", async () => {
+    const res = await g(admin, "/api/fieldops/delivery-contacts");
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = (await res.json()) as { delivery_contacts: unknown[] };
+    // Served-equals-source (drift check), not a pinned literal.
+    expect(body.delivery_contacts).toEqual(deliveryContactsConfig.contacts);
+  });
+
+  it("(iv) GET /api/fieldops/delivery-contacts is rejected without the cap (submitter → 403) and without a session (anon → 401)", async () => {
+    expect((await g(submitter, "/api/fieldops/delivery-contacts")).status).toBe(403);
+    expect((await call("/api/fieldops/delivery-contacts")).status).toBe(401);
   });
 });

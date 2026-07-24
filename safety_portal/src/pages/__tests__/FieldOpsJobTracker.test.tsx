@@ -15,6 +15,7 @@ vi.mock("../../lib/fieldops_jobtracker", async (importOriginal) => {
     fetchJobList: vi.fn(),
     fetchJobDetail: vi.fn(),
     createJob: vi.fn(),
+    getDeliveryContacts: vi.fn(),
     setLifecycle: vi.fn(),
     editContacts: vi.fn(),
     addTask: vi.fn(),
@@ -76,6 +77,9 @@ beforeEach(() => {
   // M1 expected materials: safe empty defaults for the self-contained detail section.
   vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [] });
   vi.mocked(fetchMaterials).mockResolvedValue({ materials: [], next_cursor: null });
+  // Delivery-contact suggestions for the create-form Safety CC datalist — default empty so tests
+  // that don't exercise the datalist never issue a real fetch; the datalist test overrides this.
+  vi.mocked(api.getDeliveryContacts).mockResolvedValue([]);
 });
 
 // Picker fixtures for the assign controls. Pat is unplaced; "Al Already" is already on JOB-A (so the
@@ -281,19 +285,23 @@ describe("FieldOpsJobTracker — write UI", () => {
       job: { ...DETAIL, job_id: "JOB-C", project_name: "Charlie", crew: [], equipment_on_site: [] },
       cursors: NO_CURSORS,
     });
-    const { container, getByText, getByPlaceholderText } = render(<FieldOpsJobTracker onBack={() => {}} />);
+    const { container, getByText, getAllByText, getByLabelText, getByPlaceholderText } = render(<FieldOpsJobTracker onBack={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
 
     fireEvent.click(getByText("+ New job"));
     // Slice 6: no Job ID input — the office employee types only the Project Name; the portal assigns the id.
     fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
     fireEvent.change(getByPlaceholderText("Client name (optional)"), { target: { value: "Globex" } });
+    // Safety CC is now REQUIRED on create — supply one.
+    fireEvent.click(getAllByText("+ Add CC")[0]); // Safety CC
+    fireEvent.change(getByLabelText("Safety CC 1"), { target: { value: "scc@ex.com" } });
     fireEvent.submit(container.querySelector('[aria-label="Create job"]')!);
 
     await waitFor(() =>
       expect(api.createJob).toHaveBeenCalledWith({
         project_name: "Charlie",
         new_client: { name: "Globex" },
+        safety_cc: ["scc@ex.com"],
       }),
     );
     // Re-fetched the list after the create (initial mount + reload).
@@ -341,6 +349,77 @@ describe("FieldOpsJobTracker — write UI", () => {
           progress_contact_email: "pat@ex.com",
           progress_cc: ["pcc@ex.com"],
         }),
+      ),
+    );
+  });
+
+  // ── Safety CC on create: delivery-contacts datalist + required-on-create (2026-07-24) ────────────
+  it("create BLOCKS submit when no Safety CC is entered, with an inline required message", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.jobtracker.manage"]));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    vi.mocked(api.createJob).mockResolvedValue({ job_id: "JOB-C" });
+    const { container, getByText, getByPlaceholderText } = render(<FieldOpsJobTracker onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+
+    fireEvent.click(getByText("+ New job"));
+    fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
+    // No Safety CC added → submit must be blocked client-side (the Worker also 400s independently).
+    fireEvent.submit(container.querySelector('[aria-label="Create job"]')!);
+
+    expect(api.createJob).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("At least one Safety CC recipient is required."),
+    );
+  });
+
+  it("create Safety CC renders a <datalist> of delivery-contact emails (Progress CC gets none)", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.jobtracker.manage"]));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    vi.mocked(api.getDeliveryContacts).mockResolvedValue([
+      { name: "Alice Ops", email: "alice@ex.com" },
+      { name: "Bob Ops", email: "bob@ex.com" },
+      { name: "No Email", phone: "555" }, // filtered out — not usable as a CC suggestion
+    ]);
+    const { container, getByText, getAllByText, getByLabelText } = render(<FieldOpsJobTracker onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+
+    fireEvent.click(getByText("+ New job"));
+    // The suggestion fetch resolves after the create form opens.
+    await waitFor(() => expect(container.querySelector("datalist#safety-cc-options")).not.toBeNull());
+    const dl = container.querySelector("datalist#safety-cc-options")!;
+    const values = Array.from(dl.querySelectorAll("option")).map((o) => (o as HTMLOptionElement).value);
+    expect(values).toEqual(["alice@ex.com", "bob@ex.com"]); // email-less contact excluded
+    // Exactly ONE datalist — the Progress CC editor is deliberately not wired to suggestions.
+    expect(container.querySelectorAll("datalist")).toHaveLength(1);
+    // A Safety CC input is wired to the list; free-text entry is unaffected.
+    fireEvent.click(getAllByText("+ Add CC")[0]); // Safety CC
+    expect((getByLabelText("Safety CC 1") as HTMLInputElement).getAttribute("list")).toBe("safety-cc-options");
+  });
+
+  it("free-text Safety CC (not in the suggestion list) is accepted on create", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.jobtracker.manage"]));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    vi.mocked(api.createJob).mockResolvedValue({ job_id: "JOB-C" });
+    vi.mocked(api.getDeliveryContacts).mockResolvedValue([{ name: "Alice Ops", email: "alice@ex.com" }]);
+    vi.mocked(api.fetchJobDetail).mockResolvedValue({
+      job: { ...DETAIL, job_id: "JOB-C", project_name: "Charlie", crew: [], equipment_on_site: [] },
+      cursors: NO_CURSORS,
+    });
+    const { container, getByText, getAllByText, getByLabelText, getByPlaceholderText } = render(
+      <FieldOpsJobTracker onBack={() => {}} />,
+    );
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+
+    fireEvent.click(getByText("+ New job"));
+    fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
+    fireEvent.click(getAllByText("+ Add CC")[0]); // Safety CC
+    // A free-text address that is NOT a configured suggestion — must still be accepted.
+    fireEvent.change(getByLabelText("Safety CC 1"), { target: { value: "freehand@ex.com" } });
+    fireEvent.submit(container.querySelector('[aria-label="Create job"]')!);
+
+    await waitFor(() =>
+      expect(api.createJob).toHaveBeenCalledWith(
+        expect.objectContaining({ project_name: "Charlie", safety_cc: ["freehand@ex.com"] }),
       ),
     );
   });
@@ -707,11 +786,13 @@ describe("FieldOpsJobTracker — unified job-create flow (assign crew / equipmen
       job: { ...DETAIL, job_id: "JOB-C", project_name: "Charlie", crew: [], equipment_on_site: [] },
       cursors: NO_CURSORS,
     });
-    const { container, getByText, getByPlaceholderText } = render(<FieldOpsJobTracker onBack={() => {}} />);
+    const { container, getByText, getAllByText, getByLabelText, getByPlaceholderText } = render(<FieldOpsJobTracker onBack={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
 
     fireEvent.click(getByText("+ New job"));
     fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
+    fireEvent.click(getAllByText("+ Add CC")[0]); // Safety CC now required on create
+    fireEvent.change(getByLabelText("Safety CC 1"), { target: { value: "scc@ex.com" } });
     fireEvent.submit(container.querySelector('[aria-label="Create job"]')!);
 
     await waitFor(() => expect(container.querySelector('[aria-label="Finish setting up job"]')).not.toBeNull());
@@ -1031,10 +1112,12 @@ describe("FieldOpsJobTracker — R7 never-silent (swallow sites 3–6)", () => {
         cursors: NO_CURSORS,
         viewer_personnel: VIEWER,
       });
-    const { container, getByText, getByPlaceholderText, getByLabelText } = render(<FieldOpsJobTracker onBack={() => {}} />);
+    const { container, getByText, getAllByText, getByPlaceholderText, getByLabelText } = render(<FieldOpsJobTracker onBack={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
     fireEvent.click(getByText("+ New job"));
     fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
+    fireEvent.click(getAllByText("+ Add CC")[0]); // Safety CC now required on create
+    fireEvent.change(getByLabelText("Safety CC 1"), { target: { value: "scc@ex.com" } });
     fireEvent.submit(container.querySelector('[aria-label="Create job"]')!);
     await waitFor(() => expect(container.textContent ?? "").toContain("Job JOB-C was created, but opening it failed."));
     expect(container.textContent ?? "").toContain("Job JOB-C created."); // the success is never retracted
