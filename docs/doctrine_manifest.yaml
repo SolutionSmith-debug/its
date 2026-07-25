@@ -207,12 +207,12 @@ section_43:
 # full set lives in shared/sheet_ids.py (the in-repo bootstrap source of truth).
 canonical_sheets:
   SHEET_CONFIG:
-    id: 8933909738770308
+    id: 2965894438276996
     name: "ITS_Config"
     location: "ITS — System / 01 — Config"
     source: "shared/sheet_ids.py:SHEET_CONFIG"
   SHEET_DAEMON_HEALTH:
-    id: 697287746473860
+    id: 6272022823784324
     name: "ITS_Daemon_Health"
     location: "ITS — System / 04 — Daemons"
     column_count: 12

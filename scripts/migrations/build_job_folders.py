@@ -14,8 +14,8 @@ the per-job sheets are supplementary operator visibility.
 
 First run 2026-07-13 (live mirror) created:
 
-    FOLDER_SC_JOBS = 428635883628420
-    FOLDER_PO_JOBS = 7184035324684164
+    FOLDER_SC_JOBS = 2721963736098692
+    FOLDER_PO_JOBS = 7999619549423492
 
 Idempotent: find-or-creates each folder by name and skips if already present, so a
 re-run prints the existing IDs instead of duplicating (FLIP precedes SEED — flip any
