@@ -478,6 +478,119 @@ first — the expiry date can only be captured when the production Entra app is 
 recording it is naturally a cutover step and is cheap to do then and expensive to reconstruct
 later. **Tag:** `operator_dashboard`, `security`, `phase-1.5`.
 
+## Production-host migration — outstanding items [OPEN 2026-07-26]
+
+ITS moved off Seth's dev MacBook (Boston) onto a dedicated production Mac (Florida,
+Tailscale-reached) intended to run unattended while Seth travels. The migration itself was an
+**operational session with zero exec/blueprint commits** (git history alone does not reconstruct
+it — see memory-archive §G79 and info-gap doc §8 for the full decision record). Production host
+verified 2026-07-26: repo clean on main @`885d4a4`, blueprint sibling present, venv healthy,
+20/20 Keychain secrets seeded, Box OAuth completed, `state/`/`.watchdog/` restored via Tailscale
+rsync, launchd correctly EMPTY (stand-up stages 10-13 not yet run), CI green on `evergreen-its`.
+The items below are what stand-up left open.
+
+- **PM-1 (HIGH, blocks confirming unattended operation) — production-host stand-up Stages 10-13
+  not run.** Pending: plist render+lint, loading the 15 non-send daemons (publish-daemon +
+  picklist-sync LAST, individually, per the stand-up brief), dashboard Tailscale-origin config,
+  and acceptance-evidence capture. Nothing runs on the production host yet except the repo/venv/
+  Keychain/Box scaffolding. **Trigger:** next production-host session, before relying on it while
+  Seth is unreachable. **Tag:** `host-migration`, `cutover-adjacent`.
+- **PM-2 (HIGH, single point of total-failure detection) — external dead-man's switch unarmed.**
+  `system.heartbeat_url` is still the literal `PLACEHOLDER_uptimerobot_heartbeat_url` — never
+  seeded with a real endpoint. The vendor actually wired in code is **Healthchecks.io**
+  (`shared/heartbeat_client.py`; tests hit `hc-ping.com`), not UptimeRobot as most docs
+  (including CLAUDE.md's "Observability stack" section) claim — a doc/code naming drift on top of
+  the unset value. This is the ONE check in the Tier-1 self-heal model (CLAUDE.md "Maintenance &
+  successor-operator model") that catches total host death, and it is currently fully
+  unmonitored. Once armed, the beacon fires once daily at 07:00 — ~24h detection latency even
+  when live, so arm it well before Seth is unreachable for an extended stretch, not the day of.
+  **Trigger:** next production-host session. **Tag:** `host-migration`, `alerting`,
+  `cutover-blocking-adjacent`.
+- **PM-3 (MEDIUM, silent alert-delivery failure) — Resend `DEFAULT_FROM` is still the sandbox
+  sender; NOT a new item, already tracked — see "resend_client.DEFAULT_FROM swap — blocked on
+  CL-10 solutionsmith sender-domain verification" below (`OPEN 2026-07-23`), enriched with this
+  session's evidence rather than duplicated.** New facts folded into that entry: 38 CRITICALs
+  went undeliverable through this leg on 2026-07-24 alone, and `verify_cutover.py` VC-06 passes
+  anyway (it checks only that `ITS_RESEND_API_KEY` is present and shape-valid, not that sends
+  actually land — a green VC-06 is not evidence the out-of-band alert leg reaches the operator).
+  Was explicitly NOT a migration blocker per operator decision, but is now a confirmed-
+  undeliverable gap on the production host, not just the dev host. **Tag:** `alerting`,
+  `resend`, `host-migration`, `CL-10`.
+- **PM-4 (MEDIUM, watchdog false-green) — `scripts/watchdog.py:1743` `GH_MAIN_CI_REPO` hardcodes
+  `"SolutionSmith-debug/its"`.** Check S (main-branch CI health) on the production host queries
+  the WRONG repo — it will report green by construction, not by correctly skipping, since the
+  hardcoded repo's CI state has nothing to do with the production host's own `evergreen-its`
+  checkout. A watchdog check whose entire purpose is catching main-branch breakage silently
+  checks the wrong branch on the new host. Needs a PR — parameterize per-host (e.g. via
+  `ITS_Config` or a repo-detection helper) rather than a second hardcode. **Trigger:** before
+  trusting Check S results on the production host. **Tag:** `host-migration`, `watchdog`,
+  `observability`.
+- **PM-5 (MEDIUM→HIGH once publish-daemon loads, §50-adjacent) — `publish_daemon._wait_for_ci`
+  returns on `mergeStateStatus == CLEAN` BEFORE `statusCheckRollup` is ever reached.**
+  `safety_reports/publish_daemon.py:459-465` fetches `mergeStateStatus,statusCheckRollup` in one
+  `gh pr view` call and DOES inspect the rollup for failing conclusions (`:462-465`) — but the
+  `mergeStateStatus == "CLEAN"` early-return at `:460` fires first, so on a repo with no required
+  checks the rollup is unreachable. (Precision matters here: the rollup check exists and works;
+  the defect is ORDERING, not a missing check. An earlier draft of this entry said the rollup was
+  "never actually checked", which would send a reader hunting for absent code.) On
+  `SolutionSmith-debug/its` this is safe today only because required-status-checks branch
+  protection (hardened 2026-07-22, CL-23) keeps `mergeStateStatus` non-`CLEAN` until `test`+
+  `portal`+`secrets` all pass — the protection state, not this function, is the real gate. The new
+  `its-sys-admin/evergreen-its` mirror's branch-protection state is **unverified** (GitHub's
+  branch-protection API returns 404 to a non-admin token whether or not protection exists — see
+  info-gap doc §5), and PM-1 above means publish-daemon is not loaded there yet, so there is no
+  live exposure today. But if it loads before that repo has required checks configured,
+  `_wait_for_ci` will squash-merge a §50 privileged-actuation PR having never actually waited for
+  CI — a fail-open on exactly the gate Op Stds §50 exists to enforce. **Fix:** gate on
+  `statusCheckRollup` conclusions directly, in addition to `mergeStateStatus`, so the daemon does
+  not depend on an assumption about the target repo's protection config. **Trigger:** before
+  loading `publish-daemon` on the production host (Stage 10-13), or as a standalone hardening PR
+  either repo can use. Related but distinct from the pre-existing "Publish daemon: privileged
+  subprocess chain is operator-validated-live only" entry below (`OPEN 2026-06-09`) — that one is
+  about missing dry-run test coverage for the whole subprocess chain; this is a specific logic gap
+  in what `_wait_for_ci` actually checks. **Tag:** `host-migration`, `external-code-actuation`,
+  `op-stds-50`.
+- **PM-6 (MEDIUM, Seth-owned) — old (dev) Mac disarm still pending.** Daemons are unloaded (not
+  forcibly killed) per the operator's "fully out of service, durable teardown" decision — verified
+  live at `install.sh unload`, which internally runs `launchctl bootout` AND removes the plist
+  from `~/Library/LaunchAgents/`, so the teardown really is durable (a reboot cannot silently
+  reload a daemon). But the dev Mac still has a working venv, all 20 Keychain secrets, and
+  `sheet_ids` pointed at the SAME production tenant the production host now owns — and nothing in
+  the codebase structurally fences a host from acting against the tenant (no host-identity check
+  anywhere in `shared/`). Operator directive: disarm (secrets removed / repo detached) only AFTER
+  the production host completes one full unattended Friday weekly-generate cycle — do this too
+  early and there is no fallback if the production host has a latent issue. **Trigger:** first
+  clean unattended Friday cycle on the production host. **Tag:** `host-migration`, `security`.
+- **PM-7 (MEDIUM→HIGH if it recurs, undiagnosed) — five procurement daemons froze on the OLD host
+  2026-07-24 ~15:23-15:28 and were never diagnosed before the migration.** `config_actuator`,
+  `estimate_poll`, `po_poll`, `rfq_poll`, `subcontract_poll` all stopped cycling in the same
+  ~5-minute window. If the cause is code- or config-level (not host-specific — e.g. a shared
+  Smartsheet/Cloudflare rate limit, a lock file, a shared dependency), it moved with the clone to
+  the production host and could recur there once those daemons load (PM-1). Not investigated as
+  part of the migration itself. **Trigger:** a `diagnose`-loop session, ideally before Stage 10-13
+  loads these five daemons on the production host. **Tag:** `host-migration`, `po_materials`,
+  `procurement`, `diagnose`.
+- **PM-8 (LOW, non-durable location) — 172 doc-consolidation findings from a 12-agent workflow are
+  unlanded.** 172 confirmed-stale + 52 dangerous + 3 rejected findings; full results currently
+  live only at a Claude Code scratchpad task-output path (session-local, not durable — subject to
+  reclamation). Not triaged or actioned this session. **Trigger:** next docs-hygiene session —
+  extract the findings into a committed doc (or action them directly) before the scratchpad path
+  is lost. **Tag:** `host-migration`, `docs`.
+- **PM-9 (LOW, doc-currency) — CLAUDE.md's "sole live LLM consumer" framing for `ITS_ANTHROPIC_KEY`
+  / `shared/anthropic_client.py` is stale.** `anthropic_client.call` is invoked from exactly one
+  place, `classify_and_extract` (`safety_reports/intake.py:739`), reachable only via the legacy
+  email path `process_message` (`intake.py:1059`) — whose poller `intake_poll.py` was deleted
+  2026-07-03. The live portal path calls `process_portal_submission` (`intake.py:2252`), verified
+  this session to make no call into `classify_and_extract` anywhere in its body. **ITS currently
+  makes ZERO inference calls in its live-reachable code path** — CLAUDE.md's "What's stubbed vs.
+  real" table row is technically accurate (intake.py does house the sole consumer) but reads as
+  implying the call is live-exercised, which it is not. **Trigger:** next CLAUDE.md docs-currency
+  pass (out of scope for this file's maintainer to edit directly). **Tag:** `docs`,
+  `safety_reports`, `intake`.
+
+See memory-archive §G79 for the full decision record and info-gap doc §5/§6/§8 for the
+companion trap/topology/queue entries.
+
 ## PO attachments (Feature B) — conscious deferrals [OPEN 2026-07-13]
 
 From the Feature-B build (PO document attachments — the §34 doc-attachment pool → Mac screen →
@@ -2277,7 +2390,7 @@ trio), `tests/test_send_poll_core.py`, `tests/test_approval_verification.py`.
 operator-designated personal PAT) — ship the filter in the same change that swaps the token.
 **Tag:** `f22`, `security`, `send-gate`, `cutover`, `seth-owned`.
 
-## resend_client.DEFAULT_FROM swap — blocked on CL-10 solutionsmith sender-domain verification [OPEN 2026-07-23]
+## resend_client.DEFAULT_FROM swap — blocked on CL-10 solutionsmith sender-domain verification [OPEN 2026-07-23, raised to MEDIUM 2026-07-26]
 
 `shared/resend_client.py` still ships `DEFAULT_FROM = "onboarding@resend.dev"` (:56) — the Resend
 sandbox sender. Swapping to a real sender is a follow-up to the alerting-constants PR and is
@@ -2287,7 +2400,17 @@ every CRITICAL alert email, which is the out-of-band alert leg (worse than the s
 One-line constant change once CL-10 is green; operator alerts only, NOT a customer send path
 (Invariant 1 untouched).
 
+**Severity raised, with evidence, during the 2026-07-25/26 production-host migration:** the
+sandbox sender 403s every recipient except `seths@evergreenmirror.com`, and **38 CRITICALs went
+undeliverable through this leg on 2026-07-24 alone** — this is no longer a theoretical gap.
+Also newly noted: `verify_cutover.py` VC-06 passes regardless (it checks only that
+`ITS_RESEND_API_KEY` is present and shape-valid, not that a send actually lands), so a green
+VC-06 must not be read as evidence this leg reaches the operator. The gap now applies to the
+production host as well as the dev host. Explicitly NOT treated as a migration blocker per
+operator decision — tracked here, not fixed. See memory-archive §G79 / info-gap doc §8 for the
+full migration context.
+
 **Revisit when:** CL-10 shows the solutionsmith domain `Verified` in Resend — swap `DEFAULT_FROM`
 in the same session and live-fire one test alert to confirm delivery. **Tag:** `alerting`,
-`resend`, `cutover`, `CL-10`, `low-severity`.
+`resend`, `cutover`, `CL-10`, `host-migration`, `medium-severity`.
 
