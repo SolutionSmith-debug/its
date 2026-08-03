@@ -412,6 +412,33 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
     },
   );
 
+  // ── ARCHIVE / UN-ARCHIVE (ROADMAP Track 6) ─────────────────────────────────────────────────
+  //
+  // Their OWN routes rather than lifecycle values, for three concrete reasons: there is nowhere
+  // on /lifecycle to hang a confirmation token; the audit action would be indistinguishable from
+  // an ordinary close in audit_log; and the error vocabulary here (already_archived /
+  // confirm_mismatch / archive_in_flight) is meaningless for active|inactive.
+  //
+  // Gated on cap.job.archive, NOT cap.jobtracker.manage — every admin holds the latter for routine
+  // create / rename / close, and archiving is a heavyweight, reversible, cross-system relocation
+  // that should be separately narrowable later. Not requireRole("admin") either: FieldopsGates
+  // deliberately exposes only the capability helpers, and widening it would break the
+  // no-import-cycle contract with index.ts.
+
+  app.post(
+    "/api/fieldops/job/:job_id/archive",
+    gates.requireSession,
+    gates.requireCapability("cap.job.archive"),
+    async (c) => archiveTransition(c, "archive"),
+  );
+
+  app.post(
+    "/api/fieldops/job/:job_id/unarchive",
+    gates.requireSession,
+    gates.requireCapability("cap.job.archive"),
+    async (c) => archiveTransition(c, "unarchive"),
+  );
+
   // TOMBSTONE (operator-approved deletion, 2026-07-03): POST /api/fieldops/job/:job_id/progress —
   // the manual progress-% write — was DELETED. Nothing displayed the value (the UI slider/bar was
   // removed in #403, the P6 rollup deliberately excludes progress %), and no Python read it. The
@@ -449,4 +476,139 @@ async function setLifecycle(
   ]);
   if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
   return c.json({ ok: true, job_id: jobId, lifecycle }, 200);
+}
+
+
+// ---- archive / un-archive transition (Track 6) -------------------------------------------------
+
+/** The states a NEW archive/un-archive request may be raised from. `partial`/`failed` are
+ *  retryable by design — the operator's "Try again" re-raises and resets the attempt counter. */
+const ARCHIVE_RESTARTABLE = new Set(["none", "partial", "failed"]);
+/** In-flight: the daemon owns the row until it reports a terminal result. */
+const ARCHIVE_IN_FLIGHT = new Set(["requested", "in_progress"]);
+
+/** Sanitize a project name into the per-job folder key.
+ *
+ *  LOCKSTEP with `safety_reports/safety_naming.job_folder_name` — drop non-printables, turn '/'
+ *  into '-', strip surrounding whitespace, and fall back to the raw stripped name if sanitizing
+ *  empties it. Mirrored here (rather than imported) because the Worker cannot import Python; the
+ *  cross-language parity is covered by test/job-archive.test.ts.
+ *
+ *  Snapshotted at REQUEST time so a later /contacts rename cannot strand the daemon against a
+ *  name that no longer resolves. */
+export function jobFolderKey(projectName: string): string {
+  // eslint-disable-next-line no-control-regex
+  const printable = Array.from(projectName).filter((ch) => {
+    const cp = ch.codePointAt(0)!;
+    return !(cp < 0x20 || (cp >= 0x7f && cp <= 0x9f));
+  }).join("");
+  const cleaned = printable.replaceAll("/", "-").trim();
+  return cleaned.length > 0 ? cleaned : projectName.trim();
+}
+
+/** POST /:job_id/archive and /:job_id/unarchive — raise a relocation request for the daemon.
+ *
+ *  This route does NOT move anything. It records intent; the Mac-side pass drains the queue and
+ *  reports back. Keeping those separate is what lets the UI say "Archiving…" honestly instead of
+ *  claiming a job is archived the instant a flag flips.
+ *
+ *  The typed confirmation is checked SERVER-side against the row's own project_name. Client-only
+ *  would not be a control at all (Invariant 2), would be untestable in workerd, and would turn
+ *  "wrong job open in a second tab" from a refusal into an archive. House precedent:
+ *  operator_dashboard/auth.verify_elevated. Trim-only and case-sensitive; deliberately NOT
+ *  constant-time — the name is rendered in the modal and is not a secret, so the bearer-digest
+ *  helpers in index.ts would be cargo-cult here. */
+async function archiveTransition(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+  direction: "archive" | "unarchive",
+): Promise<Response> {
+  // `?? ""` because this handler takes a generic Context (shared by both routes), so Hono cannot
+  // infer the param from the path the way an inline handler does. The empty case is then refused
+  // explicitly rather than being allowed to query for a blank job_id.
+  const jobId = c.req.param("job_id") ?? "";
+  if (!jobId || jobId.length > MAX_JOB_ID) return c.json({ error: "invalid_job_id" }, 400);
+
+  let body: Record<string, unknown>;
+  try {
+    body = (await c.req.json()) as Record<string, unknown>;
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  // JSON null/arrays parse fine but aren't objects; dereferencing on them throws → bare 500
+  // (the "audit #1" class). Require a plain object first.
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const confirm = typeof body.confirm === "string" ? body.confirm : "";
+  if (confirm.length < 1 || confirm.length > MAX_NAME) {
+    return c.json({ error: "confirm_required" }, 400);
+  }
+
+  // origin='portal' scoping, same security fence as every other edit route here: the down-sync
+  // only reconciles project_name/active for smartsheet-origin rows, so a stray archive write to
+  // one would corrupt it permanently with no self-heal.
+  const row = await c.env.DB
+    .prepare(
+      "SELECT project_name, lifecycle, archive_state, archive_direction FROM jobs " +
+        "WHERE job_id=?1 AND origin='portal'",
+    )
+    .bind(jobId)
+    .first<{ project_name: string; lifecycle: string; archive_state: string; archive_direction: string }>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  if (confirm.trim() !== (row.project_name ?? "").trim()) {
+    return c.json({ error: "confirm_mismatch" }, 409); // zero writes — asserted in the tests
+  }
+
+  const state = row.archive_state || "none";
+  const inFlightDir = row.archive_direction || "";
+
+  // Idempotent double-click: the SAME direction already in flight is a 200 no-op, NOT a second
+  // request — re-raising would reset attempts and re-stamp requested_at under the daemon.
+  if (ARCHIVE_IN_FLIGHT.has(state) && inFlightDir === direction) {
+    return c.json({ ok: true, job_id: jobId, archive: { state, direction: inFlightDir } }, 200);
+  }
+  // The OPPOSITE direction in flight: refuse rather than reverse mid-relocation.
+  if (ARCHIVE_IN_FLIGHT.has(state)) return c.json({ error: "archive_in_flight" }, 409);
+
+  if (direction === "archive") {
+    if (state === "complete") return c.json({ error: "already_archived" }, 409);
+    if (!ARCHIVE_RESTARTABLE.has(state)) return c.json({ error: "archive_in_flight" }, 409);
+  } else {
+    // Un-archiving is only meaningful once an archive completed.
+    if (state !== "complete") return c.json({ error: "not_archived" }, 409);
+  }
+
+  // Un-archive returns the job to INACTIVE, never active. Bringing folders back is a retrieval,
+  // not a re-opening — auto-activating would silently re-add the job to every dropdown and both
+  // weekly compiles as a side effect of a folder move.
+  const lifecycle = direction === "archive" ? "archived" : "inactive";
+  const active = lifecycleToActive(lifecycle);
+  const status = "closed"; // neither end of this transition is an 'active' job
+  const folderKey = jobFolderKey(row.project_name ?? "");
+  const actor = c.get("session").username;
+
+  // ONE batch: the mutation and its audit row land together or not at all (the "W4" class).
+  const res = await c.env.DB.batch([
+    c.env.DB
+      .prepare(
+        "UPDATE jobs SET lifecycle=?2, active=?3, status=?4, " +
+          "archive_state='requested', archive_direction=?5, archive_requested_at=unixepoch(), " +
+          "archive_completed_at=NULL, archive_attempts=0, archive_detail='', archive_folder_key=?6, " +
+          "mirror_version=mirror_version+1, sync_state='pending' " +
+          "WHERE job_id=?1 AND origin='portal'",
+      )
+      .bind(jobId, lifecycle, active, status, direction, folderKey),
+    auditStmtIfChanged(c, actor, direction === "archive" ? "job_archive" : "job_unarchive", jobId, {
+      job_id: jobId,
+      direction,
+      folder_key: folderKey,
+    }),
+  ]);
+  if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+
+  return c.json(
+    { ok: true, job_id: jobId, archive: { state: "requested", direction } },
+    200,
+  );
 }
