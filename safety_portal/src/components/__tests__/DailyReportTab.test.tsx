@@ -77,6 +77,7 @@ const DETAIL: jobs.JobDetailResponse = {
     job_id: "JOB-A",
     project_name: "Alpha",
     status: "active",
+    lifecycle: "active",
     progress: 0,
     job_no: "",
     routing: {

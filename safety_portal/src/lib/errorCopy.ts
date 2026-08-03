@@ -121,6 +121,10 @@ export const ERROR_COPY: Record<string, string> = {
   invalid_project_name: "Enter a project name.",
   invalid_progress: "Progress must be a whole number from 0 to 100.",
   invalid_lifecycle: "That isn't a valid job state.",
+  // 409, not 400 — the intent is valid and the route is wrong (the use_amend_route shape).
+  // Reachable only from a stale bundle or a direct call: the current UI cannot select "Archived".
+  use_archive_route:
+    "Archiving a job is a separate action — it moves the job's folders, so it needs its own confirmation.",
   invalid_address: "The address isn't valid.",
   invalid_email: "Enter a valid email address.",
   invalid_phone: "The phone number isn't valid.",

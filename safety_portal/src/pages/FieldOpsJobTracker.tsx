@@ -9,7 +9,7 @@ import { ChipX } from "../components/ChipX";
 import { ExpectedMaterialsSection } from "../components/ExpectedMaterialsSection";
 import { InlineRowMsg, SectionError, TaskDue, errMsg, type RowFeedback } from "../components/myTasksShared";
 import { JobDailyRequirementsSection } from "../components/JobDailyRequirementsSection";
-import { statusLabel } from "../lib/labels";
+import { statusLabel, lifecycleLabel } from "../lib/labels";
 
 // R7 — a load-failure that owns a working Retry (never a dead banner, never a lying empty state).
 interface RetryableError {
@@ -591,9 +591,13 @@ export function FieldOpsJobTracker({
         setViewerPersonnel(res.viewer_personnel ?? null);
         // R7 — the log-time subject defaults to the viewer's OWN roster row when linked ("Me").
         setLogPerson(res.viewer_personnel ? String(res.viewer_personnel.id) : "");
-        // Seed the lifecycle selector from the legacy status (detail carries no lifecycle field):
-        // active → 'active', anything else → 'inactive'. An explicit selector change overrides it.
-        setLifecycleSel(res.job.status === "active" ? "active" : "inactive");
+        // Seed the lifecycle selector from the job's OWN lifecycle field. This used to derive from
+        // the legacy `status` ("active" → 'active', anything else → 'inactive') because the detail
+        // payload carried no lifecycle — and since `status` collapses inactive AND archived into
+        // 'closed', an ARCHIVED job silently re-displayed as "Inactive" on every reload. The
+        // runbook had to instruct operators to "validate by effects, not the dropdown". The worker
+        // now sends `lifecycle`, so the selector can simply tell the truth.
+        setLifecycleSel(res.job.lifecycle);
         setTaskCursor(res.cursors.tasks);
         setTimeCursor(res.cursors.time);
         setInspCursor(res.cursors.insp);
@@ -1123,7 +1127,10 @@ export function FieldOpsJobTracker({
 
         <div className="dash-detail__head">
           <h2 className="page__heading">{job.project_name}</h2>
-          <span className={jobPillClass(job.status)}>{statusLabel(job.status)}</span>
+          {/* Lifecycle, NOT status: `status` collapses inactive+archived into 'closed', so this
+              pill read "Inactive" on an archived job. The class still keys off `status` — the
+              pill COLOUR is a two-state open/closed signal and is unchanged. */}
+          <span className={jobPillClass(job.status)}>{lifecycleLabel(job.lifecycle)}</span>
         </div>
         <p className="dash-card__sub muted">{(job.client?.name ?? "No client")} · {job.job_id}</p>
 
@@ -1186,20 +1193,37 @@ export function FieldOpsJobTracker({
                 A manager (cap.tasks.assign) gets the add-task control above but NOT these. */}
             {canManage && (
               <>
+                {/* "Archived" is NO LONGER an option here. Selecting it used to trigger a
+                    four-sheet cross-workspace relocation on the next mirror cycle — unconfirmed,
+                    un-retryable, and invisible afterwards because the pill re-derived from the
+                    legacy status. The worker now refuses it too (409 use_archive_route), so a
+                    stale bundle cannot fire it either. Archiving gets its own confirmed action
+                    (ROADMAP Track 6).
+
+                    On an already-archived job the whole control is locked: you must un-archive
+                    first, because setting Active while the job's folders sit in the archive would
+                    put the two systems out of step. */}
                 <form className="dash-row" aria-label="Set job lifecycle">
                   <label className="dash-card__label">
                     Lifecycle:{" "}
                     <select
                       aria-label="Job lifecycle"
                       value={lifecycleSel}
-                      disabled={actionBusy}
+                      disabled={actionBusy || job.lifecycle === "archived"}
                       onChange={(e) => submitLifecycle(e.target.value as api.JobLifecycle)}
                     >
                       <option value="active">Active</option>
                       <option value="inactive">Inactive</option>
-                      <option value="archived">Archived</option>
+                      {/* Rendered ONLY so a value={'archived'} select is not left with no matching
+                          option (React would blank it). Disabled — never selectable. */}
+                      {job.lifecycle === "archived" && (
+                        <option value="archived" disabled>Archived</option>
+                      )}
                     </select>
                   </label>
+                  {job.lifecycle === "archived" && (
+                    <span className="dash-card__sub muted">Un-archive this job to change its state.</span>
+                  )}
                 </form>
                 <div className="dash-row">
                   {editContactsOpen ? (
@@ -1721,7 +1745,9 @@ export function FieldOpsJobTracker({
                   <h3 className="dash-card__title">{job.project_name}</h3>
                   {/* R7 — "Your job": the viewer's own placement, their direct path to log time. */}
                   {viewerCurrentJob === job.job_id && <span className="dash-pill dash-pill--ok">Your job</span>}
-                  <span className={jobPillClass(job.status)}>{statusLabel(job.status)}</span>
+                  {/* Lifecycle, not status — an archived job must be legible from the list without
+                      opening it. Pill colour still keys off `status` (open vs closed). */}
+                  <span className={jobPillClass(job.status)}>{lifecycleLabel(job.lifecycle)}</span>
                 </div>
                 <div className="dash-card__sub">{(job.client_name ?? "No client")} · {job.job_id}</div>
 

@@ -43,10 +43,20 @@ export interface OpenTask {
   due_date: string | null;
 }
 
+/** The canonical job-state field (`jobs.lifecycle`, migration 0021).
+ *
+ *  Do NOT infer state from `status`: that legacy column maps active→'active' but BOTH
+ *  inactive and archived→'closed', so it structurally cannot distinguish the last two
+ *  (`active` is a derived int with the same collapse). Anything user-facing reads
+ *  `lifecycle`. Lockstep with `JOB_LIFECYCLES` in worker/constants.ts. */
+export type JobLifecycle = "active" | "inactive" | "archived";
+
 export interface JobRow {
   job_id: string;
   project_name: string;
+  /** LEGACY. Retained because the list's status filter and its index key off it. */
   status: string;
+  lifecycle: JobLifecycle;
   progress: number;
   client_name: string | null;
   crew: CrewMember[];
@@ -148,7 +158,9 @@ export interface JobRoutingBlock {
 export interface JobDetail {
   job_id: string;
   project_name: string;
+  /** LEGACY — see JobRow.status. */
   status: string;
+  lifecycle: JobLifecycle;
   progress: number;
   /** The Evergreen YYYY.NNN tracking number ('' when unassigned) — 0057. */
   job_no: string;
