@@ -45,7 +45,10 @@ const MAX_CC = 5; // mirrors each Active-Jobs sheet's CC 1..5 columns
 // Loose email shape: no whitespace, one @, a dotted domain (matches shared/active_jobs _EMAIL_RE).
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-const LIFECYCLE_VALUES = new Set(["active", "inactive", "archived"]);
+// The values /lifecycle will SET. Deliberately EXCLUDES 'archived' — see the route below.
+// 'archived' remains a legal stored value (JOB_LIFECYCLES in constants.ts, migration 0021); it is
+// simply not settable through this route.
+const LIFECYCLE_SETTABLE = new Set(["active", "inactive"]);
 
 function clampPct(n: number): number {
   return Math.max(0, Math.min(100, Math.round(n)));
@@ -294,10 +297,23 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
     },
   );
 
-  // POST /api/fieldops/job/:job_id/lifecycle — set the job lifecycle (active|inactive|archived).
+  // POST /api/fieldops/job/:job_id/lifecycle — set the job lifecycle (active|inactive ONLY).
   // Derives the legacy `active` flag, bumps the mirror version, re-dirties the row. THE close path:
   // the UI closes a job via { lifecycle: 'inactive' } (the old bare /close alias was deleted —
   // tombstone below).
+  //
+  // 'archived' IS REFUSED HERE (409 use_archive_route). Until this change it was accepted, and
+  // accepting it was a live hazard, not a cosmetic one: a `lifecycle='archived'` write re-dirties
+  // the row, and on the very next mirror cycle the Mac-side daemon relocated FOUR standing tracker
+  // sheets out of the job's progress folder — with no confirmation prompt, no retry on failure, and
+  // a UI that then re-displayed the job as "Inactive" because it re-derived state from the legacy
+  // `status` column. One dropdown selection, a silent multi-sheet move, and no way to tell it had
+  // happened. It had never fired against live data; it was one click from doing so.
+  //
+  // Archiving is a heavyweight, reversible, cross-system relocation and gets its own confirmed
+  // route (ROADMAP Track 6). 409 rather than 400 because the intent is valid and the route is
+  // wrong — same shape as `use_amend_route`; `invalid_lifecycle` ("That isn't a valid job state")
+  // would be a lie, since 'archived' IS a valid stored state.
   app.post(
     "/api/fieldops/job/:job_id/lifecycle",
     gates.requireSession,
@@ -317,7 +333,10 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
         return c.json({ error: "bad_request" }, 400);
       }
       const lifecycle = typeof body.lifecycle === "string" ? body.lifecycle.trim().toLowerCase() : "";
-      if (!LIFECYCLE_VALUES.has(lifecycle)) return c.json({ error: "invalid_lifecycle" }, 400);
+      // Checked BEFORE the settable-set test so a stale SPA bundle (or curl) gets the specific,
+      // actionable code instead of a generic "invalid state".
+      if (lifecycle === "archived") return c.json({ error: "use_archive_route" }, 409);
+      if (!LIFECYCLE_SETTABLE.has(lifecycle)) return c.json({ error: "invalid_lifecycle" }, 400);
       const res = await setLifecycle(c, jobId, lifecycle);
       return res;
     },
