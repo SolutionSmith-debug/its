@@ -610,7 +610,7 @@ def test_get_or_create_folder_conflict_refinds_existing(mocker):
 # ---- move_folder (Track 6 archive) -------------------------------------------
 
 
-def test_move_folder_moves_and_renames_in_ONE_call(mocker):
+def test_move_folder_moves_and_renames_in_one_call(mocker):
     """The Box/Smartsheet asymmetry, pinned.
 
     boxsdk emits a single PUT carrying both parent and name, so there is no
@@ -643,7 +643,7 @@ def test_move_folder_without_a_rename_passes_none(mocker):
     assert args[1] is None
 
 
-def test_move_folder_409_adopts_when_the_existing_child_IS_this_folder(mocker):
+def test_move_folder_409_adopts_when_the_existing_child_is_this_folder(mocker):
     """Replay, not collision: a prior run already moved+renamed it, so the retry no-ops.
 
     This is what lets the resume path re-issue the move without checking first.
@@ -657,7 +657,7 @@ def test_move_folder_409_adopts_when_the_existing_child_IS_this_folder(mocker):
     assert out == {"id": "500", "name": "Safety", "parent_id": "900"}
 
 
-def test_move_folder_409_RAISES_when_a_DIFFERENT_folder_holds_the_name(mocker):
+def test_move_folder_409_raises_when_a_different_folder_holds_the_name(mocker):
     """A genuine collision must be loud.
 
     There is no merge primitive on either system, so silently adopting someone else's
