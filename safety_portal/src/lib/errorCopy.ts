@@ -125,6 +125,13 @@ export const ERROR_COPY: Record<string, string> = {
   // Reachable only from a stale bundle or a direct call: the current UI cannot select "Archived".
   use_archive_route:
     "Archiving a job is a separate action — it moves the job's folders, so it needs its own confirmation.",
+  // ── job archive / un-archive (cap.job.archive) ──────────────────────────────
+  confirm_required: "Type the project name to confirm.",
+  confirm_mismatch: "That doesn't match the project name — check the spelling and try again.",
+  already_archived: "This job is already archived. Use Un-archive to bring its folders back.",
+  not_archived: "This job isn't archived, so there's nothing to bring back.",
+  archive_in_flight:
+    "An archive or un-archive is already running for this job — wait for it to finish.",
   invalid_address: "The address isn't valid.",
   invalid_email: "Enter a valid email address.",
   invalid_phone: "The phone number isn't valid.",
