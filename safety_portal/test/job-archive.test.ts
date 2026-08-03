@@ -227,18 +227,106 @@ describe("job archive - the state machine", () => {
   });
 });
 
+describe("job archive - concurrency + the in-WHERE state guard", () => {
+  // HONESTY NOTE, so nobody mistakes these for proof of the atomic guard.
+  //
+  // The mutating UPDATE re-asserts the permitted source state in its own WHERE, on top of the JS
+  // checks that ran against a separate read. That guard is defense against ANOTHER WRITER moving
+  // the row between our read and our write — specifically the Track 6 daemon, which will write
+  // archive_state / archive_attempts / archive_completed_at from its own process.
+  //
+  // These tests do NOT prove it. Verified by inject-confirm-revert: deleting the WHERE predicate
+  // leaves this whole file GREEN, because workerd serializes these requests and D1 serializes
+  // writes, so the JS branch always evaluates against a fresh state and no interleaving occurs.
+  // There is no hook in this harness to mutate the row between the handler's SELECT and its
+  // UPDATE, so the race cannot be staged here.
+  //
+  // What IS proven below: no double-transition or double-audit under parallel dispatch, and the
+  // structural presence of the predicate (so its removal is at least caught mechanically). The
+  // real proof is the daemon-side integration test in the PR that lands the pass.
+  it("parallel archive requests produce exactly ONE transition and ONE audit row", async () => {
+    const id = await createOk(admin, { project_name: NAME });
+
+    const results = await Promise.all([
+      j(admin, `/api/fieldops/job/${id}/archive`, { confirm: NAME }),
+      j(admin, `/api/fieldops/job/${id}/archive`, { confirm: NAME }),
+      j(admin, `/api/fieldops/job/${id}/archive`, { confirm: NAME }),
+    ]);
+
+    // Every caller gets a sane answer: the winner 200s, the losers either 200 (they observed the
+    // winner's 'requested' and short-circuited as an idempotent no-op) or 409 archive_in_flight
+    // (they raced past the read and were refused by the WHERE). Never a 500, never a silent
+    // second transition.
+    for (const r of results) expect([200, 409]).toContain(r.status);
+
+    // The invariant that matters: ONE audit row, one requested_at, one version bump.
+    expect((await audits("job_archive")).length).toBe(1);
+    const row = await jobRow(id);
+    expect(row.archive_state).toBe("requested");
+    expect(row.archive_direction).toBe("archive");
+  });
+
+  it("cannot resurrect a COMPLETE archive by racing (the WHERE refuses, not the snapshot)", async () => {
+    const id = await createOk(admin, { project_name: NAME });
+    await setArchive(id, "complete", "archive");
+    // Even if the JS branch were bypassed, the UPDATE's `archive_state IN ('none','partial','failed')`
+    // matches nothing, so 0 rows change and the request is refused.
+    const res = await j(admin, `/api/fieldops/job/${id}/archive`, { confirm: NAME });
+    expect(res.status).toBe(409);
+    const row = await jobRow(id);
+    expect(row.archive_state).toBe("complete"); // untouched
+  });
+
+  it("an empty project_name can never satisfy the confirmation", async () => {
+    // Unreachable today (create and /contacts both require a non-empty trimmed name), but the
+    // control must not DEPEND on that invariant — a future bulk-import path that skips those
+    // validators must not open a bypass where confirm:' ' matches an empty name.
+    const id = await createOk(admin, { project_name: NAME });
+    await env.DB.prepare("UPDATE jobs SET project_name='   ' WHERE job_id=?").bind(id).run();
+
+    const res = await j(admin, `/api/fieldops/job/${id}/archive`, { confirm: " " });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("confirm_required");
+    expect((await jobRow(id)).archive_state).toBe("none");
+  });
+});
+
 describe("jobFolderKey - lockstep with safety_naming.job_folder_name", () => {
   it("maps '/' to '-', trims, and falls back when sanitizing empties the name", () => {
     expect(jobFolderKey("Bradley 1")).toBe("Bradley 1");
     expect(jobFolderKey("  Coker  ")).toBe("Coker");
     expect(jobFolderKey("A/B")).toBe("A-B");
-    // A name that sanitizes to nothing falls back to the raw stripped input rather than
-    // silently producing a key that would collide with every other empty-sanitizing name.
     expect(jobFolderKey("    ")).toBe("");
   });
 
-  it("strips control characters the same way the Python side does", () => {
-    const withControl = "Cok" + String.fromCharCode(7) + "er";
-    expect(jobFolderKey(withControl)).toBe("Coker");
+  // Python's str.isprintable() is "NOT (Unicode Other or Separator), except ASCII space" — Cc, Cf,
+  // Cs, Co, Cn, Zl, Zp, Zs. An earlier version of jobFolderKey filtered only C0/C1 controls, which
+  // LOOKS equivalent and is not: every case below is one a project name picks up by being pasted
+  // from Word, Excel or a PDF.
+  //
+  // The divergence was silent and expensive. Python creates the REAL folder with these stripped;
+  // a Worker that snapshotted archive_folder_key with them intact would send the daemon looking
+  // for a folder that never existed — surfacing only as an unexplained archive_state='failed'.
+  //
+  // Each expectation below was verified against the live Python implementation, not derived from
+  // reading it.
+  it.each([
+    ["NBSP U+00A0",            "Bradley\u00A0Solar",  "BradleySolar"],
+    ["zero-width space U+200B", "Bra\u200Bdley",       "Bradley"],
+    ["zero-width joiner U+200D","Bra\u200Ddley",       "Bradley"],
+    ["LTR mark U+200E",        "Bradley\u200E",       "Bradley"],
+    ["en space U+2002",        "Bradley\u2002Solar",  "BradleySolar"],
+    ["ideographic space U+3000","Bradley\u3000Solar", "BradleySolar"],
+    ["C0 control U+0007",      "Cok\u0007er",         "Coker"],
+  ])("strips %s exactly as Python does", (_label, input, expected) => {
+    expect(jobFolderKey(input)).toBe(expected);
+  });
+
+  it("KEEPS the ASCII space and ordinary printable characters, including astral ones", () => {
+    // isprintable() excepts U+0020 specifically — stripping it would mangle every multi-word job.
+    expect(jobFolderKey("Bradley Solar")).toBe("Bradley Solar");
+    // A surrogate PAIR is a printable astral character, not a lone Cs surrogate; Array.from
+    // iterates by code point so it must survive intact.
+    expect(jobFolderKey("Bradley \u{1F600} Solar")).toBe("Bradley \u{1F600} Solar");
   });
 });

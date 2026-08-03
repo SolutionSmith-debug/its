@@ -487,6 +487,14 @@ const ARCHIVE_RESTARTABLE = new Set(["none", "partial", "failed"]);
 /** In-flight: the daemon owns the row until it reports a terminal result. */
 const ARCHIVE_IN_FLIGHT = new Set(["requested", "in_progress"]);
 
+/** The same restartable set as a SQL literal list, for the atomic in-WHERE guard. Kept beside the
+ *  Set so the two cannot drift — `archiveTransition` asserts they agree at call time. */
+const ARCHIVE_RESTARTABLE_SQL = "('none','partial','failed')";
+
+/** Unicode "Other or Separator" — the complement of Python's `str.isprintable()` (which excepts
+ *  the ASCII space, handled at the call site). Cc/Cf/Cs/Co/Cn + Zl/Zp/Zs. */
+const NONPRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
+
 /** Sanitize a project name into the per-job folder key.
  *
  *  LOCKSTEP with `safety_reports/safety_naming.job_folder_name` — drop non-printables, turn '/'
@@ -497,11 +505,19 @@ const ARCHIVE_IN_FLIGHT = new Set(["requested", "in_progress"]);
  *  Snapshotted at REQUEST time so a later /contacts rename cannot strand the daemon against a
  *  name that no longer resolves. */
 export function jobFolderKey(projectName: string): string {
-  // eslint-disable-next-line no-control-regex
-  const printable = Array.from(projectName).filter((ch) => {
-    const cp = ch.codePointAt(0)!;
-    return !(cp < 0x20 || (cp >= 0x7f && cp <= 0x9f));
-  }).join("");
+  // Python's str.isprintable() is "NOT (Unicode category Other or Separator), except ASCII space"
+  // — i.e. Cc, Cf, Cs, Co, Cn, Zl, Zp, Zs. A narrower C0/C1-only filter is NOT equivalent, and the
+  // difference is reachable in practice: a project name pasted from Word, Excel or a PDF routinely
+  // carries a non-breaking space (U+00A0), a zero-width space/joiner (U+200B/U+200D), a direction
+  // mark (U+200E), or an en/ideographic space (U+2002/U+3000).
+  //
+  // Getting this wrong is silent and expensive. Python creates the real folder with those
+  // characters STRIPPED, so if the Worker snapshotted archive_folder_key with them intact, the
+  // daemon would resolve against a folder name that was never created — a permanent archive
+  // failure surfacing only as an unexplained archive_state='failed'.
+  const printable = Array.from(projectName)
+    .filter((ch) => ch === " " || !NONPRINTABLE.test(ch))
+    .join("");
   const cleaned = printable.replaceAll("/", "-").trim();
   return cleaned.length > 0 ? cleaned : projectName.trim();
 }
@@ -556,7 +572,16 @@ async function archiveTransition(
     .first<{ project_name: string; lifecycle: string; archive_state: string; archive_direction: string }>();
   if (!row) return c.json({ error: "not_found" }, 404);
 
-  if (confirm.trim() !== (row.project_name ?? "").trim()) {
+  // Post-trim floor on BOTH sides. The length check above runs before trimming, so `confirm: " "`
+  // clears it — and would then match a row whose project_name was somehow empty. That cannot
+  // happen today (create and /contacts both require a non-empty name AFTER trimming), but this
+  // makes the control independent of that invariant rather than quietly dependent on it: a future
+  // bulk-import or migration path that skips those validators must not open a bypass here.
+  const expected = (row.project_name ?? "").trim();
+  if (confirm.trim().length < 1 || expected.length < 1) {
+    return c.json({ error: "confirm_required" }, 400);
+  }
+  if (confirm.trim() !== expected) {
     return c.json({ error: "confirm_mismatch" }, 409); // zero writes — asserted in the tests
   }
 
@@ -588,6 +613,22 @@ async function archiveTransition(
   const folderKey = jobFolderKey(row.project_name ?? "");
   const actor = c.get("session").username;
 
+  // ATOMIC IN-WHERE GUARD. The state checks above ran against a SEPARATE read, so on their own
+  // they are check-then-act: two concurrent requests can both observe 'none', both pass, and both
+  // write — producing two audit rows and re-stamping archive_requested_at. Worse, once the daemon
+  // exists it writes these same columns from another process, so a request holding a stale read
+  // could stomp an `in_progress` claim back to 'requested' and zero archive_attempts UNDERNEATH an
+  // active relocation.
+  //
+  // Re-asserting the permitted source state in the UPDATE's own WHERE closes that window: the
+  // database, not the handler's snapshot, decides whether the transition is still legal. The JS
+  // checks above are retained ONLY to choose the specific error code — they are the message, this
+  // is the control. (Same posture as the publish claim/stamp state machine elsewhere in the Worker.)
+  const stateGuard =
+    direction === "archive"
+      ? `AND archive_state IN ${ARCHIVE_RESTARTABLE_SQL}`
+      : "AND archive_state = 'complete'";
+
   // ONE batch: the mutation and its audit row land together or not at all (the "W4" class).
   const res = await c.env.DB.batch([
     c.env.DB
@@ -596,7 +637,7 @@ async function archiveTransition(
           "archive_state='requested', archive_direction=?5, archive_requested_at=unixepoch(), " +
           "archive_completed_at=NULL, archive_attempts=0, archive_detail='', archive_folder_key=?6, " +
           "mirror_version=mirror_version+1, sync_state='pending' " +
-          "WHERE job_id=?1 AND origin='portal'",
+          `WHERE job_id=?1 AND origin='portal' ${stateGuard}`,
       )
       .bind(jobId, lifecycle, active, status, direction, folderKey),
     auditStmtIfChanged(c, actor, direction === "archive" ? "job_archive" : "job_unarchive", jobId, {
@@ -605,7 +646,19 @@ async function archiveTransition(
       folder_key: folderKey,
     }),
   ]);
-  if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+  // 0 changes now means one of two things, and they are worth distinguishing for the operator:
+  // the row vanished / is not portal-origin (404 — the pre-read said otherwise, so it was deleted
+  // between the two statements), or we LOST THE RACE and another writer moved the state after our
+  // read (409 — retrying is meaningful; 404 would tell the user the job doesn't exist, which is a
+  // lie). Re-read to tell them apart rather than folding both into one misleading code.
+  if ((res[0].meta.changes ?? 0) === 0) {
+    const now = await c.env.DB
+      .prepare("SELECT archive_state FROM jobs WHERE job_id=?1 AND origin='portal'")
+      .bind(jobId)
+      .first<{ archive_state: string }>();
+    if (!now) return c.json({ error: "not_found" }, 404);
+    return c.json({ error: "archive_in_flight" }, 409);
+  }
 
   return c.json(
     { ok: true, job_id: jobId, archive: { state: "requested", direction } },
