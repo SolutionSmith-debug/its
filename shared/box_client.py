@@ -527,6 +527,63 @@ def get_or_create_folder(parent_folder_id: str, name: str) -> str:
         raise
 
 
+def move_folder(
+    folder_id: str, new_parent_folder_id: str, *, new_name: str | None = None
+) -> dict[str, Any]:
+    """MOVE a folder (and everything in it) under `new_parent_folder_id`, optionally
+    renaming it in the same call. Returns ``{"id", "name", "parent_id"}``.
+
+    The Box half of the Track 6 job archive. Only TWO Box containers move per job, not
+    five: ``safety_reports.box.portal_root_folder_id`` is the SHARED root for safety AND
+    purchase orders AND RFQs AND subcontracts (`po_poll._resolve_po_box_folder`,
+    `rfq_poll._resolve_rfq_box_folder`, `subcontract_poll._resolve_subcontract_box_folder`
+    all bottom out on it), so relocating ``<safety root>/<Job>`` carries
+    ``Purchase Orders/``, ``RFQs/``, ``Vendor Quotes/`` and the subcontract files with it.
+    Progress has its own root. A future reader will be tempted to "fix" this by adding four
+    Box slots — don't.
+
+    ATOMIC move+rename, unlike Smartsheet. boxsdk emits ONE ``PUT /folders/{id}`` carrying
+    both ``parent.id`` and ``name``, so there is no crash window between relocating and
+    labelling. The Smartsheet path needs a two-call move-then-rename with a resumable
+    intermediate state; this side has none. That asymmetry is why the two systems get
+    different resume logic, and it is not an accident of style.
+
+    MOVE-ONLY by construction. There is deliberately no Box delete or rename wrapper in
+    this module: the archive needs relocation, and ``move`` carries the rename. A "move
+    failed → delete and re-upload" recovery would be catastrophic and irreversible, so the
+    primitive that would enable it is simply absent.
+
+    Conflict-adopt on 409, mirroring `get_or_create_folder`: a partially-completed prior
+    run can leave ``<archive>/<Job>/Safety`` already present. If the existing child IS the
+    folder we hold, the move already happened and this is a no-op — which is what lets the
+    resume path re-issue it without checking first. If it is a DIFFERENT folder, re-raise
+    loud: there is no merge primitive on either system, and silently colliding two job
+    trees is unrecoverable.
+    """
+    client = get_client()
+    try:
+        moved = _call(
+            client.folder(folder_id).move, client.folder(new_parent_folder_id), new_name
+        )
+    except BoxConflictError:
+        target = new_name or ""
+        existing = _find_child_folder(new_parent_folder_id, target) if target else None
+        if existing is not None and str(existing) == str(folder_id):
+            # Already in place under the intended name — a replay, not a collision.
+            return {
+                "id": str(folder_id),
+                "name": target,
+                "parent_id": str(new_parent_folder_id),
+            }
+        raise
+    parent = getattr(moved, "parent", None)
+    return {
+        "id": str(moved.id),
+        "name": str(getattr(moved, "name", "") or ""),
+        "parent_id": str(getattr(parent, "id", "") or "") if parent else "",
+    }
+
+
 def search(
     query: str,
     *,
