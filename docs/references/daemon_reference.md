@@ -76,7 +76,7 @@ report its own death:
 
 | Surface | Mechanism | Who writes it | Who reads it |
 |---|---|---|---|
-| **ITS_Daemon_Health** sheet (id `4529351700729732`, System workspace / 04 — Daemons) | One row per daemon, updated in place each cycle via `shared/heartbeat.py` `HeartbeatReporter` | The **14** daemons that construct a `HeartbeatReporter` (see roster) | Operator (obs), dashboard daemons panel, watchdog Check G |
+| **ITS_Daemon_Health** sheet (id `6272022823784324`, System workspace / 04 — Daemons) | One row per daemon, updated in place each cycle via `shared/heartbeat.py` `HeartbeatReporter` | The **14** daemons that construct a `HeartbeatReporter` (see roster) | Operator (obs), dashboard daemons panel, watchdog Check G |
 | **Watchdog marker files** (`~/its/.watchdog/<slug>.last_run`) | ISO timestamp written each cycle | The **16** `TRACKED_JOBS` daemons | Watchdog **Check C** (marker-staleness floor) |
 
 <!-- src: scripts/watchdog.py:408-455 (Check C body); scripts/watchdog.py:240-287 (TRACKED_JOB_WINDOWS) | verified 2026-07-14 -->
@@ -85,8 +85,9 @@ job in `TRACKED_JOBS` it reads `~/its/.watchdog/<slug>.last_run` and WARNs if th
 marker is missing, unreadable, or older than that job's freshness window
 (`TRACKED_JOB_WINDOWS`, default 24h). Because a daemon cannot detect its own total
 death, Check C is the staleness floor that catches a silently-dead poller; total host
-death is caught by the external UptimeRobot ping (the dead-man's switch), since the
-watchdog cannot alert about itself.
+death is caught by the external **Healthchecks.io** ping (the dead-man's switch), since the
+watchdog cannot alert about itself — **once armed**; while `system.heartbeat_url` holds its
+seed placeholder the ping is skipped and total-host death is undetected.
 
 ### ITS_Daemon_Health schema (12 columns)
 
@@ -474,9 +475,9 @@ operator-gated activation** and both write an ITS_Daemon_Health heartbeat but ar
 | **Interval** | `StartCalendarInterval` — **daily 07:00** local (`Hour 7`, `Minute 0`; no `Weekday` ⇒ every day). Catches up on wake if the laptop was asleep. |
 | **Source of work** | Marker files, Smartsheet sheets, circuit breaker, heartbeats, GitHub CI, the portal Worker |
 | **Config gates** | None (MAINTENANCE-aware — defers inline-firing checks during MAINTENANCE) |
-| **Heartbeat row** | None — a daemon cannot reliably watch itself. Its OWN liveness is the external **UptimeRobot** ping (the dead-man's switch for total host death). |
+| **Heartbeat row** | None — a daemon cannot reliably watch itself. Its OWN liveness is the external **Healthchecks.io** ping (the dead-man's switch for total host death), which is skipped until `system.heartbeat_url` is configured. |
 | **Log** | `~/its/logs/launchd/watchdog.out.log` / `.err.log` |
-| **Known failure modes** | If the watchdog itself dies, only the external UptimeRobot ping surfaces it. A missed daily run is caught on the next wake (calendar catch-up). |
+| **Known failure modes** | If the watchdog itself dies, only the external **Healthchecks.io** ping surfaces it — and that ping is skipped while `system.heartbeat_url` holds its seed placeholder, so a dead watchdog is currently undetected externally. A missed daily run is caught on the next wake (calendar catch-up). |
 | **Restart** | Dashboard start/stop; shell `install.sh load org.solutionsmith.its.watchdog` |
 
 ### dashboard — `operator_dashboard`
