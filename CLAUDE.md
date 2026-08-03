@@ -81,9 +81,12 @@ These are non-negotiable. Every workstream inherits both.
 No external transmission without explicit human approval. **Permanent, not time-bounded.**
 Earlier framing in Op Stds v4 that described review as a 30–60 day window is superseded.
 
-- Every workstream that produces customer-facing output uses a `<Workstream>_Pending_Review`
-  Smartsheet sheet with `Approved for Send` / `Approved By` / `Approved At` / `Sent At` /
-  `Send Status` columns.
+- Every workstream that produces output destined for **any external recipient — a customer,
+  vendor, or subcontractor** — uses a `<Workstream>_Pending_Review` Smartsheet sheet with
+  `Approved for Send` / `Approved By` / `Approved At` / `Sent At` / `Send Status` columns.
+  (Foundation Mission v11 wording. The earlier "customer-facing" phrasing under-scoped the
+  gate: `po_send` and `rfq_send` transmit to **vendors**, `subcontract_send` to
+  **subcontractors** — all three are in scope.)
 - **Two-process model.** Generation scripts (which call the Anthropic API) have zero send
   capability. Send scripts (which transmit) have zero AI step. Successful prompt injection at
   the AI layer cannot cause external transmission — the AI is in a different process from the
@@ -145,8 +148,10 @@ ITS is built to be maintained after the developer (Seth) departs. The model (FM 
 
 1. **Tier 1 — self-heal.** Interval daemons recover via launchd re-invocation (one-shot-per-
    `StartInterval`); watchdog **Check C** marker-file staleness floor catches a stale daemon across
-   all 18 tracked jobs (`TRACKED_JOBS`); the external UptimeRobot ping (audit F16) is the dead-man's switch for
-   total-host death. No human acts. (No "Check H" — naming artifact; Check C is the staleness floor.
+   all 18 tracked jobs (`TRACKED_JOBS`); the external **Healthchecks.io** ping (audit F16) is the
+   intended dead-man's switch for total-host death — **but it is not armed**: `scripts/watchdog.py`
+   skips the ping while `system.heartbeat_url` holds its seed placeholder, so total-host death is
+   currently silent (see `docs/tech_debt.md`). No human acts. (No "Check H" — naming artifact; Check C is the staleness floor.
    The lone residual `weekly_generate` Friday-crash gap is closed by watchdog **Check I** catch-up;
    see `scripts/watchdog.py`.)
 2. **Tier 2 — Claude-assisted repair by the Successor-Operator.** A *trained* operator who runs
@@ -310,8 +315,12 @@ roughly six-month cadence.
 Ship in Phase 0:
 
 - **Sentry** — exception tracking, wired into `shared/error_log.py`. Free tier.
-- **UptimeRobot** — external heartbeat from `scripts/watchdog.py`. Catches "MacBook is dead"
-  since the watchdog can't alert about itself.
+- **Healthchecks.io** — external heartbeat from `scripts/watchdog.py` (`shared/heartbeat_client.py`).
+  Intended to catch "MacBook is dead" since the watchdog can't alert about itself. **Not armed yet** —
+  the ping is skipped while `system.heartbeat_url` holds its seed placeholder, so this detector has
+  never fired on any host. (Earlier docs named UptimeRobot; its free tier gates heartbeat monitoring
+  behind Pro and restricts commercial use, so Healthchecks.io was provisioned instead —
+  `docs/session_logs/2026-05-28_f16-heartbeat-ping.md`.)
 - **Resend** — out-of-band CRITICAL alert path. Covers M365 outage suppressing its own
   outage alert.
 - **GitHub Actions** — `.github/workflows/ci.yml`, **three jobs** on every push + PR-to-main:
@@ -326,7 +335,8 @@ LangChain, Kubernetes.
 
 ## Operator visibility surface
 
-ITS_Daemon_Health sheet (System workspace / folder 04 — Daemons / sheet 4529351700729732) is
+ITS_Daemon_Health sheet (System workspace / folder 04 — Daemons / sheet 6272022823784324 —
+`shared/sheet_ids.SHEET_DAEMON_HEALTH` is the value of record) is
 the canonical operator-visibility surface for all polling daemons. One row per daemon,
 update-in-place per cycle. Push surface per Op Stds v21 §3.1 + §32.
 
