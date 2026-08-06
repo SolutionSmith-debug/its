@@ -2003,6 +2003,141 @@ app.post("/api/internal/fieldops/jobs-mark-mirrored", requireFieldopsToken, asyn
  * (data anomaly) is simply not returned (INNER JOIN) — it cannot be foldered, and it re-appears the
  * moment the job row exists.
  */
+/**
+ * ── Track 6 job archive: the daemon's queue + commit point ──────────────────────────────────────
+ *
+ * GET /archive-pending — jobs awaiting relocation. Deliberately its OWN queue rather than riding
+ * the job-dirty list: `jobs-mark-mirrored` flips sync_state to 'synced' the moment both sheets
+ * catch up, which is precisely WHY the pre-Track-6 archive move "did not auto-retry" — an
+ * unrelated mirror success silenced it. A dedicated queue keeps re-serving a job until its archive
+ * reaches a terminal state, and cannot be quieted by anything else.
+ *
+ * The cap is deliberately small: each row costs SIX external API sequences across two systems, so
+ * a 200-row page would blow the daemon's cycle budget.
+ */
+const FIELDOPS_ARCHIVE_CAP = 25;
+
+app.get("/api/internal/fieldops/archive-pending", requireFieldopsToken, async (c) => {
+  const rows = await c.env.DB
+    .prepare(
+      `SELECT job_id, project_name, job_no, archive_folder_key, archive_direction,
+              archive_state, archive_attempts, archive_requested_at
+         FROM jobs
+        WHERE origin='portal' AND archive_state IN ('requested','in_progress')
+        ORDER BY archive_requested_at ASC, job_id ASC
+        LIMIT ?1`,
+    )
+    .bind(FIELDOPS_ARCHIVE_CAP)
+    .all<Record<string, unknown>>();
+  return c.json({ jobs: rows.results ?? [] });
+});
+
+/**
+ * POST /job-archive-progress — the pass's commit point. Body:
+ *   { updates: [{ job_id, direction, state, containers?, note? }, …] }
+ *
+ * FORWARD-ONLY by construction. Every UPDATE carries
+ *   AND archive_state IN ('requested','in_progress') AND archive_direction = ?
+ * so a late or replayed post from a previous cycle can never resurrect a completed archive, nor
+ * apply an ARCHIVE result to a job the operator has since flipped to un-archive. A row that no
+ * longer matches is reported in `skipped` rather than failing the batch — one stale member must
+ * not discard the other 24 genuine results.
+ *
+ * Validate-ALL-then-execute (the jobs-mark-mirrored contract): a malformed member anywhere rejects
+ * the whole request before a single statement runs, so a partial application is impossible.
+ *
+ * A COMPLETED UN-ARCHIVE resets the record to neutral ('none' / '' / NULLs). The audit_log keeps
+ * the history; the row goes back to being an ordinary job — and, importantly, becomes prunable
+ * again, which is the behaviour prune.ts's archive fence assumes.
+ */
+const ARCHIVE_PROGRESS_STATES = new Set(["in_progress", "complete", "partial", "failed"]);
+const ARCHIVE_DETAIL_MAX = 4000;
+
+app.post("/api/internal/fieldops/job-archive-progress", requireFieldopsToken, async (c) => {
+  let body: { updates?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const raw = body.updates;
+  if (!Array.isArray(raw)) return c.json({ error: "invalid_updates" }, 400);
+  if (raw.length === 0) return c.json({ error: "empty_updates" }, 400);
+  if (raw.length > FIELDOPS_ARCHIVE_CAP) return c.json({ error: "too_many_updates" }, 413);
+
+  // ── validate ALL first ──
+  interface ArchiveUpdate { jobId: string; direction: string; state: string; detail: string }
+  const parsed: ArchiveUpdate[] = [];
+  for (const u of raw) {
+    if (typeof u !== "object" || u === null || Array.isArray(u)) return c.json({ error: "invalid_update" }, 400);
+    const row = u as Record<string, unknown>;
+    const jobId = typeof row.job_id === "string" ? row.job_id : "";
+    const direction = row.direction === "archive" || row.direction === "unarchive" ? row.direction : "";
+    const state = typeof row.state === "string" ? row.state : "";
+    if (!jobId || jobId.length > 64 || !direction) return c.json({ error: "invalid_update" }, 400);
+    // 'requested' is BROWSER-only — the daemon may never raise a request, only advance one.
+    if (!ARCHIVE_PROGRESS_STATES.has(state)) return c.json({ error: "invalid_archive_state" }, 400);
+    const detail = row.containers === undefined ? "" : JSON.stringify(row.containers);
+    if (detail.length > ARCHIVE_DETAIL_MAX) return c.json({ error: "invalid_update" }, 400);
+    parsed.push({ jobId, direction, state, detail });
+  }
+
+  // ── then execute ──
+  const statements = [];
+  for (const u of parsed) {
+    statements.push(
+      c.env.DB
+        .prepare(
+          "UPDATE jobs SET archive_state=?2, archive_detail=?3, " +
+            "archive_attempts = archive_attempts + (CASE WHEN ?2 IN ('partial','failed') THEN 1 ELSE 0 END), " +
+            "archive_completed_at = (CASE WHEN ?2='complete' THEN unixepoch() ELSE archive_completed_at END) " +
+            "WHERE job_id=?1 AND origin='portal' " +
+            "AND archive_state IN ('requested','in_progress') AND archive_direction=?4",
+        )
+        .bind(u.jobId, u.state, u.detail, u.direction),
+    );
+    if (u.state === "complete" && u.direction === "unarchive") {
+      // The job is back in the live tree — clear the record so it behaves like any other job
+      // (and becomes prunable again, per the prune.ts archive fence).
+      statements.push(
+        c.env.DB
+          .prepare(
+            "UPDATE jobs SET archive_state='none', archive_direction='', archive_requested_at=NULL, " +
+              "archive_completed_at=NULL, archive_attempts=0, archive_detail='', archive_folder_key='' " +
+              "WHERE job_id=?1 AND origin='portal' AND archive_state='complete' AND archive_direction='unarchive'",
+          )
+          .bind(u.jobId),
+      );
+    }
+  }
+  statements.push(
+    c.env.DB
+      .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) VALUES (?1,?2,?3,?4)")
+      .bind(
+        "system:fieldops_sync",
+        "job_archive_progress",
+        "",
+        JSON.stringify({ count: parsed.length, jobs: parsed.slice(0, 25).map((u) => `${u.jobId}:${u.state}`) }),
+      ),
+  );
+
+  const res = await c.env.DB.batch(statements);
+
+  // Report which members matched nothing so the daemon can distinguish "applied" from "the
+  // operator moved this row out from under me" without a second round trip.
+  const skipped: string[] = [];
+  let i = 0;
+  for (const u of parsed) {
+    const changed = res[i].meta.changes ?? 0;
+    if (changed === 0) skipped.push(u.jobId);
+    i += u.state === "complete" && u.direction === "unarchive" ? 2 : 1;
+  }
+  return c.json({ ok: true, updated: parsed.length - skipped.length, skipped });
+});
+
 const FIELDOPS_HOURS_CAP = 200;
 app.get("/api/internal/fieldops/hours-pending", requireFieldopsToken, async (c) => {
   const rows = await c.env.DB
