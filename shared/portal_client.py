@@ -74,6 +74,8 @@ CONFIG_STUCK_PATH = "/api/internal/config/stuck"
 FIELDOPS_PENDING_JOBS_PATH = "/api/internal/fieldops/pending-jobs"
 FIELDOPS_JOBS_MARK_MIRRORED_PATH = "/api/internal/fieldops/jobs-mark-mirrored"
 FIELDOPS_HOURS_PENDING_PATH = "/api/internal/fieldops/hours-pending"
+FIELDOPS_ARCHIVE_PENDING_PATH = "/api/internal/fieldops/archive-pending"
+FIELDOPS_ARCHIVE_PROGRESS_PATH = "/api/internal/fieldops/job-archive-progress"
 FIELDOPS_HOURS_MARK_MIRRORED_PATH = "/api/internal/fieldops/hours-mark-mirrored"
 FIELDOPS_EQUIPMENT_SNAPSHOT_PATH = "/api/internal/fieldops/equipment-snapshot"
 FIELDOPS_MATERIAL_LIST_SNAPSHOT_PATH = "/api/internal/fieldops/material-list-snapshot"
@@ -392,6 +394,62 @@ def mark_fieldops_hours_mirrored(
     return _request(
         "POST", base_url, FIELDOPS_HOURS_MARK_MIRRORED_PATH, token,
         json_body={"uuids": uuids},
+    )
+
+
+def get_fieldops_pending_archives(base_url: str, token: str) -> list[dict[str, Any]]:
+    """Pull jobs awaiting relocation: GET /api/internal/fieldops/archive-pending.
+
+    Returns the `jobs` list verbatim — each a dict with `job_id, project_name, job_no,
+    archive_folder_key, archive_direction, archive_state, archive_attempts,
+    archive_requested_at`.
+
+    Resolve containers against `archive_folder_key`, NEVER against `project_name`. The key is
+    snapshotted when the operator raises the request; `project_name` is editable afterwards
+    (`POST /api/fieldops/job/:id/contacts`), and every per-job folder was created under the key's
+    value. Using the live name would send the pass after a folder that does not exist.
+
+    The Worker caps the page at 25 server-side — far below the other queues' 200, because each row
+    costs six external API sequences across two systems. The pass drains across cycles.
+
+    A control-plane read of OUR OWN Worker (bearer = `PORTAL_FIELDOPS_API_TOKEN`, the same token
+    as the job and hours queues), NOT a customer send. Typed-error contract as elsewhere:
+    `PortalAuthError` (401) / `PortalRateLimitError` / `PortalTransportError`.
+    """
+    data = _request("GET", base_url, FIELDOPS_ARCHIVE_PENDING_PATH, token)
+    jobs = data.get("jobs")
+    if not isinstance(jobs, list):
+        raise PortalTransportError(
+            f"GET {FIELDOPS_ARCHIVE_PENDING_PATH} missing/invalid 'jobs' array "
+            f"(got {type(jobs).__name__})"
+        )
+    return [row for row in jobs if isinstance(row, dict)]
+
+
+def post_fieldops_archive_progress(
+    base_url: str, token: str, updates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Archive-pass commit point: POST /api/internal/fieldops/job-archive-progress.
+
+    Each update is `{job_id, direction, state, containers?}` where `state` is one of
+    in_progress | complete | partial | failed. `requested` is REFUSED by the Worker — the pass may
+    ADVANCE a request, only a human may raise one.
+
+    The Worker's UPDATE is forward-only (`archive_state IN ('requested','in_progress') AND
+    archive_direction = ?`), so a late or replayed post cannot resurrect a completed archive nor
+    apply an archive result to a job the operator has since flipped to un-archive. Rows that no
+    longer match come back in `skipped` rather than failing the batch — one stale member must not
+    discard the rest. **Callers should treat a job appearing in `skipped` as "the operator moved
+    this out from under me", not as an error to retry.**
+
+    Empty lists are rejected (400) — never send one. Cap is 25, matching the queue page.
+
+    A control-plane write to OUR OWN Worker (outside the External Send Gate, Invariant 1). Returns
+    the Worker's `{ok, updated, skipped}` dict.
+    """
+    return _request(
+        "POST", base_url, FIELDOPS_ARCHIVE_PROGRESS_PATH, token,
+        json_body={"updates": updates},
     )
 
 
