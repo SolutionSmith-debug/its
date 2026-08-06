@@ -2258,7 +2258,40 @@ symptom this would guard against as of this session. **Trigger:** Seth requests 
 a smaller daemon's log is observed truncated at an inconvenient moment during a live incident. **Tag:**
 `watchdog`, `log_rotation`, `low-severity`, `deferred-refinement`.
 
-## Archive-on-closure — defined/implemented for one narrow slice, never proven live; ~11 per-job surfaces have no closure path at all [OPEN 2026-07-23]
+## Archive-on-closure — SUPERSEDED IN CODE by ROADMAP Track 6 (2026-08-03); the live proof and the §51 rider remain open [PARTIAL 2026-07-23, updated 2026-08-03]
+
+> **Update 2026-08-03 — most of this entry is now historical.** ROADMAP Track 6 landed seven PRs
+> (#715, #716, #718, #719, #720, #721, #722) that replace the narrow slice this entry describes.
+> What changed, against the three gaps below:
+>
+> - **Gap 1 (trigger semantics) — RESOLVED, and the old trigger was worse than this entry knew.**
+>   Setting `lifecycle='archived'` did not merely fail to archive most surfaces; it fired an
+>   **unconfirmed, un-retryable four-sheet relocation** on the next mirror cycle, while the UI
+>   re-displayed the job as "Inactive" (the detail payload carried no `lifecycle`, and the legacy
+>   `status` collapses inactive+archived into `'closed'`). #715 disarmed it on all three layers —
+>   SPA option removed, Worker returns 409 `use_archive_route`, Python trigger removed — and fixed
+>   the display across its whole fan-out. Archiving now runs through dedicated routes behind a
+>   server-side typed confirmation (#720) and a distinct `cap.job.archive` (#719).
+> - **Gap 2 (the uncovered surfaces) — ADDRESSED IN CODE, not yet live.** `field_ops/job_archive.py`
+>   (#722) relocates **six** per-job containers: four Smartsheet per-job FOLDERS (Safety, Progress,
+>   Purchase Orders, Subcontracts) and two Box ones. Six rather than eleven because
+>   `safety_reports.box.portal_root_folder_id` is the SHARED Box root for safety + PO + RFQ +
+>   subcontracts, so its per-job folder carries them along. Note the denominator confusion this
+>   entry flagged (~11 here vs ~45 in the proposal) is now moot: the unit is the CONTAINER, not the
+>   surface, because one folder move relocates its whole subtree.
+> - **Gap 3 (the §30 live smoke) — STILL OPEN, and now blocked on something concrete.** Six
+>   Smartsheet + one Box live smoke exist (#716, #718) but are `-m integration`, operator-run, and
+>   have never been run. **They cannot be run from this host:** `ITS_SMARTSHEET_TOKEN` resolves to
+>   the PRODUCTION tenant (verified 2026-08-03 — `get_client()` lists real Evergreen workspaces and
+>   `ITS — Archive = 7347287308429188`, the production id; the sandbox `1649411894863748` is
+>   absent). Running them here would create and delete sheets in the live tenant. See the new
+>   entries below for the unblock conditions.
+>
+> **Still true and still the point:** the archive has NEVER fired against live data. Track 6 is
+> code-complete on the Smartsheet leg and unproven end-to-end.
+>
+> Remaining Track 6 work is tracked in `docs/ROADMAP.md` Track 6, not here.
+
 
 A 3-lens adversarial audit run during the 2026-07-23 tenant-wipe/stand-up rehearsal — code-level
 (`~/its/logs/reviews/2026-07-23_arch_code.json`), doctrine/runbook-level (`2026-07-23_arch_docs.json`),
@@ -2380,6 +2413,92 @@ call sites currently differ slightly in what they need back (label list only vs.
 a specific daemon's status), so the shared shape needs Seth's confirmation, not just a mechanical dedup.
 **Trigger:** next time a 5th consumer needs the same launchd-query logic, or Seth explicitly greenlights the
 extraction. **Tag:** `migrations`, `standup`, `§14`, `launchd`, `refactor-candidate`.
+
+## Sandbox Smartsheet PAT — the archive live smokes cannot run from the dev host [OPEN 2026-08-03]
+
+`shared/smartsheet_client` reads exactly one Keychain secret, `ITS_SMARTSHEET_TOKEN`. On the
+development MacBook that entry resolves to the **PRODUCTION** Evergreen tenant (verified
+2026-08-03: `get_client()` lists 16 workspaces including `11. KSI- CSP5 Oregon`,
+`Daniel- Projects Tracker`, `Lomaside Tracker`, and `ITS — Archive = 7347287308429188` — the
+production id from PR #710; the sandbox archive `1649411894863748` is ABSENT).
+
+Consequence: **`pytest -m integration` run from `~/its` writes to the live production tenant.**
+That is true of the whole pre-existing integration suite, not just the new archive smokes — it
+creates and deletes real sheets and folders under `FOLDER_SYSTEM_CONFIG`. Nothing has been run;
+this is a latent hazard, not an incident.
+
+The sandbox is currently reachable ONLY through the Smartsheet/Box MCP connectors, which
+authenticate as `seths@evergreenmirror.com`. Those are fine for *verifying* an archive
+independently, but cannot exercise the Python code paths §30 exists to test.
+
+**Unblock:** provision a PAT in the sandbox tenant, store it under a DISTINCT Keychain key
+(`ITS_SMARTSHEET_TOKEN_SANDBOX`), and add a narrow opt-in override in `smartsheet_client` keyed on
+an explicit env var so default behaviour is unchanged and nothing can silently repoint. The drill
+worktree then runs `scripts/migrations/sheet_ids_regen.py --write`, which resolves every constant
+BY NAME from whatever tenant the token reaches and produces a sandbox `sheet_ids.py` automatically
+(never committed). **Tag:** `field_ops`, `archive-on-closure`, `§30`, `seth-owned`.
+
+## Box identity on the dev host is UNCONFIRMED — do not call `box_client` until it is [OPEN 2026-08-03]
+
+Box refresh tokens rotate on **every** exchange and `_store_tokens` persists the new one (the
+documented CRITICAL invariant, locked by `test_store_tokens_persists_refresh_token`). If this host
+and the production host share a grant, a single `box_client` call here rotates the token and breaks
+the production daemons — while Seth is travelling and the alerting path is still unverified.
+
+Evidence narrows it but does not settle it: `~/its/state/box_oauth_last_refresh.json` on this host
+reads `2026-07-24T21:39:45Z`, while the production host completed its own fresh Box OAuth on
+2026-07-26T20:07:43Z (per `docs/session_logs/2026-07-26_production-host-migration-phase1.md`). A
+fresh OAuth mints a NEW grant, which SUGGESTS the two are independent — inference, not proof.
+
+The Box MCP connector on this host authenticates as `seths@evergreenmirror.com` (verified
+2026-08-03 via `who_am_i`), but that is a separate credential from the Keychain OAuth token.
+
+**Deliberately not probed this session** — the cheapest way to find out is also the way that breaks
+production if the answer is bad. **Unblock:** confirm by inspection (or from the production host),
+or mint a separate dev Box credential. Until then the Box leg of Track 6 is code-only and its live
+smoke (`tests/test_box_client_integration.py::test_move_folder_relocates_atomically…`) must not be
+run here. **Tag:** `field_ops`, `box`, `archive-on-closure`, `seth-owned`.
+
+## Renaming a job orphans its per-job folders — pre-existing, wider than the archive path [OPEN 2026-08-03]
+
+`project_name` IS editable: `safety_portal/worker/fieldops_job_write.ts` gained an optional
+`project_name` edit on `POST /api/fieldops/job/:job_id/contacts` (2026-07-20, "the edit ALL job
+information surface"). The in-file comment above that route still claims *"Only routing fields are
+touched (job_id/lifecycle/status untouched)"* — **that comment is stale.**
+
+Every per-job container is keyed by `safety_reports/safety_naming.py::job_folder_name(project_name)`
+— the Smartsheet per-job folders in the safety, progress, PO and subcontract workspaces, and both
+Box per-job trees. There is no folder-rename propagation anywhere (`smartsheet_client` has
+`rename_folder` as of #716, but nothing calls it on a job rename).
+
+So after a rename: new weeks and new procurement artifacts land in a FRESH folder under the new
+name, while the entire prior history stays orphaned under the old one. Nothing errors; the split is
+silent and permanent until someone notices two folders for one job.
+
+Track 6 mitigates this **for the archive path only** — the archive request snapshots
+`archive_folder_key` at request time (migration 0058) so a rename mid-relocation cannot strand the
+daemon. The underlying defect is untouched.
+
+**Trigger:** decide whether a rename should (a) propagate to all six containers via `rename_folder`,
+(b) be refused once a job has artifacts, or (c) be documented as operator-beware. Also fix the stale
+comment either way. **Tag:** `field_ops`, `safety_portal`, `naming`, `seth-owned`.
+
+## `gh pr update-branch` is not a reliable CI trigger [OPEN 2026-08-03]
+
+Observed on PR #722 (2026-08-06): `gh pr update-branch` produced a new head SHA, but GitHub fired
+**only** the CodeQL default-setup workflow against it. The in-repo `ci` workflow — whose `test`,
+`portal` and `secrets` jobs are all REQUIRED by branch protection — never triggered, so the PR sat
+`BLOCKED` with no runs to wait on. `gh pr close` + `gh pr reopen` did not wake it either. An empty
+`git commit --allow-empty` + push did.
+
+This is a NEW variant of the existing CI-ghost class (`ci-ghost-check-watch-hang` memory): there the
+symptom was a check-run stuck `IN_PROGRESS` on a CLEAN PR; here the runs simply never existed.
+Distinguish them by querying check-runs on the PR's exact head SHA
+(`gh api repos/<r>/commits/<sha>/check-runs`) rather than the branch — a branch-scoped
+`gh run list` shows the PREVIOUS head's runs and looks reassuring.
+
+**Trigger:** low priority; the workaround is one command. Worth folding into
+`docs/operations/pr_merge_discipline.md` next time that file is touched. **Tag:** `ci`, `github`.
 
 ## `seed_production_shares.list_workspace_shares` not enrolled in the family's `_rest_retry` transient-retry seam [OPEN 2026-07-23]
 
