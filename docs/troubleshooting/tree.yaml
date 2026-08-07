@@ -337,6 +337,22 @@ workflows:
               - Correct the personnel record / mapping per the job-management runbook.
             class: daniel_solo
             runbook: docs/runbooks/safety_portal_job_management.md
+          - id: materials_marking
+            symptom: >-
+              A manager cannot mark a delivery on a job's Materials page, or a line shows the wrong
+              received total, or a line still shows a problem after the goods arrived.
+            signals: ["no Delivered / Partially delivered buttons", "forbidden_job", "running total looks wrong", "still shows Problem reported"]
+            checks:
+              - Marking needs cap.materials.receive AND a manager/admin role — a submitter holds the capability but not the role (the same gate the daily report uses).
+              - Non-admins only reach the job they are PLACED on (personnel.current_job); a 403 forbidden_job is the designed scope, not a fault.
+              - The received total is the SUM over an append-only ledger — open the line's history, which shows every event with its quantity, note, date and who recorded it.
+              - The incident flag is STICKY by design; a delivery mark records the delivery without clearing the flag.
+            resolutions:
+              - Fix the role in Accounts or the placement on the job's crew, per the runbook.
+              - A duplicate or mistaken ledger event is corrected by recording a FURTHER event — the ledger is append-only and has no delete path.
+              - Correcting a total at source, or clearing a stuck incident flag, is Seth's — escalate.
+            class: seth_coresolve
+            runbook: docs/runbooks/job_materials.md
       - id: job_mirror
         title: fieldops-sync mirrors dirty jobs UP into both Active-Jobs sheets
         what_happens:
