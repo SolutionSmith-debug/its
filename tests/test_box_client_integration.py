@@ -134,8 +134,8 @@ def test_move_folder_relocates_atomically_and_preserves_file_ids(_client):
         assert box_client.download_file(file_id) == payload
 
         # Gone from the old parent, present under the new one.
-        assert box_client._find_child_folder(root, "_int_mv_job") is None
-        assert box_client._find_child_folder(archive_job, "Safety") == str(job)
+        assert box_client.find_child_folder(root, "_int_mv_job") is None
+        assert box_client.find_child_folder(archive_job, "Safety") == str(job)
 
         # Replay: re-issuing the identical move is a no-op, not a 409 escape.
         again = box_client.move_folder(job, archive_job, new_name="Safety")
