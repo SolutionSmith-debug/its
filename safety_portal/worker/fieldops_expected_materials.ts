@@ -88,7 +88,10 @@ function badId(c: Ctx): number | null {
 // Shared expectation-field validation for create + update (content fields; seq is create-only —
 // reorder has its own route). Returns the cleaned tuple or an error string. material_id is only
 // SHAPE-checked here; its live-catalog check is async and runs at the call site.
-type ExpectationFields = {
+// EXPORTED for the PR3b manifest-import commit route: a bulk-imported line must run the
+// IDENTICAL validation a hand-authored one does, so the importer reuses this validator and
+// this type rather than re-deriving the bounds (which is how two paths drift apart).
+export type ExpectationFields = {
   material_id: number | null;
   description: string | null;
   qty: number | null;
@@ -114,7 +117,10 @@ function optDate(value: unknown): string | null | "invalid" {
   if (typeof value !== "string" || !DATE_RE.test(value)) return "invalid";
   return value;
 }
-function readExpectationFields(body: Record<string, unknown>): ExpectationFields | string {
+/** EXPORTED for the PR3b manifest-import commit route (see the ExpectationFields note).
+ *  Returns the cleaned fields, or a plain error-CODE string the caller renders as
+ *  `{ error: <code> }` 400 — importers additionally report the offending row index. */
+export function readExpectationFields(body: Record<string, unknown>): ExpectationFields | string {
   let material_id: number | null = null;
   if (body.material_id !== undefined && body.material_id !== null) {
     if (typeof body.material_id !== "number" || !Number.isInteger(body.material_id) || body.material_id < 1) {
@@ -158,7 +164,9 @@ function readExpectationFields(body: Record<string, unknown>): ExpectationFields
 
 // material_id, when given, must name an ACTIVE catalog type (a retired type must not gain new
 // expectations; existing rows referencing a later-retired type are untouched — soft-ref posture).
-async function catalogIdValid(c: Ctx, materialId: number | null): Promise<boolean> {
+// EXPORTED for the PR3b manifest-import commit route. NOTE it is ONE D1 round-trip per call, so a
+// bulk importer must pre-resolve the DISTINCT non-null material_ids rather than calling per row.
+export async function catalogIdValid(c: Ctx, materialId: number | null): Promise<boolean> {
   if (materialId === null) return true;
   const row = await c.env.DB.prepare("SELECT id FROM material_catalog WHERE id = ?1 AND active = 1")
     .bind(materialId)

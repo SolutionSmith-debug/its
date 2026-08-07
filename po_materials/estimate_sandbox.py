@@ -28,6 +28,14 @@ Child fn contracts (stdout JSON):
                                      per-page word positions bounded by
                                      PARSE_MAX_WORDS_PER_PAGE, tables by
                                      PARSE_MAX_TABLES_PER_PAGE × PARSE_MAX_TABLE_ROWS)
+  extract_xlsx_rows  [max_sheets]  → {"sheets": [{"name": str, "rows": [[cell, ...], ...]},
+                                     ...]}  (PR3b materials-manifest grid extraction;
+                                     cells ride as JSON scalars — null/bool/int/float/str
+                                     — so the parser's normalize_cell still sees the real
+                                     type and a part number read as 7006955 does not become
+                                     "7006955.0"; datetimes are str()'d for the parser's ISO
+                                     regex. Bounded by XLSX_MAX_SHEETS ×
+                                     XLSX_MAX_ROWS_PER_SHEET × XLSX_MAX_COLS_PER_ROW)
   (plus four harmless _test_* fns — spin / bounded-alloc / crash / echo — dispatched
   only by tests/test_estimate_sandbox.py to prove the reap contract on REAL children)
 
@@ -78,6 +86,10 @@ PREVIEW_TIMEOUT_S = 120
 # E4 Tier-1 parse (text + words + tables) does strictly more work than the plain
 # text extraction — its own budget, still bounded well under the daemon interval.
 PARSE_TIMEOUT_S = 90
+# PR3b materials-manifest xlsx grid extraction. openpyxl's read-only iteration is
+# cheap per cell but a workbook may declare enormous extents (the Deep Lake shipping
+# log claims 1,247 × 92 and holds 57 × 12), so the budget matches the PDF parse.
+XLSX_TIMEOUT_S = 90
 # Sanity cap on child stdout — a preview batch of a dozen page PNGs sits far below
 # this; anything larger is a runaway child, treated as a failure.
 MAX_CHILD_STDOUT_BYTES = 64 * 1024 * 1024
@@ -93,13 +105,32 @@ PARSE_MAX_WORDS_PER_PAGE = 3000
 PARSE_MAX_TABLES_PER_PAGE = 20
 PARSE_MAX_TABLE_ROWS = 500
 
+# Child-side output bounds for the PR3b xlsx grid extraction. These are enforced AS
+# THE GRID IS BUILT, not after: MAX_CHILD_STDOUT_BYTES is a parent-side check that only
+# fires once the child has already materialized the payload, so a workbook declaring a
+# million rows would exhaust the child's memory before the parent could refuse it.
+# Sized generously against the real corpus — the largest sample manifest is a master BOM
+# well under 2,000 rows, and the widest holds 12 real columns behind a declared 92.
+XLSX_MAX_SHEETS = 20
+XLSX_MAX_ROWS_PER_SHEET = 5000
+XLSX_MAX_COLS_PER_ROW = 200
+# A cell's text form is bounded too: a single hostile cell holding megabytes of text
+# would otherwise ride into D1 and then into the validate screen's grid.
+XLSX_MAX_CELL_CHARS = 2000
+
 # TEST-SUPPORT child fns (tests/test_estimate_sandbox.py — the REAL-child-process
 # suite proving the reap/rlimit contract without a hostile document). Deliberately
 # ungated: each is harmless — local CPU/memory inside a child the parent reaps
 # (spin / bounded alloc / crash / echo); nothing in the daemon dispatches them,
 # and invoking one by hand just burns a few seconds of local CPU.
 _TEST_FNS = ("_test_spin", "_test_alloc", "_test_crash", "_test_echo")
-_ALLOWED_FNS = ("extract_pages_text", "render_page_pngs", "parse_native", *_TEST_FNS)
+_ALLOWED_FNS = (
+    "extract_pages_text",
+    "render_page_pngs",
+    "parse_native",
+    "extract_xlsx_rows",
+    *_TEST_FNS,
+)
 
 
 def run_sandboxed(
@@ -234,6 +265,78 @@ def _child_parse_native(data: bytes, max_pages: int) -> dict[str, Any]:
     }
 
 
+def _child_extract_xlsx_rows(data: bytes, max_sheets: int) -> dict[str, Any]:
+    """openpyxl cell-grid extraction for the PR3b materials-manifest importer
+    (child-side).
+
+    WHY THIS IS HERE AND NOT IN THE DAEMON. An office-uploaded BOM / shipping log is
+    untrusted portal-inbound content (Invariant 2) and openpyxl is a zip+XML parser
+    over those bytes. Running it in-process would put a hostile workbook one parser bug
+    away from the daemon's own state; here a wedged / OOM / crashing parse is REAPED by
+    the parent and the manifest degrades to `refused`. This closes the ADR-0004
+    decision-5 gap where the xlsx path was the one hostile-input parse still running
+    in-process.
+
+    CELL TYPES RIDE AS JSON SCALARS, DELIBERATELY. `json.dumps` is the only serializer
+    and it cannot encode a `datetime`, so the naive fix is to `str()` every cell — but
+    that is exactly wrong for this consumer: `manifest_parse.normalize_cell` renders a
+    float `7006955.0` as `"7006955"` (a part number) and a str `"7006955.0"` as
+    `"7006955.0"` (a part number that matches nothing). So null/bool/int/float/str pass
+    through with their type intact and only the non-JSON-encodable values (datetime,
+    date, time, Decimal, and anything exotic) are stringified — `datetime` into the
+    `"YYYY-MM-DD 00:00:00"` form that `normalize_cell`'s ISO regex already collapses to
+    a date.
+
+    `data_only=True` so a formula cell yields its CACHED VALUE rather than the formula
+    text; `read_only=True` for the streaming row iterator. Per-sheet failures degrade
+    that sheet to an empty row list; a workbook openpyxl cannot open at all RAISES (→
+    nonzero exit → parent None, the degrade signal). All output is bounded as it is
+    built by the XLSX_MAX_* caps, so a workbook that DECLARES a million rows cannot
+    balloon the child.
+    """
+    import openpyxl  # noqa: PLC0415 — lazy child-only import by design
+
+    workbook = openpyxl.load_workbook(
+        io.BytesIO(data), read_only=True, data_only=True
+    )
+    sheets: list[dict[str, Any]] = []
+    try:
+        for worksheet in workbook.worksheets[:max_sheets]:
+            rows: list[list[Any]] = []
+            try:
+                for row in worksheet.iter_rows(values_only=True):
+                    if len(rows) >= XLSX_MAX_ROWS_PER_SHEET:
+                        break
+                    rows.append([_json_cell(v) for v in row[:XLSX_MAX_COLS_PER_ROW]])
+            except Exception:  # noqa: BLE001 — one bad sheet degrades to [], not fatal
+                rows = []
+            sheets.append({"name": str(worksheet.title), "rows": rows})
+    finally:
+        # read_only workbooks hold an open zip handle; close it even on a bad sheet.
+        try:
+            workbook.close()
+        except Exception:  # noqa: BLE001 — best-effort; the child is about to exit
+            pass
+    return {"sheets": sheets}
+
+
+def _json_cell(value: Any) -> Any:
+    """One openpyxl cell → a JSON-encodable scalar, PRESERVING numeric type.
+
+    See `_child_extract_xlsx_rows` for why `str()`-ing everything would corrupt part
+    numbers. Anything json cannot encode natively becomes its `str()` form, bounded to
+    XLSX_MAX_CELL_CHARS so one hostile cell cannot carry megabytes into D1.
+    """
+    if value is None or isinstance(value, bool | int | float):
+        # bool before int is not needed here (both pass through), but floats that are
+        # NaN/inf would break json.dumps(allow_nan default) downstream — refuse them.
+        if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+            return ""
+        return value
+    text = str(value)
+    return text[:XLSX_MAX_CELL_CHARS]
+
+
 def _child_render_page_pngs(data: bytes, max_pages: int) -> dict[str, Any]:
     """Quartz (CoreGraphics) PDF→PNG page render (child-side).
 
@@ -360,6 +463,14 @@ def _child_main(argv: list[str]) -> int:
         result = _child_parse_native(data, max_pages)
     elif fn_name == "render_page_pngs":
         result = _child_render_page_pngs(data, max_pages)
+    # NOTE the trailing `else:` below is an UNGUARDED fall-through to _child_test_alloc.
+    # Adding a name to _ALLOWED_FNS without adding its branch here does not error — it
+    # routes the new fn to the allocation bomb, which burns 512 MiB and spins until the
+    # reap while the parent just sees None after the full timeout. Allowlist entry and
+    # dispatch branch MUST land together.
+    elif fn_name == "extract_xlsx_rows":
+        # `max_pages` is the single int argv slot; for a workbook it means max SHEETS.
+        result = _child_extract_xlsx_rows(data, max_pages)
     elif fn_name == "_test_echo":
         result = _child_test_echo(data)
     elif fn_name == "_test_crash":  # pragma: no cover — child exits nonzero
