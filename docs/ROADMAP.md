@@ -109,7 +109,31 @@ Email-Triage-owned (unchanged).
 WS4 operator artifacts (landed): `docs/operations/host_migration_runbook.md` · `cutover_checklist.md` v2 + `scripts/verify_cutover.py` (§53 gate) · `production_rollback.md` · `aug7_delivery_runbook.md`.
 **WS2 operator dashboard — COMPLETE (2026-07-13).** All six completion blocks landed four-part clean: config-registry reconcile to the post-SC/PO surface (#567), D1-3b KeepAlive-service plist + interval-edit verb (#570), daemon-control + breaker-clear verbs + read-only send-queue panel (#574), Evergreen brand pass + audit-panel/lockout-UX/`/healthz` hardening (#576), and the activation kit + close-out. The six §44 actions are built; ships **DARK** pending the operator's one-time PIN + `tailscale_serve.sh` → plist-install activation (`docs/runbooks/operator_dashboard_config_editor.md` quick-start).
 
-### Track 6 — End-to-end job archive workflow *(next net-new build; plan approved 2026-08-02)*
+### Track 6 — End-to-end job archive workflow *(IN FLIGHT — 7 PRs landed 2026-08-03; see status block)*
+
+> **Status 2026-08-03.** Seven PRs landed four-part clean: **#715** disarm the landmine + truthful
+> lifecycle · **#716** Smartsheet folder primitives · **#718** `box_client.move_folder` · **#719**
+> migration 0058 + `cap.job.archive` · **#720** archive/unarchive routes + the `prune.ts` fence ·
+> **#721** the daemon's queue + commit point · **#722** `field_ops/job_archive.py`.
+>
+> **REMAINING:** wire the pass into `fieldops_sync`'s cycle behind a dark, seeded-false gate; the
+> **Box leg** of `job_archive` (currently reports `box leg pending` rather than pretending success)
+> + the `ITS Archive` root — extend `scripts/migrations/build_box_roots.py` to a third root, add the
+> `standup.py` seed tuple, and **beware `production_repoint.py:129`, which matches the literal
+> suffix `.portal_root_folder_id` — a key named `…archive_root_folder_id` is SILENTLY SKIPPED at
+> cutover**; `production_shares_manifest.json` needs `WORKSPACE_ARCHIVE` with a byte-exact name
+> (Safety Portal uses two EN DASHes, the others one EM dash); the SPA button + typed-confirm modal;
+> docs (ADR-0005, the `project_closure.md` rewrite, the troubleshooting-tree node, the system-map
+> node **with its brief** — `tests/test_system_map.py` enforces that); the **§51 doctrine rider**;
+> and the attended sandbox drill.
+>
+> **Archiving is UNAVAILABLE end-to-end until those land — deliberately.** Nothing is lost: the §51
+> move had never fired against live data in this system's history.
+>
+> **Operator-blocked:** the sandbox Smartsheet PAT, the Box identity question, and the
+> `evergreen-its` push-access decision — all three now have `docs/tech_debt.md` entries dated
+> 2026-08-03 with their unblock conditions.
+
 An admin archives a job from the portal and **every per-job container in BOTH Smartsheet and Box**
 relocates into an archive tree, consolidated under the job with per-workstream subfolders:
 
