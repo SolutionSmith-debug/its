@@ -63,7 +63,9 @@ export const ERROR_COPY: Record<string, string> = {
   invalid_photo_ref: "The photo reference isn't valid.",
   invalid_value_num: "Enter a non-negative number.",
   below_target: "The value you recorded is below the target — the item stays open.",
-  note_required: "Add a note explaining the shortfall to complete this item below target.",
+  // Shared by the checklist below-target acknowledgement, flag-incident, and the PR2
+  // not-delivered mark — worded to serve all three (each is "record a shortfall, say why").
+  note_required: "Add a note explaining the shortfall.",
   auto_close_only: "This item completes automatically when the linked form is filed — it can't be checked by hand.",
   no_instance: "There's no daily checklist for you today.",
   not_complete: "Finish the remaining checklist items first.",
@@ -199,6 +201,22 @@ export const ERROR_COPY: Record<string, string> = {
   invalid_material_id: "Pick a material from the catalog.",
   already_actioned: "That material was already actioned — refresh to see the current status.",
   not_editable: "That material can no longer be edited — it's already been received or flagged.",
+
+  // ── materials tracking: the delivery ledger + scheduled loads (PR2, migration 0059) ────────────
+  // A DISTINCT code from the pre-existing `invalid_kind` (the daily-requirement vocabulary):
+  // one shared code cannot carry two different "pick from this list" meanings.
+  invalid_receipt_kind: "Pick Delivered, Partially delivered, or Not delivered.",
+  invalid_event_date: "That isn't a valid delivery date.",
+  invalid_shipment_id: "That load isn't on this material line — pick one of its own loads.",
+  invalid_line_id: "That material line no longer exists — refresh and try again.",
+  duplicate_event:
+    "That delivery was already recorded — refresh to see it.",
+  invalid_category: "The category is too long (64 characters max).",
+  invalid_expected_ship_date: "That isn't a valid expected ship date.",
+  invalid_bol_number: "The BOL / load number is too long (64 characters max).",
+  invalid_carrier: "The carrier name is too long (64 characters max).",
+  invalid_ship_date: "That isn't a valid ship date.",
+  invalid_delivery_date: "That isn't a valid delivery date.",
 
   // ── job daily requirements ─────────────────────────────────────────────────────────────────────
   daily_tab_form_code:

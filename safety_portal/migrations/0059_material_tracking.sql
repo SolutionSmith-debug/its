@@ -31,9 +31,12 @@
 --
 -- ORDER DEPENDENCY (activation — the standing rule, same as 0031/0037/0039): apply to the live D1
 -- BEFORE the Worker deploys. The same PR's GET /api/fieldops/expected-materials binds
--- part_number / category / expected_ship_date and both new tables, and the internal
--- material-list snapshot binds them too, so a Worker deployed ahead of this migration 500s those
--- surfaces. `git -C ~/its pull origin main` to latest BEFORE `wrangler d1 migrations apply`
+-- part_number / category / expected_ship_date AND both new tables, and the two new write routes
+-- (/expected-material/:id/receipt, /material-shipment*) bind them too, so a Worker deployed ahead
+-- of this migration 500s those surfaces. (The §51 internal material-list snapshot is NOT among
+-- them — it is deliberately untouched here and still selects only pre-0059 columns; its mirror
+-- exposure lands with PR4's receipts-ledger sheet.)
+-- `git -C ~/its pull origin main` to latest BEFORE `wrangler d1 migrations apply`
 -- (the stale-migrations-list lockout class). Depends on 0031 (table) + 0039 (line_uuid);
 -- migrations apply in order, so no extra care is needed.
 

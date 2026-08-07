@@ -455,8 +455,10 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
 
   function readReceiptFields(body: Record<string, unknown>): ReceiptFields | string {
     const kind = body.kind;
+    // `invalid_receipt_kind`, not `invalid_kind`: that code already means "pick a valid
+    // daily-requirement kind" in src/lib/errorCopy.ts, and one code cannot carry two meanings.
     if (typeof kind !== "string" || !RECEIPT_KINDS.includes(kind as MaterialReceiptKind)) {
-      return "invalid_kind";
+      return "invalid_receipt_kind";
     }
     let qty: number | null = null;
     if (body.qty !== undefined && body.qty !== null && body.qty !== "") {
@@ -538,7 +540,14 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
                (event_uuid, line_id, job_id, shipment_id, kind, qty, note, event_date, actor)
              SELECT ?2, jem.id, jem.job_id, ?3, ?4, ?5, ?6, ?7, ?8
                FROM job_expected_materials jem
-              WHERE jem.id = ?1 AND jem.active = 1`,
+              WHERE jem.id = ?1 AND jem.active = 1
+                -- The shipment check is re-asserted HERE, not left to the SELECT above: a
+                -- concurrent /material-shipment/:id/delete between that read and this batch would
+                -- otherwise land an event pointing at a just-deactivated load. Matches this
+                -- module's in-WHERE guard discipline (the line's own active=1 already is atomic).
+                AND (?3 IS NULL OR EXISTS (
+                      SELECT 1 FROM material_shipments s
+                       WHERE s.id = ?3 AND s.line_id = jem.id AND s.active = 1))`,
           )
           .bind(id, eventUuid, shipmentId, f.kind, f.qty, f.note, f.event_date, actor),
         // 2. Audit IMMEDIATELY after the mutation it describes — changes() reads the LAST
@@ -571,7 +580,26 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
       throw e;
     }
     if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
-    return c.json({ ok: true, id, event_id: res[0].meta.last_row_id ?? null, kind: f.kind }, 200);
+    // Report the ACTUAL persisted status, never a literal. Statement 3 is guarded
+    // `status <> 'incident'`, so on a flagged line it deliberately no-ops and the row STAYS
+    // 'incident' — the sticky-incident rule. Returning an assumed "received" there would tell the
+    // field crew a flagged delivery was resolved while the §51 Material List mirror (which reads
+    // this same column) still showed the problem: the two surfaces would disagree, silently.
+    const after = await c.env.DB.prepare(
+      "SELECT status FROM job_expected_materials WHERE id = ?1",
+    )
+      .bind(id)
+      .first<{ status: string }>();
+    return c.json(
+      {
+        ok: true,
+        id,
+        event_id: res[0].meta.last_row_id ?? null,
+        kind: f.kind,
+        status: after?.status ?? null,
+      },
+      200,
+    );
   }
 
   // ── POST /api/fieldops/expected-material/:id/receipt — the three-way mark (manager/admin). ───────
@@ -648,7 +676,7 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
   // INTENTIONAL BEHAVIOUR CHANGE: a repeat call is now 200 + a second delivered event, where M1
   // returned 409 already_actioned. That one-shot guard is precisely what made a partial delivery
   // impossible to complete; the client's per-row busy flag still stops double-taps. Documented in
-  // the §43 runbook.
+  // docs/runbooks/job_materials.md and in material_catalog_admin.md's changed-behaviour note.
   app.post(
     "/api/fieldops/expected-material/:id/receive",
     gates.requireSession,
@@ -656,9 +684,16 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
     async (c) => {
       const res = await appendReceiptEvent(c, "delivered");
       if (res.status !== 200) return res;
-      const body = (await res.json()) as { id: number; event_id: number | null };
-      // Legacy success shape — the daily form reads `status` off this response.
-      return c.json({ ok: true, id: body.id, status: "received", event_id: body.event_id }, 200);
+      const body = (await res.json()) as {
+        id: number;
+        event_id: number | null;
+        status: string | null;
+      };
+      // Legacy success shape — the daily form reads `status` off this response. Pass through the
+      // PERSISTED status rather than asserting "received": on an incident-flagged line the sticky
+      // guard leaves it 'incident', and claiming otherwise would show the crew a resolved delivery
+      // that the office's Material List still flags as a problem.
+      return c.json({ ok: true, id: body.id, status: body.status, event_id: body.event_id }, 200);
     },
   );
 

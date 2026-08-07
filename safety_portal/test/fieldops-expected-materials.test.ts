@@ -325,6 +325,9 @@ describe("POST /api/fieldops/expected-material/:id/receive — guard-in-WHERE + 
     expect(((await (await mark({ kind: "not_delivered" })).json()) as { error: string }).error).toBe("note_required");
     expect((await mark({ kind: "not_delivered", qty: 5, note: "truck never came" })).status).toBe(400);
     expect((await mark({ kind: "nope", note: "x" })).status).toBe(400);
+    expect(((await (await mark({ kind: "nope", note: "x" })).json()) as { error: string }).error).toBe(
+      "invalid_receipt_kind",
+    );
 
     expect((await mark({ kind: "not_delivered", note: "truck never came" })).status).toBe(200);
     const row = await expRow(id);
@@ -392,7 +395,13 @@ describe("POST /api/fieldops/expected-material/:id/flag-incident", () => {
     // PR2: a delivery mark on a flagged line is now ACCEPTED (the goods did arrive) and recorded
     // in the ledger — but `incident` is STICKY, so the coarse status keeps showing the problem.
     // Under M1 this was a 409, which meant a flagged line could never record its eventual receipt.
-    expect((await p(manager, `/api/fieldops/expected-material/${id}/receive`, { qty_received: 2 })).status).toBe(200);
+    const recv = await p(manager, `/api/fieldops/expected-material/${id}/receive`, { qty_received: 2 });
+    expect(recv.status).toBe(200);
+    // The RESPONSE BODY must say 'incident' too, not just the row. The daily form reads `status`
+    // off this payload, so a hardcoded "received" here would show the crew a resolved delivery
+    // while the §51 Material List mirror (reading the same column) still flags the problem —
+    // the two surfaces silently disagreeing. Asserting only expRow() misses exactly that.
+    expect(((await recv.json()) as { status: string }).status).toBe("incident");
     const after = await expRow(id);
     expect(after.status).toBe("incident"); // NOT flipped to received
     expect(await events(id)).toHaveLength(1);

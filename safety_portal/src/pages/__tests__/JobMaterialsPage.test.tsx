@@ -178,7 +178,9 @@ describe("JobMaterialsPage — marking a delivery", () => {
     await waitFor(() => expect(container.textContent ?? "").toContain("1P driven pile"));
     fireEvent.click(getByLabelText("Mark 1P driven pile W8x10 not delivered"));
     const alert = await findByRole("alert");
-    expect(alert.textContent ?? "").toContain("A note is required");
+    // The copy comes from the CANONICAL registry (src/lib/errorCopy.ts), which
+    // tests/test_error_copy_parity.py forces every field-ops code to have — not a local map.
+    expect(alert.textContent ?? "").toContain("Add a note explaining the shortfall");
   });
 });
 

@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_expected_materials";
 import { fetchMaterials, type CatalogRow } from "../lib/fieldops_materials";
 import { useAuth } from "../lib/auth";
+import { errorText } from "../lib/errorCopy";
 import { PageShell } from "../components/PageShell";
 import { ConfirmDelete, planRenumber, nextSeq } from "../components/ChecklistItemForm";
 import {
@@ -71,16 +72,12 @@ function fmtQty(n: number | null): string {
   return n == null ? "—" : String(n);
 }
 
+/** Wire code → plain language via the CANONICAL registry (src/lib/errorCopy.ts), not a local map:
+ *  every field-ops Worker error code is required to have an entry there
+ *  (tests/test_error_copy_parity.py gates it), and a second map here would drift from it. */
 function errText(e: unknown, fallback: string): string {
-  const m = e instanceof Error ? e.message : "";
-  // The Worker's machine codes, rendered as something a person can act on.
-  if (m === "note_required") return "A note is required to record a non-delivery — say what happened.";
-  if (m === "invalid_qty") return "Quantity must be a number greater than 0 (and is not recorded for a non-delivery).";
-  if (m === "invalid_shipment_id") return "That load does not belong to this line.";
-  if (m === "forbidden_job") return "You are not placed on this job, so you cannot mark its deliveries.";
-  if (m === "forbidden_role") return "Only a manager or admin can mark deliveries.";
-  if (m === "not_editable") return "This line already has a reported problem and can no longer be edited.";
-  return m || fallback;
+  const code = e instanceof Error ? e.message : "";
+  return code ? errorText(code) : fallback;
 }
 
 export function JobMaterialsPage({
