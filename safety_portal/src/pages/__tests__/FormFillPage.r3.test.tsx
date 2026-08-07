@@ -166,6 +166,14 @@ describe("FormFillPage — R3 dirty guard", () => {
     );
     await waitFor(() => expect(getByText("Submit")).toBeTruthy());
 
+    // Visible on the light page ground. This shipped as --ghost (the white-on-green HEADER
+    // variant), rendering white-on-#f7f6f2 at ~1.04:1 — the operator reported it as invisible.
+    // --secondary is the canonical in-page back control, and it matches the post-submit twin
+    // above, which was already green. tests/test_portal_button_variants.py gates the class
+    // repo-wide; this pins the specific control the bug was reported against.
+    expect(getByText("← Back to My Tasks").className).toContain("btn--secondary");
+    expect(getByText("← Back to My Tasks").className).not.toContain("btn--ghost");
+
     // Clean → no confirm, straight back.
     fireEvent.click(getByText("← Back to My Tasks"));
     expect(confirmSpy).not.toHaveBeenCalled();
