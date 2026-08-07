@@ -14,6 +14,7 @@ Run with: pytest -q tests/test_manifest_parse.py
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
 from field_ops import manifest_parse as mp
 
@@ -21,12 +22,12 @@ from field_ops import manifest_parse as mp
 
 # Customer BOM, PDF (Bradley / Brimfield). The header is on PAGE 1 ONLY; pages 2-3 are headerless
 # data continuations. Extracted as one grid per page-table.
-CUSTOMER_BOM_P1 = [
+CUSTOMER_BOM_P1: list[list[Any]] = [
     ["PART NUMBER", "DESCRIPTION", "GROUPING", "QTY", "UoM", "WEIGHT (KG)", "WEIGHT TOTALS"],
     ["7000727", "Linear Actuator, PA 16", "ACTUATOR", "568", "EACH", "13.50", "7668"],
     ["7000120", "Cable, Actuator, 4x1.5", "CABLE", "33385", "METERS", "0.30", "10016"],
 ]
-CUSTOMER_BOM_P2 = [  # NO header — the trap
+CUSTOMER_BOM_P2: list[list[Any]] = [  # NO header — the trap
     ["7000006", "Hex Flange Nut, 1/4-20", "HARDWARE", "54092", "EACH", "0.01", "541"],
     ["7000007", "Hex Flange Bolt", "HARDWARE", "54092", "EACH", "0.03", "1623"],
     # The observed bleed: a truncated description pushed a stray "3" into GROUPING. Every cell is
@@ -36,7 +37,7 @@ CUSTOMER_BOM_P2 = [  # NO header — the trap
 
 # Customer BOM, XLSX (Roxbury). Two title rows, then a WHOLLY EMPTY row, then the header on row 4.
 # Part numbers and quantities arrive as ints from openpyxl.
-ROXBURY_XLSX = [
+ROXBURY_XLSX: list[list[Any]] = [
     ["ESS-CPG Roxbury Project", None, None, None, None],
     ["14777 Roxbury Rd, Glenelg, MD 21737", None, None, None, None],
     [None, None, None, None, None],
@@ -48,16 +49,16 @@ ROXBURY_XLSX = [
 # DELTA BOM, PDF (Bonacci). The metadata block is its OWN table and carries the PRODUCT CODE row
 # that labels the otherwise-identical QUANTITY columns. Header names repeat, so the map must be
 # positional. Identity: sum(QUANTITY…) + OVERAGE == REV 2.
-DELTA_META = [
+DELTA_META: list[list[Any]] = [
     ["CLIENT", "EVERGREEN ENERGY"],
     ["PROJECT NAME", "BONACCI 1"],
     ["PROJECT NUMBER", "25-35099"],
 ]
-DELTA_PRODUCTS = [
+DELTA_PRODUCTS: list[list[Any]] = [
     ["PRODUCT CODE", "1P-PER-108M-15F-G90", "1P-PER-54M-9F-G90", "NETWORK CONTROLLER"],
     ["SITE QUANTITY", "65", "28", "1"],
 ]
-DELTA_LINES = [
+DELTA_LINES: list[list[Any]] = [
     ["RELEASE", "PART NUMBER", "DESCRIPTION", "QUANTITY", "QUANTITY", "QUANTITY", "OVERAGE", "REV 2", "REV 1", "DELTA"],
     ["1", "119624", "GROUND SCREW", "0", "1", "2", "0", "3", "3", "0"],
     ["1", "805199", "1P DRIVEN PILE W6x9", "975", "252", "5", "12", "1244", "1244", "0"],
@@ -65,7 +66,7 @@ DELTA_LINES = [
 
 # Shipping log, XLSX (Deep Lake). Continuation rows blank the identity columns entirely, and the
 # sheet over-declares its width — trailing Nones stand in for the 80 phantom columns.
-DEEPLAKE = [
+DEEPLAKE: list[list[Any]] = [
     ["ProjectID", "Product", "Project Name", "Job Number", "Part Number", "Part Description",
      "Required Date", "Required Qty", "Issued Qty", "Ship date", "Delivery Day ", "LD#", None, None],
     [26838872, "TerraTrak", "Deep Lake-IL", "4005217-5-1", "805275", "1P DRIVEN PILE W8X10",
@@ -79,7 +80,7 @@ DEEPLAKE = [
 
 # Shipping log, XLSX (Kiwi). Carries REQUIREMENT dates ("Job Ship By" / "Last Need By") ALONGSIDE
 # the actual ship/delivery dates — the pair that must not be confused.
-KIWI = [
+KIWI: list[list[Any]] = [
     ["Project Name", "JobNum", "Job Ship By", "Last Need By", "Part Num", "Description",
      "Job Req'd Qty", "Shipped Qty", "Ship Date", "Delivery Date", "BOL"],
     ["Kiwi-IL", "4005078-5-1", dt.datetime(2026, 7, 17), dt.datetime(2026, 7, 24), "805271-SHIP",
