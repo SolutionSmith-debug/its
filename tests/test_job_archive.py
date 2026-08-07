@@ -3,15 +3,33 @@
 The behaviours under test are the ones that make a PARTIAL archive safe rather than a wedge:
 per-container fencing, move-BEFORE-rename ordering, the ADMIN pre-flight refusing loudly, and the
 resume probe keying off the recorded folder id instead of a re-creatable name.
+
+Both SYSTEMS are exercised here, and the asymmetry between them is itself under test: Smartsheet
+moves then renames (two calls, a resumable window), Box does both in one. A test that asserted the
+same shape on both sides would be asserting a bug.
 """
 from __future__ import annotations
 
+import json
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from field_ops import job_archive
-from shared import sheet_ids, smartsheet_client
+# sys.path-driven imports (scripts/ has no __init__.py) — mirrors tests/test_production_repoint.py
+# and tests/test_verify_cutover.py. Both dirs must be on the path as TOP-LEVEL roots: a
+# `from scripts import verify_cutover` would make mypy see that file under two module names
+# ("Source file found twice") and fail the blocking type-check.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_MIGRATIONS_DIR = _REPO_ROOT / "scripts" / "migrations"
+_SCRIPTS_DIR = _REPO_ROOT / "scripts"
+for _dir in (_MIGRATIONS_DIR, _SCRIPTS_DIR):
+    if str(_dir) not in sys.path:
+        sys.path.insert(0, str(_dir))
+
+from field_ops import job_archive  # noqa: E402
+from shared import box_client, sheet_ids, smartsheet_client  # noqa: E402
 
 
 @pytest.fixture
@@ -34,6 +52,24 @@ def _seams(mocker):
             smartsheet_client, "get_workspace_access_level", return_value="ADMIN"
         ),
         "log": mocker.patch.object(job_archive.error_log, "log"),
+        # --- the Box edges -------------------------------------------------------------
+        # `get_setting` MUST be patched even in the Smartsheet-only tests. It is how the Box
+        # slots resolve their roots, so leaving it live means every archive_job() call in this
+        # file makes a real Smartsheet request that happens to fail into the per-container
+        # fence — green, slow, and network-dependent.
+        "setting": mocker.patch.object(
+            smartsheet_client, "get_setting",
+            side_effect=lambda key, **_: {
+                job_archive.CFG_BOX_ARCHIVE_ROOT: "900",
+                "safety_reports.box.portal_root_folder_id": "100",
+                "progress_reports.box.portal_root_folder_id": "200",
+            }.get(key),
+        ),
+        "box_find": mocker.patch.object(box_client, "find_child_folder", return_value=None),
+        "box_ensure": mocker.patch.object(
+            box_client, "get_or_create_folder", return_value="950"
+        ),
+        "box_move": mocker.patch.object(box_client, "move_folder", return_value={}),
     }
 
 
@@ -180,6 +216,146 @@ def test_absent_container_counts_as_moved_with_a_note(_seams):
     _seams["move"].assert_not_called()
 
 
+# ---- the Box leg --------------------------------------------------------
+
+
+def _box_slot(key: str) -> job_archive.ArchiveSlot:
+    return next(s for s in job_archive.SLOTS if s.key == key)
+
+
+def test_every_box_slot_carries_its_root_config_coordinates():
+    # A Box root is a tenant-specific id read from ITS_Config at runtime, not a sheet_ids
+    # constant — so a Box slot without both coordinates cannot resolve a source at all.
+    for slot in job_archive.SLOTS:
+        if slot.system == "box":
+            assert slot.box_root_key and slot.box_root_workstream, slot.key
+        else:
+            assert slot.box_root_key is None and slot.box_root_workstream is None, slot.key
+
+
+def test_box_root_keys_match_their_owning_modules():
+    """The parity tooth behind job_archive's deliberate string literal.
+
+    `CFG_BOX_PROGRESS_ROOT` is written out rather than imported, to keep `form_pdf` /
+    `generate_core` / the network-capable `portal_client` out of a leaf relocation module's
+    import graph. The heavy import happens HERE instead, so a rename in the owning module
+    RED-lights rather than silently pointing the archive at a key nobody writes.
+    """
+    from progress_reports import progress_weekly_generate
+    from safety_reports import safety_naming
+
+    assert job_archive.CFG_BOX_PROGRESS_ROOT == progress_weekly_generate.CFG_BOX_PORTAL_ROOT
+    assert _box_slot("box:safety").box_root_key == safety_naming.CFG_BOX_PORTAL_ROOT
+    assert _box_slot("box:progress").box_root_key == job_archive.CFG_BOX_PROGRESS_ROOT
+
+
+def test_the_box_leg_moves_and_renames_in_a_single_call(_seams):
+    """The asymmetry with Smartsheet, asserted rather than assumed.
+
+    Box's PUT carries parent AND name, so there is no moved-but-unrenamed window and nothing to
+    resume. If this ever becomes two calls, the archive grows a crash window that the Box side
+    has no probe for — the Smartsheet resume logic does not apply here.
+    """
+    _seams["box_find"].return_value = "777"
+
+    res = job_archive.archive_box_container(_box_slot("box:safety"), "Coker", "950")
+
+    assert res.moved is True
+    _seams["box_move"].assert_called_once_with("777", "950", new_name="Safety")
+    # No separate rename primitive is even reachable — box_client is MOVE-ONLY by construction.
+    assert not hasattr(box_client, "rename_folder")
+
+
+def test_the_box_source_lookup_never_creates(_seams):
+    """Creating the source would manufacture the very folder whose absence means 'nothing to
+    move', and the archive would then relocate a brand-new empty container while the real
+    documents stayed in the live tree."""
+    _seams["box_find"].return_value = None
+
+    res = job_archive.archive_box_container(_box_slot("box:progress"), "Coker", "950")
+
+    assert res.moved is True and res.note == "nothing to move"
+    _seams["box_find"].assert_called_once_with("200", "Coker")
+    _seams["box_move"].assert_not_called()
+    # The DESTINATION is find-or-create; the SOURCE never is.
+    _seams["box_ensure"].assert_not_called()
+
+
+def test_an_unset_box_root_fails_the_container_instead_of_looking_clean(_seams):
+    """The Box twin of the empty-folder-key trap, and just as quiet.
+
+    An unset root makes every find-by-name match nothing — byte-identical to a clean tree. A
+    module that returned None here would report both Box containers relocated and leave the
+    operator's documents where they were.
+    """
+    _seams["setting"].side_effect = lambda key, **_: None
+
+    results = job_archive.archive_job(_job())
+
+    box = [r for r in results if r.key.startswith("box:")]
+    assert len(box) == 2
+    assert all(r.moved is False for r in box)
+    assert job_archive.state_from_results(results) == "partial"
+    _seams["box_move"].assert_not_called()
+    assert any(c.kwargs.get("error_code") == "archive_container_failed"
+               for c in _seams["log"].call_args_list)
+
+
+def test_a_box_failure_never_blocks_the_smartsheet_containers(_seams):
+    # The two systems are independently fenced: a Box outage must still let the four Smartsheet
+    # folders relocate, and the job reports 4-of-6 `partial` rather than failing whole.
+    _seams["find_ws"].return_value = 555
+    _seams["find_folder"].return_value = 556
+    _seams["box_ensure"].side_effect = box_client.BoxError("box down")
+
+    results = job_archive.archive_job(_job())
+
+    assert [r.moved for r in results if r.key.startswith("smartsheet:")] == [True] * 4
+    assert [r.moved for r in results if r.key.startswith("box:")] == [False, False]
+    assert job_archive.state_from_results(results) == "partial"
+
+
+def test_a_smartsheet_failure_never_blocks_the_box_containers(_seams):
+    # The converse. The destinations resolve independently precisely so one system's outage
+    # cannot strand the other's containers.
+    _seams["find_ws"].side_effect = smartsheet_client.SmartsheetError("smartsheet down")
+    _seams["box_find"].return_value = "777"
+
+    results = job_archive.archive_job(_job())
+
+    assert [r.moved for r in results if r.key.startswith("box:")] == [True, True]
+    assert all(r.moved is False for r in results if r.key.startswith("smartsheet:"))
+    assert _seams["box_move"].call_count == 2
+
+
+def test_the_box_destination_is_resolved_once_per_job(_seams):
+    # Both Box containers land in the SAME `ITS Archive/<Job>/` folder. Resolving per container
+    # is an extra find-or-create round trip and a second chance to lose the create race.
+    _seams["box_find"].return_value = "777"
+
+    job_archive.archive_job(_job())
+
+    _seams["box_ensure"].assert_called_once_with("900", "Coker")
+
+
+def test_the_box_leg_moves_two_containers_not_five(_seams):
+    """Six-not-eleven, asserted at the call level rather than only in the slot count.
+
+    The shared safety root carries `Purchase Orders/`, `RFQs/`, `Vendor Quotes/` and the
+    subcontract files along with it. A future reader "fixing" the apparent asymmetry by adding
+    PO/RFQ/subcontract Box slots would move those trees TWICE — once inside the safety folder
+    and once on their own — which is exactly the collision `move_folder` refuses to merge.
+    """
+    _seams["box_find"].return_value = "777"
+
+    job_archive.archive_job(_job())
+
+    assert _seams["box_move"].call_count == 2
+    assert [c.kwargs["new_name"] for c in _seams["box_move"].call_args_list] == [
+        "Safety", "Progress",
+    ]
+
+
 # ---- archiving a whole job ----------------------------------------------
 
 
@@ -274,3 +450,101 @@ def test_folder_key_delegates_to_the_one_naming_rule():
 
     for raw in ("Coker", "  Bradley 1  ", "A/B", "Bradley Solar"):
         assert job_archive.folder_key_for(raw) == safety_naming.job_folder_name(raw)
+
+
+# ---- the archive Box root's registry fan-out ----------------------------
+#
+# A new ITS_Config row reconciles ALL its registries in the same PR (HOUSE_REFLEXES §1). These
+# assert the surfaces rather than trusting a checklist, because "added the thing, forgot a
+# registry" is the recurring miss and every one of these is silent when wrong.
+
+
+def test_the_archive_root_key_is_enrolled_in_the_repoint_suffix_allowlist():
+    """The highest-consequence surface, and the quietest failure on this page.
+
+    `production_repoint` repoints only Setting names matching its allowlist and SKIPS the rest
+    WITHOUT error. This key does not end in `.portal_root_folder_id` like its two siblings, so
+    absent an explicit entry the cutover sweep reports success while the production tenant keeps
+    a SANDBOX Box folder id — and the first archived job files a customer's closed-out documents
+    into the mirror tenant.
+    """
+    import production_repoint as pr  # noqa: PLC0415 — sys.path is primed at module scope
+
+    key = job_archive.CFG_BOX_ARCHIVE_ROOT
+    assert key not in pr.ALLOWED_SETTINGS_EXACT
+    assert any(key.endswith(suffix) for suffix in pr.ALLOWED_SETTING_SUFFIXES), (
+        f"{key!r} matches no ALLOWED_SETTING_SUFFIXES entry — production_repoint would skip it "
+        f"silently and production would keep the sandbox folder id"
+    )
+
+
+def test_the_archive_root_has_a_reviewed_repoint_map_row():
+    # The allowlist only permits the row; the MAP is what actually carries it through the sweep.
+    rows = json.loads((_MIGRATIONS_DIR / "production_repoint_map.json").read_text())["rows"]
+    row = next(r for r in rows if r["setting"] == job_archive.CFG_BOX_ARCHIVE_ROOT)
+    assert row["category"] == "D"
+    assert row["workstream"] == job_archive.WORKSTREAM_FIELD_OPS
+    # Section D resolves the id LIVE at commit from the folder NAME — a Box id is never typed
+    # by hand into this file.
+    assert row["resolve_box_root"] == "ITS Archive"
+    assert row["from_mirror"] is None and row["to_production"] is None
+
+
+def test_the_archive_root_is_built_seeded_and_verified():
+    """The builder that creates the folder, the stand-up that seeds the row, and the cutover
+    gate that proves it landed — one datum, three registries that each fail silently alone."""
+    import build_box_roots as d4  # noqa: PLC0415 — sys.path is primed at module scope
+    import standup  # noqa: PLC0415
+    import verify_cutover  # noqa: PLC0415 — sys.path-driven; see the module-scope note
+
+    key, workstream = job_archive.CFG_BOX_ARCHIVE_ROOT, job_archive.WORKSTREAM_FIELD_OPS
+
+    built = {k: (n, w) for n, k, w in d4.ROOT_FOLDERS}
+    assert built[key] == ("ITS Archive", workstream)
+    # The stand-up seeds the row from the SAME (name, key, workstream) triple the builder
+    # creates from; a drift between them seeds a row nothing writes.
+    assert ("ITS Archive", key, workstream) in standup.BOX_ROOT_CONFIG_ROWS
+
+    row = next(r for r in verify_cutover.CONFIG_ROWS
+               if r.key == key and r.workstream == workstream)
+    # `non_empty`, never a forced value: the id is tenant-specific and not ours to pin.
+    assert row.requirement == "non_empty"
+
+
+def test_the_archive_root_is_operator_editable_and_documented():
+    # Without the dashboard row a Tier-2 operator has no sanctioned way to correct a bad paste;
+    # without the dictionary entry the editor renders it with no purpose text.
+    from operator_dashboard.act import registry  # noqa: PLC0415
+
+    key = job_archive.CFG_BOX_ARCHIVE_ROOT
+    # REGISTRY is keyed by the (Setting, Workstream) PAIR — the same pair get_setting matches on.
+    assert (key, job_archive.WORKSTREAM_FIELD_OPS) in registry.REGISTRY
+
+    defaults = json.loads(
+        (_REPO_ROOT / "operator_dashboard" / "config_defaults.json").read_text()
+    )
+    documented = {(e["setting"], e["workstream"]) for e in defaults["keys"]}
+    assert (key, job_archive.WORKSTREAM_FIELD_OPS) in documented, (
+        "regenerate with scripts/generate_config_dictionary.py"
+    )
+
+
+def test_required_config_declares_the_roots_this_module_resolves():
+    # The #336 observable-config ledger. Every key `_read_box_root` can be asked for is declared,
+    # so the config dictionary lists `field_ops.job_archive` under each one's "Read by".
+    declared = {(k.setting, k.workstream) for k in job_archive.REQUIRED_CONFIG}
+    assert (job_archive.CFG_BOX_ARCHIVE_ROOT, job_archive.WORKSTREAM_FIELD_OPS) in declared
+    for slot in job_archive.SLOTS:
+        if slot.system == "box":
+            assert (slot.box_root_key, slot.box_root_workstream) in declared
+
+
+def test_the_source_root_declarations_carry_no_description():
+    """The config dictionary is ONE global table keyed by Setting name, so a description here
+    overwrites the owning workstream's prose for every reader. A first pass with one attached
+    rewrote the shared safety root's entry — read by seven daemons — as "read here as an archive
+    SOURCE", which is true of this module and useless to everyone else."""
+    owned = job_archive.CFG_BOX_ARCHIVE_ROOT
+    for declared in job_archive.REQUIRED_CONFIG:
+        if declared.setting != owned:
+            assert declared.description == "", declared.setting

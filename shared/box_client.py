@@ -379,7 +379,7 @@ def upload_bytes(folder_id: str, name: str, content: bytes) -> dict[str, Any]:
 def _find_child_file(parent_folder_id: str, name: str) -> str | None:
     """Return the ID of the direct child FILE named `name`, or None.
 
-    File sibling of `_find_child_folder` (same 1000-child page caveat). Used by
+    File sibling of `find_child_folder` (same 1000-child page caveat). Used by
     `upload_bytes_or_new_version` to resolve the existing file to version-update.
     """
     for item in list_folder(parent_folder_id, limit=1000):
@@ -483,12 +483,19 @@ def get_folder_by_path(path: str) -> dict[str, Any]:
     return {"id": current_id, "name": current_name, "type": "folder"}
 
 
-def _find_child_folder(parent_folder_id: str, name: str) -> str | None:
+def find_child_folder(parent_folder_id: str, name: str) -> str | None:
     """Return the ID of the direct child folder named `name`, or None.
 
     Lists at a generous page limit (1000, Box's max page) — folders that hold
     more than 1000 same-level children with the target beyond that page won't
     resolve, same documented caveat as `get_folder_by_path`.
+
+    PUBLIC because the Track 6 archive needs a FIND-ONLY folder lookup that this
+    module's other resolvers cannot express: `get_or_create_folder` would create
+    the very source container whose absence means "nothing to move", and
+    `get_folder_by_path` walks from the account root rather than from a
+    config-supplied root id. `field_ops.job_archive.archive_box_container` is the
+    external caller; everything else here uses it internally.
     """
     for item in list_folder(parent_folder_id, limit=1000):
         if item["type"] == "folder" and item["name"] == name:
@@ -513,7 +520,7 @@ def get_or_create_folder(parent_folder_id: str, name: str) -> str:
     retries next cycle rather than proceeding with no folder. Bounded blast
     radius on the adopt path: at worst one extra empty folder for operator cleanup.
     """
-    existing = _find_child_folder(parent_folder_id, name)
+    existing = find_child_folder(parent_folder_id, name)
     if existing is not None:
         return existing
     client = get_client()
@@ -521,7 +528,7 @@ def get_or_create_folder(parent_folder_id: str, name: str) -> str:
         created = _call(client.folder(parent_folder_id).create_subfolder, name)
         return str(created.id)
     except BoxConflictError:
-        refound = _find_child_folder(parent_folder_id, name)
+        refound = find_child_folder(parent_folder_id, name)
         if refound is not None:
             return refound
         raise
@@ -567,7 +574,7 @@ def move_folder(
         )
     except BoxConflictError:
         target = new_name or ""
-        existing = _find_child_folder(new_parent_folder_id, target) if target else None
+        existing = find_child_folder(new_parent_folder_id, target) if target else None
         if existing is not None and str(existing) == str(folder_id):
             # Already in place under the intended name — a replay, not a collision.
             return {

@@ -355,6 +355,13 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     # never a value assertion — the id is tenant-specific and not ours to pin.
     ConfigRow("safety_reports.box.portal_root_folder_id", "safety_reports", "non_empty"),
     ConfigRow("progress_reports.box.portal_root_folder_id", "progress_reports", "non_empty"),
+    # The Box ARCHIVE root (Track 6), same reasoning as the two above and the same
+    # `non_empty`-never-a-value rule. Enrolled even though archiving ships dark: an unset
+    # root is not inert here, it is a per-container FAILURE on every archive attempt
+    # (job_archive._read_box_root refuses to read an unreadable tree as an empty one), so a
+    # missed paste surfaces to the operator as repeated 4-of-6 `partial` archives rather
+    # than as a quiet no-op. build_box_roots.py prints the id; standup.py seeds the row.
+    ConfigRow("field_ops.box.archive_root_folder_id", "field_ops", "non_empty"),
     # Feature B (PO document attachments): the §34 screener's ClamAV gate must be
     # SEEDED PRESENT (non_empty, NOT forced 'true' — dark-ship reflex: it ships false
     # and stays false until clamd + pyclamd exist on the Mac; the deterministic L1/L2

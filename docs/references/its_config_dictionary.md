@@ -40,13 +40,14 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | `smartsheet.sheet_count_ceiling` | int | 1500 | Per-workspace sheet-count ceiling; a new week/period sheet that would land past it routes to the Review Queue instead of being created silently. | shared.sheet_capacity |
 | `smartsheet.sheet_count_margin` | int | 50 | Headroom below the ceiling at which the sheet-capacity guard starts warning. | shared.sheet_capacity |
 | `system.heartbeat_url` | str | *(unset)* | The external UptimeRobot heartbeat URL the watchdog pings each run so a total MacBook-death (the watchdog can't alert about itself) is caught. | watchdog |
-| `system.operator_email` | str | seths@evergreenmirror.com | Where out-of-band operator alerts (Resend) are sent when ITS_Config cannot be read — the last-resort page recipient during a Smartsheet outage. | shared.resend_client |
+| `system.operator_email` | str | seth@solutionsmith.org | Where out-of-band operator alerts (Resend) are sent when ITS_Config cannot be read — the last-resort page recipient during a Smartsheet outage. | shared.resend_client |
 | `system.state` | str | ACTIVE | The system kill switch. ACTIVE = normal; PAUSED / MAINTENANCE make every daemon exit cleanly at entry. Fail-open: an unreadable value is treated as ACTIVE. This is an operator-convenience pause, not a security control. | shared.kill_switch |
 
 ## Field-Ops (portal → Smartsheet mirror)
 
 | Setting | Type | Default | Purpose | Read by |
 |---|---|---|---|---|
+| `field_ops.box.archive_root_folder_id` | str | *(unset)* | Box root the Track 6 job archive relocates a closed job's Safety and Progress containers beneath (ITS Archive/<Job>/<Workstream>). Built by build_box_roots.py. | field_ops.job_archive |
 | `field_ops.fieldops_sync.equipment_enabled` | bool | false | Per-stream gate: mirror equipment status from the portal into Smartsheet. | field_ops.fieldops_sync |
 | `field_ops.fieldops_sync.hours_enabled` | bool | false | Per-stream gate: mirror crew hours from the portal into Smartsheet. | field_ops.fieldops_sync |
 | `field_ops.fieldops_sync.incidents_enabled` | bool | false | Per-stream gate: mirror material incidents from the portal into Smartsheet. | field_ops.fieldops_sync |
@@ -84,7 +85,7 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 
 | Setting | Type | Default | Purpose | Read by |
 |---|---|---|---|---|
-| `progress_reports.box.portal_root_folder_id` | str | *(unset)* | Box root folder ID under which progress-report packets are filed. | progress_reports.progress_weekly_generate |
+| `progress_reports.box.portal_root_folder_id` | str | *(unset)* | Box root folder ID under which progress-report packets are filed. | field_ops.job_archive, progress_reports.progress_weekly_generate |
 | `progress_reports.compile_now_poll.polling_enabled` | bool | true | Runtime on/off gate for the progress_reports.compile_now_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | safety_reports.compile_now_poll |
 | `progress_reports.equipment_status.row_cap_warn_threshold` | int | 15000 | Row-count on the mirror sheet at which progress_reports.equipment_status WARNs that the sheet is approaching the Smartsheet per-sheet row cap. | field_ops.fieldops_sync |
 | `progress_reports.evergreen_contact_name` | str | the Evergreen Renewables office | The name ITS uses for the Evergreen Renewables office/contact in this workstream's report copy. | progress_reports.progress_weekly_generate |
@@ -103,7 +104,7 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | Setting | Type | Default | Purpose | Read by |
 |---|---|---|---|---|
 | `progress_reports.intake_enabled` | bool | false | FOOTGUN: the progress-intake gate is read under Workstream='safety_reports' (intake's own workstream), NOT 'progress_reports' — seed it there. | safety_reports.intake |
-| `safety_reports.box.portal_root_folder_id` | str | *(unset)* | Shared Box mirror-tree root; owned by safety_reports. Clean estimates file under ROOT→<job>→'Purchase Orders'→'Vendor Quotes'. | po_materials.estimate_poll, po_materials.po_poll, po_materials.rfq_poll, safety_reports.intake, safety_reports.portal_poll, safety_reports.weekly_generate, subcontracts.subcontract_poll |
+| `safety_reports.box.portal_root_folder_id` | str | *(unset)* | Shared Box mirror-tree root; owned by safety_reports. Clean estimates file under ROOT→<job>→'Purchase Orders'→'Vendor Quotes'. | field_ops.job_archive, po_materials.estimate_poll, po_materials.po_poll, po_materials.rfq_poll, safety_reports.intake, safety_reports.portal_poll, safety_reports.weekly_generate, subcontracts.subcontract_poll |
 | `safety_reports.compile_now_poll.polling_enabled` | bool | true | Runtime on/off gate for the safety_reports.compile_now_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | safety_reports.compile_now_poll |
 | `safety_reports.evergreen_contact_name` | str | the Evergreen Renewables office | The name ITS uses for the Evergreen Renewables office/contact in this workstream's report copy. | safety_reports.weekly_generate |
 | `safety_reports.intake.allowed_senders` | str | *(unset)* | Comma-separated sender allowlist for the intake extraction path (the retired email-PDF intake; the live path is the portal PULL). Empty = none set. | safety_reports.intake |
