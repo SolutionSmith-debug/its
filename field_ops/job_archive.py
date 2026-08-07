@@ -55,10 +55,64 @@ from typing import Any
 
 from progress_reports import equipment_status, hours_log, material_incidents, material_list
 from safety_reports import safety_naming
-from shared import error_log, sheet_ids, smartsheet_client
+from shared import box_client, error_log, sheet_ids, smartsheet_client
 from shared.error_log import Severity
+from shared.required_config import ConfigKey
 
 SCRIPT_NAME = "job_archive"
+
+# ITS_Config key + Workstream cell for the Box ARCHIVE root — the Box twin of
+# `sheet_ids.WORKSPACE_ARCHIVE`. Owned here because the archive is its only consumer; the folder
+# is built by `scripts/migrations/build_box_roots.py` and seeded by `scripts/migrations/standup.py`.
+#
+# The `.archive_root_folder_id` SUFFIX is load-bearing at cutover: `production_repoint.py` repoints
+# only Setting names matching its `ALLOWED_SETTING_SUFFIXES` allowlist, so this suffix is enrolled
+# there too. Renaming this key without touching that allowlist would leave the PRODUCTION tenant
+# holding a SANDBOX folder id — a repoint that reports success and then archives into the mirror.
+CFG_BOX_ARCHIVE_ROOT = "field_ops.box.archive_root_folder_id"
+WORKSTREAM_FIELD_OPS = "field_ops"
+
+# The progress Box root's ITS_Config key. Deliberately a LITERAL rather than
+# `progress_weekly_generate.CFG_BOX_PORTAL_ROOT`: that module drags `form_pdf`, `generate_core` and
+# the network-capable `portal_client` into the import graph of what is otherwise a leaf relocation
+# module, and a folder-mover has no business importing a report generator to read one string. The
+# literal is kept honest by `test_job_archive.py::test_box_root_keys_match_their_owning_modules`,
+# which does the heavy import in TEST scope and RED-lights if an owner renames its key.
+CFG_BOX_PROGRESS_ROOT = "progress_reports.box.portal_root_folder_id"
+WORKSTREAM_PROGRESS = "progress_reports"
+
+# The SHARED safety root (see the module docstring) is owned by `safety_naming`, which this module
+# already imports for the naming rule — so it is referenced, never copied.
+WORKSTREAM_SAFETY = "safety_reports"
+
+# The #336 observable-config ledger for the three Box roots this module resolves. Declared HERE,
+# on the module that actually reads them, following the `weekly_send` / `po_send` / `intake`
+# precedent (a REQUIRED_CONFIG declaration is not daemon-only — it marks the resolving module, and
+# `scripts/generate_config_dictionary.py` discovers it by scanning for this declaration).
+#
+# Note what is NOT here: a `resolve_and_log` call. That belongs to a daemon STARTUP, and this
+# module has no entry point — it is a pass invoked per job. The startup log lands when
+# `fieldops_sync` gains the archive pass and adds these keys to its own resolve_and_log sweep;
+# until then the declaration's job is to keep the key documented and dashboard-editable rather
+# than invisible.
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(
+        CFG_BOX_ARCHIVE_ROOT, WORKSTREAM_FIELD_OPS, "", "str",
+        description=(
+            "Box root the Track 6 job archive relocates a closed job's Safety and Progress "
+            "containers beneath (ITS Archive/<Job>/<Workstream>). Built by build_box_roots.py."
+        ),
+    ),
+    # The two SOURCE roots carry NO description on purpose. The config dictionary is a single
+    # global table keyed by Setting name, and a `description` here OVERWRITES the owning
+    # workstream's prose for every reader — a first regen with one attached rewrote the shared
+    # safety root's entry (read by seven daemons) as "read here as an archive SOURCE", which is
+    # true of this module and useless to everyone else. Declaring the key without a description
+    # is what adds `field_ops.job_archive` to the "Read by" column while leaving the owner's
+    # wording intact.
+    ConfigKey(safety_naming.CFG_BOX_PORTAL_ROOT, WORKSTREAM_SAFETY, "", "str"),
+    ConfigKey(CFG_BOX_PROGRESS_ROOT, WORKSTREAM_PROGRESS, "", "str"),
+]
 
 # The per-workstream labels the containers take inside the archive. These are the folder NAMES an
 # operator will see, so they are deliberately plain English rather than internal keys.
@@ -92,6 +146,12 @@ class ArchiveSlot:
     #: instead sits under a parent folder (`parent_folder`). Exactly one of the two is set.
     workspace: int | None = None
     parent_folder: int | None = None
+    #: For Box: the ITS_Config Setting naming this workstream's Box ROOT, and the Workstream cell
+    #: that row is read under. Box roots are tenant-specific folder ids resolved at RUNTIME from
+    #: config — unlike the Smartsheet ids, which are `sheet_ids` constants — so a Box slot carries
+    #: the config coordinates rather than an id.
+    box_root_key: str | None = None
+    box_root_workstream: str | None = None
 
 
 SLOTS: tuple[ArchiveSlot, ...] = (
@@ -107,8 +167,12 @@ SLOTS: tuple[ArchiveSlot, ...] = (
                 parent_folder=sheet_ids.FOLDER_SC_JOBS),
     # Box: TWO containers only — the safety root is shared by PO/RFQ/subcontracts (see the module
     # docstring), so its per-job folder carries them along.
-    ArchiveSlot("box", "box:safety", LABEL_SAFETY),
-    ArchiveSlot("box", "box:progress", LABEL_PROGRESS),
+    ArchiveSlot("box", "box:safety", LABEL_SAFETY,
+                box_root_key=safety_naming.CFG_BOX_PORTAL_ROOT,
+                box_root_workstream=WORKSTREAM_SAFETY),
+    ArchiveSlot("box", "box:progress", LABEL_PROGRESS,
+                box_root_key=CFG_BOX_PROGRESS_ROOT,
+                box_root_workstream=WORKSTREAM_PROGRESS),
 )
 
 #: The four standing tracker sheets the OLD path moved individually. Retained only so the §43
@@ -145,6 +209,15 @@ def verify_archive_capability(correlation_id: str | None = None) -> bool:
     Returns False (and WARNs, naming the deficient workspace) rather than raising, so the caller
     skips the pass for the cycle instead of failing it. Never silent — a skipped pass with no log
     line would be indistinguishable from an empty queue.
+
+    SMARTSHEET ONLY, deliberately. Box is absent from this probe for two reasons, and adding it
+    would make the archive worse, not safer. (1) There is nothing to probe: Box has no ownership
+    discriminator — every user owns their own root, so a read succeeds for ANY valid identity
+    (the same finding that makes `build_box_roots._resolve_identity` a WARN rather than a block).
+    (2) The failure it could plausibly pre-flight — an unset root config row — already fails
+    BEFORE any Box write, in `_read_box_root`, so it cannot leave a half-relocated tree. Skipping
+    the whole pass for it would strand the four healthy Smartsheet containers too; letting the
+    per-container fence report 4-of-6 `partial` is strictly more honest and more recoverable.
     """
     required = (
         sheet_ids.WORKSPACE_ARCHIVE,
@@ -250,6 +323,79 @@ def archive_smartsheet_container(
     return ContainerResult(slot.key, slot.label, moved=True)
 
 
+def _read_box_root(key: str, workstream: str) -> str:
+    """Resolve one Box ROOT folder id from ITS_Config, or RAISE.
+
+    Raising — rather than returning None and letting the caller treat it as an empty tree — is the
+    whole point. An unset root makes every find-by-name match nothing, which is byte-identical to a
+    clean "nothing to move"; the archive would report the container relocated and the operator's
+    documents would still be sitting in the live tree. The raise routes into `archive_job`'s
+    per-container fence, so the container reports NOT moved, the job stays on the queue, and the
+    WARN names the missing key.
+    """
+    value = (smartsheet_client.get_setting(key, workstream=workstream) or "").strip()
+    if not value:
+        raise RuntimeError(
+            f"Box root unset (ITS_Config {key!r}, Workstream {workstream!r}) — refusing to treat "
+            f"an unreadable tree as an empty one. Seed the row (build_box_roots.py prints the id) "
+            f"and the archive retries next cycle."
+        )
+    return value
+
+
+def ensure_archive_box_job_folder(folder_key: str) -> str:
+    """Find-or-create `ITS Archive / <folder_key>` in Box, returning its folder id.
+
+    Thinner than its Smartsheet twin (`ensure_archive_job_folder`) on purpose, and the asymmetry is
+    real rather than an oversight: Box answers a duplicate create with a 409, so
+    `box_client.get_or_create_folder` already does the race-tolerant find → create → adopt-on-409 →
+    re-find → re-raise-if-still-missing dance internally. Smartsheet returns 200 for a duplicate
+    create, so its side has to hand-roll a find-AFTER-create and WARN the loser. Copying that
+    ceremony here would add a second, weaker race guard on top of a working one.
+    """
+    return box_client.get_or_create_folder(
+        _read_box_root(CFG_BOX_ARCHIVE_ROOT, WORKSTREAM_FIELD_OPS), folder_key
+    )
+
+
+def resolve_source_box_container(slot: ArchiveSlot, folder_key: str) -> str | None:
+    """Find the per-job Box folder under its workstream ROOT. Find-only — never creates.
+
+    `box_client.find_child_folder`, NOT `get_or_create_folder`: creating here would manufacture the
+    very folder whose absence means "nothing to move", and the archive would then relocate a brand
+    new empty container while the real documents stayed put.
+    """
+    assert slot.box_root_key is not None, "a box slot needs a root config key"
+    assert slot.box_root_workstream is not None, "a box slot needs a root workstream"
+    root = _read_box_root(slot.box_root_key, slot.box_root_workstream)
+    return box_client.find_child_folder(root, folder_key)
+
+
+def archive_box_container(
+    slot: ArchiveSlot, folder_key: str, archive_box_job_folder: str
+) -> ContainerResult:
+    """Move one Box per-job folder into the archive and label it, or explain why not.
+
+    ONE call, not two. Box's `PUT /folders/{id}` carries both the new parent and the new name, so
+    unlike the Smartsheet path there is no moved-but-unrenamed crash window and therefore nothing
+    to resume from — do not port the Smartsheet resume probe here, it would only add a round trip
+    to answer a question this side cannot ask.
+
+    A prior successful run leaves the source root with no `<Job>` child, so the re-run reads
+    "nothing to move" and is idempotent. The one case that deliberately fails LOUD instead: a job
+    archived and then written to again, which makes the live find-or-create paths re-grow
+    `<root>/<Job>` beside the archived copy. Moving that second folder onto the first is a genuine
+    collision — `box_client.move_folder` re-raises the 409 rather than adopting, because neither
+    Box nor Smartsheet has a merge primitive and silently fusing two job trees is unrecoverable.
+    """
+    source = resolve_source_box_container(slot, folder_key)
+    if source is None:
+        return ContainerResult(slot.key, slot.label, moved=True, note="nothing to move")
+
+    box_client.move_folder(source, archive_box_job_folder, new_name=slot.label)
+    return ContainerResult(slot.key, slot.label, moved=True)
+
+
 def _log_container_failure(
     job_id: str, slot: ArchiveSlot, exc: BaseException, correlation_id: str
 ) -> None:
@@ -293,18 +439,26 @@ def archive_job(job: dict[str, Any], correlation_id: str | None = None) -> list[
         return [ContainerResult(s.key, s.label, moved=False, note="no folder key") for s in SLOTS]
 
     results: list[ContainerResult] = []
-    archive_job_folder: int | None = None
+    # One destination per SYSTEM, resolved lazily and at most once per job. Lazy because a
+    # destination is a WRITE (find-or-create): a job whose every container is already relocated
+    # should not leave a fresh empty `<Job>` folder behind in either archive as a side effect of
+    # asking. The two are tracked separately because a Smartsheet outage must not stop the Box
+    # containers from moving, and vice versa — the systems fail independently, so they resolve
+    # independently.
+    smartsheet_destination: int | None = None
+    box_destination: str | None = None
     for slot in SLOTS:
-        if slot.system != "smartsheet":
-            # Box containers land in the PR that wires the Box root config; until then they are
-            # reported as not-moved with an explicit note rather than silently omitted, so a
-            # partial archive is honest about what remains.
-            results.append(ContainerResult(slot.key, slot.label, moved=False, note="box leg pending"))
-            continue
         try:
-            if archive_job_folder is None:
-                archive_job_folder = ensure_archive_job_folder(folder_key)
-            results.append(archive_smartsheet_container(slot, folder_key, archive_job_folder))
+            if slot.system == "box":
+                if box_destination is None:
+                    box_destination = ensure_archive_box_job_folder(folder_key)
+                results.append(archive_box_container(slot, folder_key, box_destination))
+            else:
+                if smartsheet_destination is None:
+                    smartsheet_destination = ensure_archive_job_folder(folder_key)
+                results.append(
+                    archive_smartsheet_container(slot, folder_key, smartsheet_destination)
+                )
         except Exception as exc:  # noqa: BLE001 — per-container fence; one failure never blocks the rest
             _log_container_failure(job_id, slot, exc, correlation_id)
             results.append(

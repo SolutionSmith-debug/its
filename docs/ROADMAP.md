@@ -126,16 +126,22 @@ WS4 operator artifacts (landed): `docs/operations/host_migration_runbook.md` · 
 > migration 0058 + `cap.job.archive` · **#720** archive/unarchive routes + the `prune.ts` fence ·
 > **#721** the daemon's queue + commit point · **#722** `field_ops/job_archive.py`.
 >
+> **The Box leg LANDED** — `job_archive` now moves all six containers. `build_box_roots.py` builds a
+> third root (`ITS Archive`), `field_ops.box.archive_root_folder_id` is seeded by `standup.py` and
+> enrolled in VC-03, the dashboard registry, the config dictionary, and — the trap that would have
+> been silent — `production_repoint.ALLOWED_SETTING_SUFFIXES`, which matches Setting names by
+> literal suffix and SKIPS non-matching rows without error. A test asserts that enrolment, so the
+> guard cannot rot back.
+>
 > **REMAINING:** wire the pass into `fieldops_sync`'s cycle behind a dark, seeded-false gate; the
-> **Box leg** of `job_archive` (currently reports `box leg pending` rather than pretending success)
-> + the `ITS Archive` root — extend `scripts/migrations/build_box_roots.py` to a third root, add the
-> `standup.py` seed tuple, and **beware `production_repoint.py:129`, which matches the literal
-> suffix `.portal_root_folder_id` — a key named `…archive_root_folder_id` is SILENTLY SKIPPED at
-> cutover**; `production_shares_manifest.json` needs `WORKSPACE_ARCHIVE` with a byte-exact name
-> (Safety Portal uses two EN DASHes, the others one EM dash); the SPA button + typed-confirm modal;
-> docs (ADR-0005, the `project_closure.md` rewrite, the troubleshooting-tree node, the system-map
-> node **with its brief** — `tests/test_system_map.py` enforces that); the **§51 doctrine rider**;
-> and the attended sandbox drill.
+> **un-archive (reverse) leg**, unbuilt on BOTH systems and never exercised live;
+> `production_shares_manifest.json` needs `WORKSPACE_ARCHIVE` with a byte-exact name
+> (Safety Portal uses two EN DASHes, the others one EM dash) — **and an operator decision on WHO is
+> shared on it**, because a cross-workspace move changes who can READ the relocated contents (§46);
+> the SPA button + typed-confirm modal; docs (ADR-0005, the `project_closure.md` rewrite, the
+> troubleshooting-tree node, the system-map node **with its brief** —
+> `tests/test_system_map.py` enforces that); the **§51 doctrine rider**; and the attended sandbox
+> drill (the Smartsheet half is drilled; the Box half is not).
 >
 > **Archiving is UNAVAILABLE end-to-end until those land — deliberately.** Nothing is lost: the §51
 > move had never fired against live data in this system's history.
