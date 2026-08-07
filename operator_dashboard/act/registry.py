@@ -224,6 +224,16 @@ _ENTRIES: list[ConfigEntry] = [
         first_activation_gated=True,
         note="vendor-estimate importer (ADR-0004 Lane 1) — pause anytime; turning ON escalates (go-live preconditions in Description)",
     ),
+    # manifest_poll is the same generation-half shape: it files to Box and posts a grid
+    # back to our own Worker. Pause = plain Class A; the first activation escalates.
+    _e(
+        "field_ops.manifest_poll.polling_enabled",
+        "field_ops",
+        _SEND_GATES,
+        v_bool,
+        first_activation_gated=True,
+        note="materials-manifest importer (PR3b / ADR-0005) — pause anytime; turning ON escalates",
+    ),
     _e(
         "po_materials.rfq_poll.polling_enabled",
         "po_materials",

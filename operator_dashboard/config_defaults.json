@@ -69,6 +69,17 @@
       "origin": "daemon"
     },
     {
+      "setting": "field_ops.manifest_poll.polling_enabled",
+      "workstream": "field_ops",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Runtime on/off gate for the field_ops.manifest_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox).",
+      "read_by": [
+        "field_ops.manifest_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
       "setting": "alerting.dedupe_window_minutes",
       "workstream": "global",
       "kind": "int",
@@ -361,8 +372,9 @@
       "workstream": "po_materials",
       "kind": "bool",
       "default": false,
-      "purpose": "Optional ClamAV layer of the §34 doc screener (po_attach_screen L3), SHARED with po_poll's attachment pass. Default OFF.",
+      "purpose": "Shared §34 ClamAV posture; owned by po_materials. One scanner setting spans every document pool (PO attachments, estimates, manifests).",
       "read_by": [
+        "field_ops.manifest_poll",
         "po_materials.estimate_poll",
         "po_materials.po_poll"
       ],
@@ -652,9 +664,10 @@
       "workstream": "safety_reports",
       "kind": "str",
       "default": "",
-      "purpose": "Shared Box mirror-tree root; owned by safety_reports. Clean estimates file under ROOT→<job>→'Purchase Orders'→'Vendor Quotes'.",
+      "purpose": "Shared Box mirror-tree root; owned by safety_reports. Unset means the filing folder cannot resolve and rows stay claimed until it is configured.",
       "read_by": [
         "field_ops.job_archive",
+        "field_ops.manifest_poll",
         "po_materials.estimate_poll",
         "po_materials.po_poll",
         "po_materials.rfq_poll",
@@ -773,6 +786,7 @@
       "purpose": "Shared Worker base URL; owned by safety_reports, read here too.",
       "read_by": [
         "field_ops.fieldops_sync",
+        "field_ops.manifest_poll",
         "po_materials.estimate_poll",
         "po_materials.po_poll",
         "po_materials.rfq_poll",

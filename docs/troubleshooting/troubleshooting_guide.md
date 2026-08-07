@@ -555,6 +555,48 @@ The portal is the writer of record for jobs and field capture; fieldops-sync mir
 
 **See also:** runbook `docs/runbooks/fieldops_time_amend.md`
 
+### manifest-poll screens, parses, and files an uploaded BOM / shipping log
+
+| What happens | |
+|---|---|
+| Daemon | `manifest-poll` |
+| Worker route | `GET /api/fieldops/manifests/internal/pending` |
+| Sheets | `ITS_Review_Queue` |
+| Config gates | `field_ops.manifest_poll.polling_enabled`, `po_materials.po_attach_screen.clamav_enabled` |
+
+**Healthy signals:**
+- With the gate on, an office-uploaded manifest is HMAC- and digest-verified, §34-screened, read in a killable sandbox child, filed to Box (job → Materials → Manifests), and lands `parsed` with a reviewable grid + proposed column map for the validate screen. It never commits a line by itself.
+
+#### Uploaded manifests are not being pulled or parsed.
+
+**Resolution class:** Escalate to Seth (co-resolve)
+
+**Signals:** manifest-poll gate off, designed-dark, no marker written, manifest_creds_missing
+
+**Checks (in order):**
+- Is manifest-poll loaded AND field_ops.manifest_poll.polling_enabled flipped? A loaded-but-dark daemon writes no marker by design.
+- If both are on, look for manifest_creds_missing (CRITICAL) — the daemon is fail-closed and will not poll half-configured.
+
+**Resolutions (in order):**
+- Load the plist and flip the gate together; a first activation is a §44 capability action — confirm with Seth. Missing credentials always escalate.
+
+**See also:** runbook `docs/runbooks/material_manifest_import.md`
+
+#### An uploaded manifest was refused (unreadable, SUSPICIOUS/MALICIOUS) or failed integrity.
+
+**Resolution class:** Escalate to Seth (co-resolve)
+
+**Signals:** manifest_unreadable, manifest_suspicious, manifest_malicious, manifest_integrity_failed
+
+**Checks (in order):**
+- Read the ITS_Review_Queue row. An unreadable document (a scan, an empty export, no header row) is ORDINARY — ask the office for a text-based PDF or the source spreadsheet.
+- A security_flag row is not a readability problem; an integrity failure means the bytes disagree with what was signed.
+
+**Resolutions (in order):**
+- For a readability refusal only, clear that manifest's id from state/manifest_poll_flagged.json to retry. NEVER clear a flag for a MALICIOUS verdict or an integrity failure — both escalate, and the bytes are retained for investigation.
+
+**See also:** runbook `docs/runbooks/material_manifest_import.md`
+
 ## Purchase order — build, config, pull/render/file, send
 
 The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
