@@ -133,8 +133,14 @@ WS4 operator artifacts (landed): `docs/operations/host_migration_runbook.md` · 
 > literal suffix and SKIPS non-matching rows without error. A test asserts that enrolment, so the
 > guard cannot rot back.
 >
-> **REMAINING:** wire the pass into `fieldops_sync`'s cycle behind a dark, seeded-false gate; the
-> **un-archive (reverse) leg**, unbuilt on BOTH systems and never exercised live;
+> **The un-archive leg LANDED too** — `run_archive_pass` dispatches on the queue row's
+> `archive_direction` (refusing an unrecognised one rather than defaulting, because running the
+> wrong direction reports success while nothing moves). Smartsheet's two-call order inverts per
+> direction (archive move→rename, restore rename→move) so neither crash window can leave a
+> mis-named folder in the live tree; a restore onto a re-grown live folder refuses rather than
+> merging. Still never exercised LIVE on either system.
+>
+> **REMAINING:** wire the pass into `fieldops_sync`'s cycle behind a dark, seeded-false gate;
 > `production_shares_manifest.json` needs `WORKSPACE_ARCHIVE` with a byte-exact name
 > (Safety Portal uses two EN DASHes, the others one EM dash) — **and an operator decision on WHO is
 > shared on it**, because a cross-workspace move changes who can READ the relocated contents (§46);

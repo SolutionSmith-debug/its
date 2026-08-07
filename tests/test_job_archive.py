@@ -46,6 +46,11 @@ def _seams(mocker):
             smartsheet_client, "create_folder_in_workspace", return_value=9000
         ),
         "move": mocker.patch.object(smartsheet_client, "move_folder_to_folder", return_value=None),
+        # The un-archive destination for Safety/Progress: those sit directly under a
+        # WORKSPACE, so restoring one needs the workspace variant, not the folder one.
+        "move_ws": mocker.patch.object(
+            smartsheet_client, "move_folder_to_workspace", return_value=None
+        ),
         "rename": mocker.patch.object(smartsheet_client, "rename_folder", return_value=None),
         "name": mocker.patch.object(smartsheet_client, "get_folder_name", return_value="Coker"),
         "access": mocker.patch.object(
@@ -219,7 +224,7 @@ def test_absent_container_counts_as_moved_with_a_note(_seams):
 # ---- the Box leg --------------------------------------------------------
 
 
-def _box_slot(key: str) -> job_archive.ArchiveSlot:
+def _slot(key: str) -> job_archive.ArchiveSlot:
     return next(s for s in job_archive.SLOTS if s.key == key)
 
 
@@ -245,8 +250,8 @@ def test_box_root_keys_match_their_owning_modules():
     from safety_reports import safety_naming
 
     assert job_archive.CFG_BOX_PROGRESS_ROOT == progress_weekly_generate.CFG_BOX_PORTAL_ROOT
-    assert _box_slot("box:safety").box_root_key == safety_naming.CFG_BOX_PORTAL_ROOT
-    assert _box_slot("box:progress").box_root_key == job_archive.CFG_BOX_PROGRESS_ROOT
+    assert _slot("box:safety").box_root_key == safety_naming.CFG_BOX_PORTAL_ROOT
+    assert _slot("box:progress").box_root_key == job_archive.CFG_BOX_PROGRESS_ROOT
 
 
 def test_the_box_leg_moves_and_renames_in_a_single_call(_seams):
@@ -258,7 +263,7 @@ def test_the_box_leg_moves_and_renames_in_a_single_call(_seams):
     """
     _seams["box_find"].return_value = "777"
 
-    res = job_archive.archive_box_container(_box_slot("box:safety"), "Coker", "950")
+    res = job_archive.archive_box_container(_slot("box:safety"), "Coker", "950")
 
     assert res.moved is True
     _seams["box_move"].assert_called_once_with("777", "950", new_name="Safety")
@@ -272,7 +277,7 @@ def test_the_box_source_lookup_never_creates(_seams):
     documents stayed in the live tree."""
     _seams["box_find"].return_value = None
 
-    res = job_archive.archive_box_container(_box_slot("box:progress"), "Coker", "950")
+    res = job_archive.archive_box_container(_slot("box:progress"), "Coker", "950")
 
     assert res.moved is True and res.note == "nothing to move"
     _seams["box_find"].assert_called_once_with("200", "Coker")
@@ -548,3 +553,165 @@ def test_the_source_root_declarations_carry_no_description():
     for declared in job_archive.REQUIRED_CONFIG:
         if declared.setting != owned:
             assert declared.description == "", declared.setting
+
+
+# ---- the un-archive (restore) leg ---------------------------------------
+#
+# Never exercised live on either system. These assert the two properties that make the reverse
+# direction safe rather than a duplicate-folder generator: the INVERTED Smartsheet call order, and
+# a refusal to merge when the live tree has re-grown the job's folder.
+
+
+def test_the_restore_renames_before_it_moves(_seams):
+    """The order inverts relative to archiving, and both orders exist for the SAME reason.
+
+    Every live path find-or-CREATEs by job name, so a folder sitting in the live tree under the
+    wrong name is invisible to them and they grow a duplicate beside it. Archiving moves first
+    (nothing mis-named ever lands live); restoring must rename first, or a folder called `Safety`
+    briefly occupies the safety workspace and the next filing forks the job in two.
+    """
+    calls: list[str] = []
+    _seams["find_folder"].side_effect = lambda parent, name: 555 if name == "Safety" else None
+    _seams["find_ws"].side_effect = lambda ws, name: 4242 if ws == sheet_ids.WORKSPACE_ARCHIVE else None
+    _seams["name"].return_value = "Safety"
+    _seams["rename"].side_effect = lambda *a, **k: calls.append("rename")
+    mv_ws = _seams["move_ws"]
+    mv_ws.side_effect = lambda *a, **k: calls.append("move")
+
+    res = job_archive.unarchive_smartsheet_container(_slot("smartsheet:safety"), "Coker", 4242)
+
+    assert res.moved is True
+    assert calls == ["rename", "move"], "restoring must rename BEFORE it moves"
+    mv_ws.assert_called_once_with(555, sheet_ids.WORKSPACE_SAFETY_PORTAL)
+
+
+def test_the_restore_resumes_from_a_renamed_but_unmoved_container(_seams):
+    """The residual crash window of rename-then-move.
+
+    A folder already renamed to <Job> but still in the archive must be found by THAT name — a
+    label-only search would read it as 'nothing to move' and report the restore complete with the
+    container still archived.
+    """
+    seen: list[str] = []
+
+    def _find(parent: int, name: str) -> int | None:
+        seen.append(name)
+        return 555 if name == "Coker" else None
+
+    _seams["find_folder"].side_effect = _find
+
+    found = job_archive.resolve_archived_container(_slot("smartsheet:safety"), "Coker", 4242)
+
+    assert found == 555
+    assert seen == ["Safety", "Coker"], "label first, then the mid-restore name"
+
+
+def test_the_restore_refuses_to_merge_onto_a_regrown_live_folder(_seams):
+    """The case that actually happens: a job archived and then written to.
+
+    The ordinary find-or-create paths re-grow `<root>/<Job>`, so the restore would have two folders
+    claiming one name. Neither system has a merge primitive, so fusing them is unrecoverable —
+    this must refuse loudly and leave both trees intact.
+    """
+    _seams["find_folder"].side_effect = lambda parent, name: 555 if name == "Safety" else None
+    _seams["find_ws"].side_effect = lambda ws, name: 4242 if ws == sheet_ids.WORKSPACE_ARCHIVE else 999
+
+    with pytest.raises(RuntimeError, match="already holds that name"):
+        job_archive.unarchive_smartsheet_container(_slot("smartsheet:safety"), "Coker", 4242)
+
+    _seams["move_ws"].assert_not_called()
+    _seams["rename"].assert_not_called()  # refuse BEFORE mutating anything
+
+
+def test_the_box_restore_is_one_call_with_no_rename_ordering(_seams):
+    # Box's PUT carries parent AND name, so the ordering problem the Smartsheet side has does not
+    # exist here — and the Smartsheet resume logic must not be ported onto it.
+    _seams["box_find"].return_value = "777"
+
+    res = job_archive.unarchive_box_container(_slot("box:progress"), "Coker", "950")
+
+    assert res.moved is True
+    _seams["box_move"].assert_called_once_with("777", "200", new_name="Coker")
+    _seams["rename"].assert_not_called()
+
+
+def test_restoring_a_never_archived_job_creates_no_archive_folders(_seams):
+    """An absent archive folder is a real answer, not a failure.
+
+    `ensure_*` would CREATE it, littering the archive with an empty folder for every restore of a
+    job that was never archived — and reporting a move that never happened.
+    """
+    _seams["find_ws"].return_value = None   # no ITS — Archive/<Job>
+    _seams["box_find"].return_value = None  # no ITS Archive/<Job>
+
+    results = job_archive.unarchive_job(_job(archive_direction="unarchive"))
+
+    assert all(r.moved is True and r.note == "nothing to move" for r in results)
+    assert job_archive.state_from_results(results) == "complete"
+    _seams["create_ws"].assert_not_called()
+    _seams["box_ensure"].assert_not_called()
+    _seams["move"].assert_not_called()
+    _seams["box_move"].assert_not_called()
+
+
+def test_the_restore_probes_each_archive_folder_once_per_system(_seams):
+    # The _ABSENT sentinel distinguishes "not looked up yet" from "looked up and absent"; without
+    # it a never-archived job re-probes the archive once per slot.
+    _seams["find_ws"].return_value = None
+    _seams["box_find"].return_value = None
+
+    job_archive.unarchive_job(_job(archive_direction="unarchive"))
+
+    archive_probes = [c for c in _seams["find_ws"].call_args_list
+                      if c.args[0] == sheet_ids.WORKSPACE_ARCHIVE]
+    assert len(archive_probes) == 1
+    assert _seams["box_find"].call_count == 1
+
+
+def test_a_restore_failure_never_raises_and_stays_fenced(_seams):
+    _seams["find_ws"].side_effect = lambda ws, name: 4242 if ws == sheet_ids.WORKSPACE_ARCHIVE else None
+    _seams["find_folder"].side_effect = lambda parent, name: 555 if name == "Safety" else None
+    _seams["move_ws"].side_effect = smartsheet_client.SmartsheetError("boom")
+
+    results = job_archive.unarchive_job(_job(archive_direction="unarchive"))
+
+    assert any(r.moved is False for r in results)
+    assert any(c.kwargs.get("error_code") == "archive_container_failed"
+               for c in _seams["log"].call_args_list)
+
+
+# ---- direction dispatch -------------------------------------------------
+
+
+@pytest.mark.parametrize("direction, expected", [("archive", "archive_job"), ("unarchive", "unarchive_job")])
+def test_the_pass_dispatches_on_the_rows_direction(mocker, _seams, direction, expected):
+    """`/archive-pending` serves BOTH directions from one queue.
+
+    Running the wrong one is SILENT: an un-archive row put through archive_job finds nothing live,
+    reports six clean 'nothing to move' successes, and posts complete while every folder stays
+    archived.
+    """
+    spy = mocker.patch.object(job_archive, expected, return_value=[])
+
+    job_archive.run_archive_pass(_job(archive_direction=direction))
+
+    spy.assert_called_once()
+
+
+def test_an_unknown_direction_refuses_instead_of_defaulting(_seams):
+    # Defaulting to 'archive' is the same silent-wrong-result class in the other direction.
+    results = job_archive.run_archive_pass(_job(archive_direction=""))
+
+    assert all(r.moved is False and r.note == "unknown direction" for r in results)
+    assert job_archive.state_from_results(results) == "failed"
+    _seams["move"].assert_not_called()
+    _seams["box_move"].assert_not_called()
+    assert any(c.kwargs.get("error_code") == "archive_direction_unknown"
+               for c in _seams["log"].call_args_list)
+
+
+def test_the_directions_the_pass_accepts_match_the_workers_contract():
+    """The Worker's commit point validates `direction === "archive" || "unarchive"` and 400s
+    anything else. A third value accepted here would post updates that route rejects."""
+    worker = (_REPO_ROOT / "safety_portal" / "worker" / "index.ts").read_text()
+    assert 'row.direction === "archive" || row.direction === "unarchive"' in worker
