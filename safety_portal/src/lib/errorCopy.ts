@@ -338,6 +338,29 @@ export const ERROR_COPY: Record<string, string> = {
   no_sov_lines: "Add at least one schedule-of-values line before generating.",
   sov_mismatch: "The schedule of values doesn't add up to the contract price — review the refreshed numbers and generate again.",
   sc_number_conflict: "A subcontract number collision occurred — generate again to get the next revision.",
+
+  // ── materials-manifest import (PR3b — worker/fieldops_manifests.ts) ────────────────────────────
+  // Upload-path codes reach the office directly. The internal-tier codes below them are posted by
+  // the Mac daemon and should never surface in a browser, but they get copy anyway: a code with no
+  // entry renders as "Something went wrong (…). Please try again.", and for a rejected upload that
+  // advice is actively false.
+  mime_not_allowed: "Only PDF and Excel (.xlsx) manifests can be imported — export the document and upload it again.",
+  extension_mime_mismatch: "The file's extension doesn't match its type — re-export it and upload again.",
+  magic_mime_mismatch: "That file isn't the type its name claims — re-export it as a PDF or .xlsx and upload again.",
+  manifest_too_large: "That manifest is too large to import — split it or export a smaller range.",
+  duplicate_manifest: "This job already has that exact manifest — open the existing one, or discard it first to re-import.",
+  not_discardable: "That manifest can't be discarded now — its lines have already been committed.",
+  preview_too_large: "A source-page preview was too large to store — the grid is still usable without it.",
+  invalid_data: "The upload didn't come through intact — choose the file again.",
+  invalid_page: "That preview page number isn't valid.",
+  invalid_rows: "The parsed rows didn't come through correctly — the manifest needs re-importing.",
+  invalid_row_count: "The parsed row count isn't valid — the manifest needs re-importing.",
+  invalid_profile: "The detected document type isn't valid — the manifest needs re-importing.",
+  invalid_column_map: "The proposed column map didn't come through correctly — the manifest needs re-importing.",
+  invalid_header_meta: "The document's header details didn't come through correctly — the manifest needs re-importing.",
+  invalid_parse_notes: "The parser's notes didn't come through correctly — the manifest needs re-importing.",
+  invalid_box_file_id: "The filed-document reference isn't valid — the manifest needs re-importing.",
+  box_file_id_on_refusal: "A refused manifest can't carry a filed-document reference — this is a bug; tell Seth.",
 };
 
 /** Humanize an unknown wire code: 'some_new_code' → 'some new code'. */

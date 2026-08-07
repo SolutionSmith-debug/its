@@ -353,6 +353,12 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
           "AND job_id NOT IN (SELECT job_id FROM inspections) " +
           "AND job_id NOT IN (SELECT job_id FROM job_daily_requirements) " +
           "AND job_id NOT IN (SELECT job_id FROM job_expected_materials) " +
+          // PR3b (0060): a job holding an imported manifest is not dead weight — the pooled
+          // document is the provenance of its material list. This guard and purge-job's
+          // cascade must stay EXACTLY in step: anything guarded here and missing there is a
+          // row no path can ever remove, and anything cascaded there and missing here is a
+          // job prune can delete out from under its own manifest rows.
+          "AND job_id NOT IN (SELECT job_id FROM job_manifests) " +
           "AND job_id NOT IN (SELECT job_id FROM checklist_instances WHERE job_id IS NOT NULL) " +
           "AND job_id NOT IN (SELECT job_id FROM equipment_location WHERE job_id IS NOT NULL)",
       )

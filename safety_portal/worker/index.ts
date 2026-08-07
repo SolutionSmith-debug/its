@@ -34,6 +34,7 @@ import {
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import { registerPoRoutes } from "./po";
 import { registerPoAttachmentRoutes } from "./po_attachments";
+import { registerManifestRoutes } from "./fieldops_manifests";
 import { registerPoEstimateRoutes } from "./po_estimates";
 import { registerRfqRoutes } from "./rfq";
 import { registerConfigRoutes } from "./config";
@@ -273,6 +274,29 @@ const requireRfqToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(asy
   const auth = c.req.header("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token || !c.env.PORTAL_RFQ_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_RFQ_API_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
+
+/**
+ * Bearer-token gate for /api/fieldops/manifests/internal/* — the Mac-side manifest daemon
+ * (field_ops/manifest_poll.py, PR3b). SEPARATE secret from every other tier, for exactly the
+ * reason the estimate lane has its own: this daemon decodes hostile PDF/xlsx bytes (openpyxl
+ * + pdfplumber inside a killable child), making it a highest-exposure process, so its token
+ * scopes ONLY the manifest pool. It must NOT be able to read the PO / RFQ / estimate queues,
+ * drain the submission queue, provision users, touch the mirrors, or reach any send-lane
+ * control surface — and none of those tokens may read the manifest pool. Same
+ * fail-closed-on-missing-secret + constant-time posture as requireInternalToken. Passed into
+ * registerManifestRoutes (worker/fieldops_manifests.ts).
+ */
+const requireManifestToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+  const auth = c.req.header("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (
+    !token || !c.env.PORTAL_MANIFEST_API_TOKEN ||
+    !(await safeTokenEqual(token, c.env.PORTAL_MANIFEST_API_TOKEN))
+  ) {
     return c.json({ error: "unauthorized" }, 401);
   }
   await next();
@@ -526,6 +550,12 @@ registerCrewWriteRoutes(app, fieldopsGates);
 registerMaterialWriteRoutes(app, fieldopsGates);
 // — Material receipts M1: per-job expected-materials CRUD + receive/flag (send-free D1) —
 registerExpectedMaterialsRoutes(app, fieldopsGates);
+// — Materials-manifest import pool (PR3b): the office uploads a BOM / shipping log; the Worker
+//   bounds-gates it, signs manifest:v1 and pools the bytes SEND-FREE in D1 (session +
+//   cap.materials.manage), and the Mac manifest_poll daemon drains
+//   /api/fieldops/manifests/internal/* under its OWN requireManifestToken bearer. Zero parsing
+//   here: openpyxl/pdfplumber over untrusted bytes runs on the Mac inside a killable child. —
+registerManifestRoutes(app, { requireSession, requireCapability, requireManifestToken });
 // — DR-photo-pool Slice 1: the daily-report additional-photo pool (upload / list / delete;
 //   send-free D1 queue for the Slice-2 Mac §34 screen; /api/submit claims the references) —
 registerDailyPhotoRoutes(app, fieldopsGates);
@@ -2592,6 +2622,20 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
     c.env.DB.prepare("DELETE FROM material_receipt_events WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM material_shipments WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM job_expected_materials WHERE job_id = ?").bind(job_id),
+    // Manifest-import pool (0060). Its three children key on manifest_id, not job_id, so each
+    // resolves its parents through the job-keyed subquery and MUST run BEFORE the parent row
+    // goes. An orphaned chunk row is worse than untidy — it is the original untrusted document
+    // bytes surviving behind a job nobody can see any more.
+    c.env.DB
+      .prepare("DELETE FROM job_manifest_chunks WHERE manifest_id IN (SELECT id FROM job_manifests WHERE job_id = ?)")
+      .bind(job_id),
+    c.env.DB
+      .prepare("DELETE FROM job_manifest_rows WHERE manifest_id IN (SELECT id FROM job_manifests WHERE job_id = ?)")
+      .bind(job_id),
+    c.env.DB
+      .prepare("DELETE FROM job_manifest_previews WHERE manifest_id IN (SELECT id FROM job_manifests WHERE job_id = ?)")
+      .bind(job_id),
+    c.env.DB.prepare("DELETE FROM job_manifests WHERE job_id = ?").bind(job_id),
     // The field-ops job-context tables prune.ts already guards a job on. Its guard
     // comment named purge-job as "the explicit operator cleanup path (cascades both)"
     // — it did not: these five were never deleted, so purging a job returned ok:true
@@ -2625,20 +2669,27 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
   const receiptEvents = results[3]?.meta?.changes ?? 0;
   const shipments = results[4]?.meta?.changes ?? 0;
   const expectedMaterials = results[5]?.meta?.changes ?? 0;
-  const checklistItemStates = results[6]?.meta?.changes ?? 0;
-  const checklistInstances = results[7]?.meta?.changes ?? 0;
-  const timeEntries = results[8]?.meta?.changes ?? 0;
-  const taskAssignments = results[9]?.meta?.changes ?? 0;
-  const inspections = results[10]?.meta?.changes ?? 0;
-  const equipmentLocation = results[11]?.meta?.changes ?? 0;
-  const submissions = results[12]?.meta?.changes ?? 0;
-  const job = results[13]?.meta?.changes ?? 0;
+  const manifestChunks = results[6]?.meta?.changes ?? 0;
+  const manifestRows = results[7]?.meta?.changes ?? 0;
+  const manifestPreviews = results[8]?.meta?.changes ?? 0;
+  const manifests = results[9]?.meta?.changes ?? 0;
+  const checklistItemStates = results[10]?.meta?.changes ?? 0;
+  const checklistInstances = results[11]?.meta?.changes ?? 0;
+  const timeEntries = results[12]?.meta?.changes ?? 0;
+  const taskAssignments = results[13]?.meta?.changes ?? 0;
+  const inspections = results[14]?.meta?.changes ?? 0;
+  const equipmentLocation = results[15]?.meta?.changes ?? 0;
+  const submissions = results[16]?.meta?.changes ?? 0;
+  const job = results[17]?.meta?.changes ?? 0;
   return c.json({
     ok: true, found: job > 0, job_id, job_deleted: job, submissions, pdfChunks, pdfRequests,
     requirements, expectedMaterials,
     // Reported per-table so the operator SEES the payroll/billing-grade rows this
     // removed — a silent count is how the old omission stayed invisible.
     receiptEvents, shipments,
+    // Manifest pool (0060) — chunks reported separately because that counter is the
+    // operator's only confirmation that the untrusted document BYTES went with the job.
+    manifests, manifestChunks, manifestRows, manifestPreviews,
     checklistItemStates, checklistInstances, timeEntries, taskAssignments, inspections,
     equipmentLocation,
   });
