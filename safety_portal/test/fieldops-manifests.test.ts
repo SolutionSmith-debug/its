@@ -40,6 +40,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM job_manifest_rows"),
     env.DB.prepare("DELETE FROM job_manifest_previews"),
     env.DB.prepare("DELETE FROM job_manifests"),
+    env.DB.prepare("DELETE FROM job_expected_materials"),
     env.DB.prepare("DELETE FROM personnel"),
     env.DB.prepare("DELETE FROM users"),
     env.DB.prepare("DELETE FROM jobs"),
@@ -446,5 +447,204 @@ describe("manifest browser reads", () => {
     const again = await p(admin, `/api/fieldops/manifests/${id}/discard`);
     expect(again.status).toBe(409);
     expect(await again.json()).toMatchObject({ error: "not_discardable", status: "discarded" });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// /plan (dry run) + /commit (paged, watermarked). These are the routes that actually
+// author a job's material list, so the properties under test are: an imported line is
+// INDISTINGUISHABLE from a hand-authored one, a replay is a no-op, and an ambiguous
+// part-number match is surfaced rather than silently resolved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Put a manifest into the `parsed` state so it may commit. */
+async function parsedManifest(jobId = "JOB-A"): Promise<number> {
+  const id = await uploadOk(jobId);
+  await call("/api/fieldops/manifests/internal/result", {
+    method: "POST",
+    bearer: MANIFEST_BEARER,
+    body: JSON.stringify({ manifest_id: id, status: "parsed", box_file_id: "box-1", row_count: 3 }),
+  });
+  return id;
+}
+
+function line(sourceRow: number, part: string, description = "Pile cap", qty = 4) {
+  return { source_row_index: sourceRow, part_number: part, description, qty };
+}
+
+async function seedLine(jobId: string, part: string | null, description = "existing") {
+  await env.DB
+    .prepare(
+      "INSERT INTO job_expected_materials (job_id, description, part_number, seq, line_uuid) VALUES (?1,?2,?3,10,?4)",
+    )
+    .bind(jobId, description, part, `lu-${jobId}-${part}-${Math.floor(Math.random() * 1e9)}`)
+    .run();
+}
+
+describe("manifest /plan (dry run)", () => {
+  it("classifies matched / new / absent and WRITES NOTHING", async () => {
+    const id = await parsedManifest();
+    await seedLine("JOB-A", "7006955");
+    await seedLine("JOB-A", "9999999"); // on the list, absent from this document
+
+    const res = await p(admin, `/api/fieldops/manifests/${id}/plan`, {
+      lines: [line(2, "7006955"), line(3, "7000153")],
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.counts).toMatchObject({ incoming: 2, matched: 1, ambiguous: 0, new: 1, absent: 1 });
+    expect(body.absent[0].part_number).toBe("9999999");
+
+    const n = await env.DB
+      .prepare("SELECT COUNT(*) n FROM job_expected_materials WHERE job_id='JOB-A'")
+      .first<{ n: number }>();
+    expect(n!.n, "a dry run must not write").toBe(2);
+  });
+
+  it("reports AMBIGUOUS when a part number matches more than one existing line", async () => {
+    // Duplicate part numbers are universal in the real BOMs (7000153 appears twice in
+    // three of the four sample Customer BOMs, under different groupings). Picking the
+    // first match silently is precisely the failure this classification prevents.
+    const id = await parsedManifest();
+    await seedLine("JOB-A", "7000153", "under HARDWARE");
+    await seedLine("JOB-A", "7000153", "under STRUCTURAL");
+
+    const body = (await (
+      await p(admin, `/api/fieldops/manifests/${id}/plan`, { lines: [line(2, "7000153")] })
+    ).json()) as any;
+    expect(body.counts).toMatchObject({ matched: 0, ambiguous: 1, new: 0 });
+    expect(body.ambiguous[0].line_ids).toHaveLength(2);
+  });
+
+  it("warns when committing would push the job past the read route's line cap", async () => {
+    const id = await parsedManifest();
+    const many = Array.from({ length: 501 }, (_, i) => line(i + 2, `P-${i}`));
+    const body = (await (
+      await p(admin, `/api/fieldops/manifests/${id}/plan`, { lines: many })
+    ).json()) as any;
+    expect(body.would_exceed_line_cap).toBe(true);
+  });
+});
+
+describe("manifest /commit (paged + watermarked)", () => {
+  it("authors lines INDISTINGUISHABLE from hand-authored ones", async () => {
+    const id = await parsedManifest();
+    const res = await p(admin, `/api/fieldops/manifests/${id}/commit`, {
+      mode: "add_new",
+      lines: [line(2, "7006955", "Concrete pile cap", 4)],
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+
+    const row = await env.DB
+      .prepare(
+        "SELECT job_id, description, part_number, qty, status, unplanned, active, line_uuid " +
+          "FROM job_expected_materials WHERE job_id='JOB-A'",
+      )
+      .first<Record<string, unknown>>();
+    expect(row).toMatchObject({
+      job_id: "JOB-A", description: "Concrete pile cap", part_number: "7006955", qty: 4,
+      // status stays 'expected' and unplanned stays 0: an import is on-manifest by
+      // definition, and the delivery SoR is the receipt ledger — a shipping log's
+      // delivery_date must never become status='received'.
+      status: "expected", unplanned: 0, active: 1,
+    });
+    // line_uuid is UNIQUE and is the §51 mirror's find-or-create key. SQLite allows
+    // multiple NULLs there, so omitting it would NOT error — it would silently break
+    // the mirror's upsert authority. This is the fail-silent trap.
+    expect(row!.line_uuid).toBeTruthy();
+
+    const audit = await env.DB
+      .prepare("SELECT COUNT(*) n FROM audit_log WHERE action='expected_material_create'")
+      .first<{ n: number }>();
+    expect(audit!.n).toBe(1);
+  });
+
+  it("REFUSES a part-number-only row rather than inventing a description", async () => {
+    // readExpectationFields' description_required rule fires for the import exactly as it
+    // does for the hand-authored create. Synthesizing one here would be invented field
+    // data (§4); the row index tells the validate screen which line to fix.
+    const id = await parsedManifest();
+    const res = await p(admin, `/api/fieldops/manifests/${id}/commit`, {
+      mode: "add_new",
+      lines: [{ source_row_index: 2, part_number: "7006955", qty: 4 }],
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "description_required", row: 0 });
+    const n = await env.DB
+      .prepare("SELECT COUNT(*) n FROM job_expected_materials WHERE job_id='JOB-A'")
+      .first<{ n: number }>();
+    expect(n!.n).toBe(0);
+  });
+
+  it("pages, advances the watermark, and a REPLAY is a no-op", async () => {
+    const id = await parsedManifest();
+    // 150 lines => two pages at COMMIT_PAGE_LINES=100.
+    const lines = Array.from({ length: 150 }, (_, i) => line(i + 2, `P-${i}`));
+
+    const first = (await (
+      await p(admin, `/api/fieldops/manifests/${id}/commit`, { mode: "add_new", lines })
+    ).json()) as any;
+    expect(first).toMatchObject({ ok: true, done: false, inserted: 100 });
+    expect(first.committed_through_row).toBe(101);
+
+    // Re-posting the SAME payload must land nothing new — the watermark drops the first
+    // page before any write, which is what makes a retried request safe.
+    const replay = (await (
+      await p(admin, `/api/fieldops/manifests/${id}/commit`, { mode: "add_new", lines })
+    ).json()) as any;
+    expect(replay.inserted).toBe(50);
+    expect(replay.done).toBe(true);
+
+    const n = await env.DB
+      .prepare("SELECT COUNT(*) n FROM job_expected_materials WHERE job_id='JOB-A'")
+      .first<{ n: number }>();
+    expect(n!.n, "150 source rows must yield exactly 150 lines across pages + a replay").toBe(150);
+
+    const done = (await (
+      await p(admin, `/api/fieldops/manifests/${id}/commit`, { mode: "add_new", lines })
+    ).json()) as any;
+    expect(done).toMatchObject({ ok: true, done: true, inserted: 0 });
+    const manifest = await env.DB
+      .prepare("SELECT status, mode, committed_at FROM job_manifests WHERE id = ?1")
+      .bind(id)
+      .first<Record<string, unknown>>();
+    expect(manifest).toMatchObject({ status: "committed", mode: "add_new" });
+    expect(manifest!.committed_at).toBeTruthy();
+  });
+
+  it("refuses to commit a manifest that is not parsed", async () => {
+    const id = await uploadOk("JOB-A"); // still 'pending'
+    const res = await p(admin, `/api/fieldops/manifests/${id}/commit`, {
+      mode: "add_new", lines: [line(2, "7006955")],
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "not_committable", status: "pending" });
+  });
+
+  it("refuses a commit that would push the job past the line cap", async () => {
+    const id = await parsedManifest();
+    const many = Array.from({ length: 501 }, (_, i) => line(i + 2, `P-${i}`));
+    // The first page is fine; seed the job to just under the cap so the page overflows it.
+    for (let i = 0; i < 450; i++) await seedLine("JOB-A", `X-${i}`);
+    const res = await p(admin, `/api/fieldops/manifests/${id}/commit`, { mode: "add_new", lines: many });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "line_cap_exceeded" });
+  });
+
+  it("requires cap.materials.manage on both routes", async () => {
+    const id = await parsedManifest();
+    expect((await p(sub, `/api/fieldops/manifests/${id}/plan`, { lines: [line(2, "X")] })).status).toBe(403);
+    expect(
+      (await p(sub, `/api/fieldops/manifests/${id}/commit`, { mode: "add_new", lines: [line(2, "X")] })).status,
+    ).toBe(403);
+  });
+
+  it("rejects an unknown mode rather than defaulting to one", async () => {
+    const id = await parsedManifest();
+    const res = await p(admin, `/api/fieldops/manifests/${id}/commit`, {
+      mode: "replace", lines: [line(2, "7006955")],
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_mode" });
   });
 });
