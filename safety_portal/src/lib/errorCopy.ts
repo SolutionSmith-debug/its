@@ -361,6 +361,15 @@ export const ERROR_COPY: Record<string, string> = {
   invalid_parse_notes: "The parser's notes didn't come through correctly — the manifest needs re-importing.",
   invalid_box_file_id: "The filed-document reference isn't valid — the manifest needs re-importing.",
   box_file_id_on_refusal: "A refused manifest can't carry a filed-document reference — this is a bug; tell Seth.",
+
+  // Import validate + commit (the routes that actually author a job's material list).
+  invalid_lines: "The lines to import didn't come through correctly — reload the validate screen and try again.",
+  invalid_line: "One of the lines is malformed — reload the validate screen and try again.",
+  invalid_source_row_index: "A line lost track of which document row it came from — reload the validate screen.",
+  invalid_mode: "Choose whether to merge these lines into the existing list or add them as new.",
+  not_committable: "This manifest can't be committed — it was refused or discarded, so re-import the document.",
+  line_cap_exceeded: "This job can hold 500 material lines and the import would exceed that — split it across jobs, or trim the list before committing.",
+  duplicate_line: "A line collided with one that already exists — reload the validate screen to see the current list.",
 };
 
 /** Humanize an unknown wire code: 'some_new_code' → 'some new code'. */

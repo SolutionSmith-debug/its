@@ -1,8 +1,14 @@
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
+import type { Env, Vars } from "./types";
 import type { FieldopsApp } from "./fieldops_gates";
 import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 import { hmacHex } from "./hmac";
 import { b64DecodedLen, B64_RE } from "./photo_bounds";
+import {
+  readExpectationFields,
+  catalogIdValid,
+  type ExpectationFields,
+} from "./fieldops_expected_materials";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Materials-manifest import pool (PR3b) — worker/fieldops_manifests.ts
@@ -55,6 +61,8 @@ export type ManifestGates = {
   requireManifestToken: MiddlewareHandler<{ Bindings: import("./types").Env; Variables: import("./types").Vars }>;
 };
 
+type Ctx = Context<{ Bindings: Env; Variables: Vars }>;
+
 // The office authors a job's material list, so the import rides the SAME capability the
 // hand-authored line create does (cap.materials.manage, itself a job-scope bypass cap).
 const CAP_MANIFEST = "cap.materials.manage";
@@ -84,6 +92,17 @@ const MAX_ROWS_TOTAL = 20_000; // absolute ceiling on one manifest's grid
 const MAX_FLAGS = 200;
 const MAX_SOURCE_LABEL = 64;
 const ROWS_READ_CAP = 2000; // browser grid page size ceiling
+
+// One /commit call's worth of LINES. Deliberately well under the read route's own
+// LIMIT 500 per job so a single page can never be the thing that overflows the
+// materials page; the watermark makes as many pages as a document needs.
+const COMMIT_PAGE_LINES = 100;
+// A whole import's ceiling, checked against what the job ALREADY holds. The read route
+// caps a job's line list at LIMIT 500 — an import that pushes past it would SILENTLY
+// truncate the materials page and the daily form, which is worse than refusing.
+const MAX_JOB_LINES = 500;
+// A /plan is a dry run over the same set, so it may see the whole document at once.
+const MAX_PLAN_LINES = 2000;
 
 // Mirrors the 0060 CHECK. The daemon may stamp only these two — `committing`/`committed`
 // belong to the browser commit and `discarded` to the browser discard.
@@ -218,6 +237,58 @@ function readGridRow(raw: unknown): GridRow | string {
     cells.push(cell);
   }
   return { row_index: rowIndex, source_page: sourcePage, kind, cells_json: JSON.stringify(cells), flags };
+}
+
+/** One line the human has resolved on the validate screen, ready to become a
+ *  `job_expected_materials` row. `source_row_index` is the ParsedRow.index it came from —
+ *  it is what makes the paged commit replay-safe, because the watermark is expressed in
+ *  SOURCE rows rather than in "how many lines did we insert last time". */
+type ResolvedLine = { fields: ExpectationFields; source_row_index: number };
+
+/** Validate one posted line. Returns the resolved shape or an error CODE string.
+ *
+ *  NOTE it delegates to the SAME `readExpectationFields` the hand-authored create route
+ *  uses. That is the point: an imported line runs the identical bounds, the identical
+ *  cross-field rule and the identical error vocabulary, so the two paths cannot drift.
+ *  In particular `description_required` fires here exactly as it does there — a manifest
+ *  row carrying only a part number and a quantity is REFUSED with its row index rather
+ *  than silently given a synthesized description, because inventing field data is the one
+ *  thing an importer must never do (§4). The validate screen maps the document's
+ *  description column, so a well-formed import already carries one. */
+function readResolvedLine(raw: unknown): ResolvedLine | string {
+  if (!isPlainObject(raw)) return "invalid_line";
+  const idx = raw.source_row_index;
+  if (typeof idx !== "number" || !Number.isSafeInteger(idx) || idx < 1 || idx > MAX_ROWS_TOTAL) {
+    return "invalid_source_row_index";
+  }
+  const fields = readExpectationFields(raw);
+  if (typeof fields === "string") return fields;
+  return { fields, source_row_index: idx };
+}
+
+/** Read + validate a posted `lines` array. */
+function readLines(body: Record<string, unknown>, cap: number): ResolvedLine[] | { error: string; row?: number } {
+  if (!Array.isArray(body.lines) || body.lines.length === 0 || body.lines.length > cap) {
+    return { error: "invalid_lines" };
+  }
+  const out: ResolvedLine[] = [];
+  for (const [i, raw] of body.lines.entries()) {
+    const line = readResolvedLine(raw);
+    if (typeof line === "string") return { error: line, row: i };
+    out.push(line);
+  }
+  return out;
+}
+
+/** The manifest row a plan/commit call is operating on, plus its job. */
+async function loadManifest(
+  c: Ctx,
+  id: number,
+): Promise<{ id: number; job_id: string; status: string; committed_through_row: number } | null> {
+  return c.env.DB
+    .prepare("SELECT id, job_id, status, committed_through_row FROM job_manifests WHERE id = ?1")
+    .bind(id)
+    .first<{ id: number; job_id: string; status: string; committed_through_row: number }>();
 }
 
 export function registerManifestRoutes(app: FieldopsApp, gates: ManifestGates): void {
@@ -629,6 +700,237 @@ export function registerManifestRoutes(app: FieldopsApp, gates: ManifestGates): 
         .first<{ png_b64: string }>();
       if (!row) return c.json({ error: "not_found" }, 404);
       return c.json({ page, png_b64: row.png_b64 });
+    },
+  );
+
+  // POST /api/fieldops/manifests/:id/plan — DRY RUN. Body: { lines: [...] }. Computes,
+  // against the job's LIVE lines, what committing this set would do. Writes nothing.
+  //
+  // AMBIGUOUS IS A FIRST-CLASS OUTCOME, not a rounding error. Duplicate part numbers are
+  // universal in the real BOMs — 7000153 appears twice in three of the four sample
+  // Customer BOMs under different groupings — so an incoming part number that matches
+  // MORE THAN ONE existing line has no single correct target, and the screen must ask.
+  // Silently picking the first match is the failure this route exists to prevent.
+  app.post(
+    "/api/fieldops/manifests/:id/plan",
+    gates.requireSession,
+    gates.requireCapability(CAP_MANIFEST),
+    async (c) => {
+      const id = parseIdParam(c.req.param("id"));
+      if (id === null) return c.json({ error: "invalid_id" }, 400);
+      let body: Record<string, unknown>;
+      try {
+        body = (await c.req.json()) as Record<string, unknown>;
+      } catch {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      if (!isPlainObject(body)) return c.json({ error: "bad_request" }, 400);
+      const manifest = await loadManifest(c, id);
+      if (!manifest) return c.json({ error: "not_found" }, 404);
+      const parsed = readLines(body, MAX_PLAN_LINES);
+      if (!Array.isArray(parsed)) return c.json(parsed, 400);
+
+      const { results } = await c.env.DB
+        .prepare(
+          "SELECT id, part_number FROM job_expected_materials " +
+            "WHERE job_id = ?1 AND active = 1 ORDER BY id ASC LIMIT ?2",
+        )
+        .bind(manifest.job_id, MAX_JOB_LINES)
+        .all<{ id: number; part_number: string | null }>();
+      const existing = results ?? [];
+      const byPart = new Map<string, number[]>();
+      for (const row of existing) {
+        if (!row.part_number) continue;
+        const ids = byPart.get(row.part_number) ?? [];
+        ids.push(row.id);
+        byPart.set(row.part_number, ids);
+      }
+
+      const matched: { source_row_index: number; part_number: string; line_id: number }[] = [];
+      const ambiguous: { source_row_index: number; part_number: string; line_ids: number[] }[] = [];
+      const fresh: number[] = [];
+      const seenParts = new Set<string>();
+      for (const line of parsed) {
+        const part = line.fields.part_number;
+        if (part) seenParts.add(part);
+        const hits = part ? (byPart.get(part) ?? []) : [];
+        if (hits.length === 1) {
+          matched.push({ source_row_index: line.source_row_index, part_number: part!, line_id: hits[0] });
+        } else if (hits.length > 1) {
+          ambiguous.push({ source_row_index: line.source_row_index, part_number: part!, line_ids: hits });
+        } else {
+          fresh.push(line.source_row_index);
+        }
+      }
+      // ON LIST BUT ABSENT: a line the job already expects that this document does NOT
+      // mention. Reported, never auto-retired — a partial BOM is not a deletion order.
+      const absent = existing
+        .filter((row) => row.part_number && !seenParts.has(row.part_number))
+        .map((row) => ({ line_id: row.id, part_number: row.part_number }));
+
+      return c.json({
+        ok: true,
+        job_id: manifest.job_id,
+        committed_through_row: manifest.committed_through_row,
+        counts: {
+          incoming: parsed.length,
+          matched: matched.length,
+          ambiguous: ambiguous.length,
+          new: fresh.length,
+          absent: absent.length,
+          existing: existing.length,
+        },
+        matched,
+        ambiguous,
+        absent,
+        // What committing every remaining line would leave the job holding, against the
+        // read route's own LIMIT 500 — over that, the materials page SILENTLY truncates.
+        projected_total: existing.length + fresh.length,
+        would_exceed_line_cap: existing.length + fresh.length > MAX_JOB_LINES,
+      });
+    },
+  );
+
+  // POST /api/fieldops/manifests/:id/commit — ONE PAGE of the import. Body:
+  // { mode: 'merge'|'add_new', lines: [...] }.
+  //
+  // PAGED WITH A WATERMARK. A 900-row master BOM cannot commit inside one Worker request,
+  // so each call lands at most COMMIT_PAGE_LINES lines and advances
+  // `committed_through_row` IN THE SAME db.batch() as the inserts. Two consequences, both
+  // load-bearing: a page either fully lands or fully rolls back, and a REPLAYED page is a
+  // no-op because every line at or below the watermark is dropped before any write. The
+  // caller simply re-posts the remainder until `done` comes back true.
+  app.post(
+    "/api/fieldops/manifests/:id/commit",
+    gates.requireSession,
+    gates.requireCapability(CAP_MANIFEST),
+    async (c) => {
+      const id = parseIdParam(c.req.param("id"));
+      if (id === null) return c.json({ error: "invalid_id" }, 400);
+      let body: Record<string, unknown>;
+      try {
+        body = (await c.req.json()) as Record<string, unknown>;
+      } catch {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      if (!isPlainObject(body)) return c.json({ error: "bad_request" }, 400);
+      const mode = str(body.mode);
+      if (mode !== "merge" && mode !== "add_new") return c.json({ error: "invalid_mode" }, 400);
+      const manifest = await loadManifest(c, id);
+      if (!manifest) return c.json({ error: "not_found" }, 404);
+      const parsedLines = readLines(body, MAX_PLAN_LINES);
+      if (!Array.isArray(parsedLines)) return c.json(parsedLines, 400);
+
+      // REPLAY GUARD FIRST, before the status guard. Everything at or below the watermark
+      // is already committed, so a fully-replayed payload is an idempotent no-op — and
+      // that ordering matters: if the LAST page's response is lost in flight the client
+      // retries, and answering a 409 there would report failure for work that succeeded,
+      // which is exactly the ambiguity the watermark exists to remove.
+      const remaining = parsedLines
+        .filter((l) => l.source_row_index > manifest.committed_through_row)
+        .sort((a, b) => a.source_row_index - b.source_row_index);
+      if (remaining.length === 0) {
+        return c.json({
+          ok: true, done: true, inserted: 0,
+          committed_through_row: manifest.committed_through_row,
+        });
+      }
+      // Only a parsed (or mid-commit) manifest may author NEW lines. A refused or
+      // discarded one has no business doing so, and a committed one has nothing left —
+      // any payload reaching here carries rows above its watermark, so this is a real
+      // attempt, not a replay.
+      if (manifest.status !== "parsed" && manifest.status !== "committing") {
+        return c.json({ error: "not_committable", status: manifest.status }, 409);
+      }
+      const page = remaining.slice(0, COMMIT_PAGE_LINES);
+      const watermark = page[page.length - 1].source_row_index;
+
+      // The job's line list has a hard read cap; blowing past it would silently truncate
+      // the materials page and the daily form rather than fail visibly.
+      const existing = await c.env.DB
+        .prepare("SELECT COUNT(*) n FROM job_expected_materials WHERE job_id = ?1 AND active = 1")
+        .bind(manifest.job_id)
+        .first<{ n: number }>();
+      if ((existing?.n ?? 0) + page.length > MAX_JOB_LINES) {
+        return c.json({ error: "line_cap_exceeded", cap: MAX_JOB_LINES }, 409);
+      }
+
+      // catalogIdValid is ONE D1 round-trip per call, so resolve the DISTINCT ids once
+      // rather than awaiting per line (a 100-line page would otherwise be 100 reads).
+      const distinct = [...new Set(page.map((l) => l.fields.material_id).filter((m): m is number => m !== null))];
+      for (const materialId of distinct) {
+        if (!(await catalogIdValid(c, materialId))) {
+          return c.json({ error: "invalid_material_id" }, 400);
+        }
+      }
+
+      const actor = c.get("session").username;
+      const stmts = [];
+      let seq = ((existing?.n ?? 0) + 1) * 10;
+      for (const line of page) {
+        const f = line.fields;
+        stmts.push(
+          c.env.DB
+            .prepare(
+              `INSERT INTO job_expected_materials
+                 (job_id, material_id, description, qty, unit, expected_date, seq, line_uuid,
+                  part_number, category, expected_ship_date)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+            )
+            // line_uuid MUST be minted: it is UNIQUE, and the §51 Material List mirror
+            // uses it as its find-or-create key. SQLite permits multiple NULLs there, so
+            // omitting it does not error — it silently breaks the mirror's upsert.
+            // status stays 'expected' and unplanned stays 0 (schema defaults): an import
+            // is on-manifest by definition, and the delivery SoR is the receipt ledger,
+            // never a shipping log's delivery_date column.
+            .bind(
+              manifest.job_id, f.material_id, f.description, f.qty, f.unit, f.expected_date,
+              (seq += 10), crypto.randomUUID(), f.part_number, f.category, f.expected_ship_date,
+            ),
+          // UNCONDITIONAL auditStmt, never auditStmtIfChanged: `changes()` reads the LAST
+          // data-modifying statement, so in a batch interleaving N inserts every IfChanged
+          // after the first would read the wrong statement's result.
+          auditStmt(c, actor, "expected_material_create", manifest.job_id, {
+            job_id: manifest.job_id, manifest_id: id, source_row_index: line.source_row_index,
+            part_number: f.part_number, description: f.description, qty: f.qty,
+          }),
+        );
+      }
+      // The watermark advances IN THE SAME BATCH as the inserts — that pairing is what
+      // makes a page atomic and a replay a no-op. Guarded in-WHERE so a concurrent
+      // discard cannot be overwritten, and monotonic so an out-of-order page cannot
+      // rewind it.
+      stmts.push(
+        c.env.DB
+          .prepare(
+            "UPDATE job_manifests SET status='committing', committed_through_row = ?2, mode = ?3 " +
+              "WHERE id = ?1 AND status IN ('parsed','committing') AND committed_through_row < ?2",
+          )
+          .bind(id, watermark, mode),
+      );
+
+      try {
+        await c.env.DB.batch(stmts);
+      } catch (e) {
+        if (isUniqueViolation(e)) return c.json({ error: "duplicate_line" }, 409);
+        throw e;
+      }
+
+      const done = remaining.length <= page.length;
+      if (done) {
+        await c.env.DB.batch([
+          c.env.DB
+            .prepare(
+              "UPDATE job_manifests SET status='committed', committed_at = unixepoch() " +
+                "WHERE id = ?1 AND status = 'committing'",
+            )
+            .bind(id),
+          auditStmtIfChanged(c, actor, "job_manifest_commit", String(id), {
+            manifest_id: id, job_id: manifest.job_id, mode,
+          }),
+        ]);
+      }
+      return c.json({ ok: true, done, inserted: page.length, committed_through_row: watermark });
     },
   );
 
