@@ -63,6 +63,24 @@ async function seedJobWithData(job: string, uuid: string): Promise<void> {
     env.DB
       .prepare("INSERT INTO job_expected_materials (job_id, description, seq) VALUES (?, 'Panels pallet', 10)")
       .bind(job),
+    // PR2 (0059): the materials children. Counts are DISTINCT from every sibling (2 shipments,
+    // 3 events) so a mis-shifted positional index in purge-job's results[] cannot pass by
+    // accidentally reading a neighbour's count — the exact failure mode that route warns about.
+    env.DB
+      .prepare("INSERT INTO material_shipments (shipment_uuid, line_id, job_id, bol_number) VALUES (?,1,?,'LD0867264')")
+      .bind(`ship-a-${job}`, job),
+    env.DB
+      .prepare("INSERT INTO material_shipments (shipment_uuid, line_id, job_id, bol_number) VALUES (?,1,?,'LD0867268')")
+      .bind(`ship-b-${job}`, job),
+    env.DB
+      .prepare("INSERT INTO material_receipt_events (event_uuid, line_id, job_id, kind, actor) VALUES (?,1,?,'partial','pm')")
+      .bind(`ev-a-${job}`, job),
+    env.DB
+      .prepare("INSERT INTO material_receipt_events (event_uuid, line_id, job_id, kind, actor) VALUES (?,1,?,'partial','pm')")
+      .bind(`ev-b-${job}`, job),
+    env.DB
+      .prepare("INSERT INTO material_receipt_events (event_uuid, line_id, job_id, kind, actor) VALUES (?,1,?,'delivered','pm')")
+      .bind(`ev-c-${job}`, job),
     // The five job-context tables prune.ts guards a job on. purge-job's own comment
     // claimed it was "the explicit operator cleanup path (cascades both)" — it did
     // not touch any of them, so an operator purge returned ok:true while orphaning
@@ -95,6 +113,8 @@ async function counts(job: string, uuid: string) {
     reqs: await q("SELECT COUNT(*) n FROM pdf_requests WHERE submission_uuid=?", uuid),
     dailyReqs: await q("SELECT COUNT(*) n FROM job_daily_requirements WHERE job_id=?", job),
     materials: await q("SELECT COUNT(*) n FROM job_expected_materials WHERE job_id=?", job),
+    shipments: await q("SELECT COUNT(*) n FROM material_shipments WHERE job_id=?", job),
+    receiptEvents: await q("SELECT COUNT(*) n FROM material_receipt_events WHERE job_id=?", job),
     timeEntries: await q("SELECT COUNT(*) n FROM time_entries WHERE job_id=?", job),
     tasks: await q("SELECT COUNT(*) n FROM task_assignments WHERE job_id=?", job),
     inspections: await q("SELECT COUNT(*) n FROM inspections WHERE job_id=?", job),
@@ -117,15 +137,20 @@ describe("POST /api/internal/admin/purge-job", () => {
     expect(await res.json()).toMatchObject({
       ok: true, found: true, job_id: "JOB-PURGE", job_deleted: 1, submissions: 1, pdfChunks: 1, pdfRequests: 1,
       requirements: 2, expectedMaterials: 1, // Slice 1 (R3-F4): per-job content cascades too
+      // PR2 — asserted BY NAME with distinct values: this is what catches a positional-index
+      // shift in the route's results[] reads (2 ≠ 3 ≠ 1, so a swap cannot look correct).
+      shipments: 2, receiptEvents: 3,
     });
 
     expect(await counts("JOB-PURGE", "u-purge")).toEqual({
       jobs: 0, subs: 0, pdfs: 0, reqs: 0, dailyReqs: 0, materials: 0,
+      shipments: 0, receiptEvents: 0,
       timeEntries: 0, tasks: 0, inspections: 0, checklists: 0, equipLoc: 0,
     });
     // The OTHER job keeps every one of them — the cascade is job-scoped, not a sweep.
     expect(await counts("JOB-KEEP", "u-keep")).toEqual({
       jobs: 1, subs: 1, pdfs: 1, reqs: 1, dailyReqs: 2, materials: 1,
+      shipments: 2, receiptEvents: 3,
       timeEntries: 1, tasks: 1, inspections: 1, checklists: 1, equipLoc: 1,
     });
     const audit = await env.DB

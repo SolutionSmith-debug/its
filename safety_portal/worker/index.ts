@@ -2585,6 +2585,12 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
       .prepare("DELETE FROM pdf_requests WHERE submission_uuid IN (SELECT submission_uuid FROM submissions WHERE job_id = ?)")
       .bind(job_id),
     c.env.DB.prepare("DELETE FROM job_daily_requirements WHERE job_id = ?").bind(job_id),
+    // Materials tracking children BEFORE their parent line (0059). Both denormalize job_id, and
+    // both would otherwise be orphaned behind a deleted job exactly the way the five field-ops
+    // tables below once were. The delivery ledger is the record-grade one here: an orphaned
+    // receipt event is a signed-for delivery nobody can trace back to a job.
+    c.env.DB.prepare("DELETE FROM material_receipt_events WHERE job_id = ?").bind(job_id),
+    c.env.DB.prepare("DELETE FROM material_shipments WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM job_expected_materials WHERE job_id = ?").bind(job_id),
     // The field-ops job-context tables prune.ts already guards a job on. Its guard
     // comment named purge-job as "the explicit operator cleanup path (cascades both)"
@@ -2608,23 +2614,31 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
       .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) VALUES (?,?,?,?)")
       .bind("operator-cli", "purge-job", job_id, "hard-delete job + D1 cache"),
   ]);
+  // ⚠ POSITIONAL — every index below is the statement's ORDER in the batch above. Inserting a
+  // DELETE shifts every index after it, and a mis-shifted index silently mis-reports a count
+  // (the operator's only visibility into what this hard-delete removed). Re-check the whole list
+  // whenever the batch changes; test/purge-job.test.ts asserts each counter BY NAME so a shift
+  // fails loudly instead of quietly attributing one table's rows to another.
   const pdfChunks = results[0]?.meta?.changes ?? 0;
   const pdfRequests = results[1]?.meta?.changes ?? 0;
   const requirements = results[2]?.meta?.changes ?? 0;
-  const expectedMaterials = results[3]?.meta?.changes ?? 0;
-  const checklistItemStates = results[4]?.meta?.changes ?? 0;
-  const checklistInstances = results[5]?.meta?.changes ?? 0;
-  const timeEntries = results[6]?.meta?.changes ?? 0;
-  const taskAssignments = results[7]?.meta?.changes ?? 0;
-  const inspections = results[8]?.meta?.changes ?? 0;
-  const equipmentLocation = results[9]?.meta?.changes ?? 0;
-  const submissions = results[10]?.meta?.changes ?? 0;
-  const job = results[11]?.meta?.changes ?? 0;
+  const receiptEvents = results[3]?.meta?.changes ?? 0;
+  const shipments = results[4]?.meta?.changes ?? 0;
+  const expectedMaterials = results[5]?.meta?.changes ?? 0;
+  const checklistItemStates = results[6]?.meta?.changes ?? 0;
+  const checklistInstances = results[7]?.meta?.changes ?? 0;
+  const timeEntries = results[8]?.meta?.changes ?? 0;
+  const taskAssignments = results[9]?.meta?.changes ?? 0;
+  const inspections = results[10]?.meta?.changes ?? 0;
+  const equipmentLocation = results[11]?.meta?.changes ?? 0;
+  const submissions = results[12]?.meta?.changes ?? 0;
+  const job = results[13]?.meta?.changes ?? 0;
   return c.json({
     ok: true, found: job > 0, job_id, job_deleted: job, submissions, pdfChunks, pdfRequests,
     requirements, expectedMaterials,
     // Reported per-table so the operator SEES the payroll/billing-grade rows this
     // removed — a silent count is how the old omission stayed invisible.
+    receiptEvents, shipments,
     checklistItemStates, checklistInstances, timeEntries, taskAssignments, inspections,
     equipmentLocation,
   });

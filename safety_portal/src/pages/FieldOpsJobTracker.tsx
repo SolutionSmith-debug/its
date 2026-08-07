@@ -342,6 +342,7 @@ export function FieldOpsJobTracker({
   onBack,
   initialJobId,
   onJobViewChange,
+  onOpenMaterials,
 }: {
   onBack: () => void;
   /** R7 — deep-link straight into a job's detail (the My Tasks "Log time" quick action / job-group
@@ -352,6 +353,9 @@ export function FieldOpsJobTracker({
    *  consumption (that navigation came FROM the URL — reporting it back would double-push).
    *  App syncs the URL only; this never re-renders or remounts the tracker. */
   onJobViewChange?: (jobId: string | null) => void;
+  /** PR2 — deep link from the job detail's expected-materials section into the per-job Materials
+   *  page. Absent (no cap.materials.receive) → the section renders without the button. */
+  onOpenMaterials?: (jobId: string) => void;
 }) {
   const [view, setView] = useState<"list" | "detail">("list");
   const [jobs, setJobs] = useState<api.JobRow[]>([]);
@@ -1626,7 +1630,10 @@ export function FieldOpsJobTracker({
         </section>
 
         {/* Material receipts M1 — self-contained (own caps/fetch/state; the D4 parallel-build rule). */}
-        <ExpectedMaterialsSection jobId={job.job_id} />
+        <ExpectedMaterialsSection
+          jobId={job.job_id}
+          onOpenMaterials={onOpenMaterials ? () => onOpenMaterials(job.job_id) : undefined}
+        />
 
         <section className="card dash-section">
           <h3 className="dash-detail__h2">Inspections</h3>

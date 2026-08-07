@@ -66,9 +66,19 @@ period-split + archive-on-closure; find-or-create + capacity margin-check; never
   accumulating-log shape (which changes the §51 guards: never-delete = retire-in-place + archive-on-closure;
   row-cap/period-split largely moot for a bounded snapshot).
 - **P7 Slice 3 — Materials Status & Location.**
-- **M2** — per-job **Material List** + bidirectional receive. **OPEN DECISION:** the landed table is
-  `job_expected_materials` (0031); the mission specs a `material_list` (line_uuid/smartsheet_row_id/unplanned) that
-  does NOT exist — recommend **EXTEND** the landed table (§14) with those 3 columns rather than adding a new table.
+- **M2** — per-job **Material List** + bidirectional receive. ~~**OPEN DECISION:**~~ **RESOLVED
+  2026-08-07 (migration `0059`)** — the recommendation was taken: `job_expected_materials` (0031)
+  was **EXTENDED** (`part_number`, `category`, `expected_ship_date`) rather than replaced by a
+  `material_list` table. Two genuinely-new tables landed beside it because they model what one
+  table cannot: **`material_receipt_events`** (an append-only delivery ledger — a part number
+  arrives across many loads, so a mark must be an event, not a flag) and **`material_shipments`**
+  (the scheduled loads, with ship/delivery dates + BOL). The three-way mark
+  (Delivered / Partially delivered / Not delivered) and a per-job **Materials tracking** page ship
+  with it; §43 runbook `docs/runbooks/job_materials.md`. **Still open:** the §51 mirror exposure of
+  the new columns + a receipts-ledger sheet, and manifest (BOM / shipping-log) import.
+  _(Original wording, for the design record: "the mission specs a `material_list`
+  (line_uuid/smartsheet_row_id/unplanned) that does NOT exist — recommend EXTEND the landed table
+  (§14) with those 3 columns rather than adding a new table.")_
 - **M3** — Material Incidents referencing a Material-List line + a fenced `portal_poll` photo deep-screen pass.
 Design source: `progress-reporting/mission.md` §11–§13/§16.
 

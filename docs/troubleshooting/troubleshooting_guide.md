@@ -458,6 +458,25 @@ The portal is the writer of record for jobs and field capture; fieldops-sync mir
 
 **See also:** runbook `docs/runbooks/safety_portal_job_management.md`
 
+#### A manager cannot mark a delivery on a job's Materials page, or a line shows the wrong received total, or a line still shows a problem after the goods arrived.
+
+**Resolution class:** Escalate to Seth (co-resolve)
+
+**Signals:** no Delivered / Partially delivered buttons, forbidden_job, running total looks wrong, still shows Problem reported
+
+**Checks (in order):**
+- Marking needs cap.materials.receive AND a manager/admin role — a submitter holds the capability but not the role (the same gate the daily report uses).
+- Non-admins only reach the job they are PLACED on (personnel.current_job); a 403 forbidden_job is the designed scope, not a fault.
+- The received total is the SUM over an append-only ledger — open the line's history, which shows every event with its quantity, note, date and who recorded it.
+- The incident flag is STICKY by design; a delivery mark records the delivery without clearing the flag.
+
+**Resolutions (in order):**
+- Fix the role in Accounts or the placement on the job's crew, per the runbook.
+- A duplicate or mistaken ledger event is corrected by recording a FURTHER event — the ledger is append-only and has no delete path.
+- Correcting a total at source, or clearing a stuck incident flag, is Seth's — escalate.
+
+**See also:** runbook `docs/runbooks/job_materials.md`
+
 ### fieldops-sync mirrors dirty jobs UP into both Active-Jobs sheets
 
 | What happens | |

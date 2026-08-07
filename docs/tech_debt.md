@@ -2143,7 +2143,13 @@ The edge case: if an **admin authors a template through the UI** with a title th
 
 **Blast radius if lost outright (>30 days / Time Travel unavailable):** re-enterable admin data — the office re-keys each job's requirement items and expected-materials rows from the client's punch list. Bounded, annoying, not evidence-destroying. That bound is WHY no ITS-side backup job is built (§14; the audit explicitly rejected one).
 
-**Tag:** `field_ops`, `d1`, `resilience`, `runbook`, `accepted`. **Revisit when:** a third D1-primary table lands (re-evaluate the no-backup call), or Cloudflare changes the Time Travel retention window.
+**UPDATE 2026-08-07 — the revisit trigger FIRED, and the blast-radius reasoning no longer fully holds.** Migration `0059` (materials tracking, PR2) lands **two** more D1-primary tables: `material_shipments` (scheduled loads — re-enterable from the shipping log, so the original reasoning survives) and **`material_receipt_events`** (the append-only delivery ledger), which it does **not**. A receipt event is a manager's field-recorded assertion that a specific quantity arrived on a specific day — evidence, not re-keyable office data. Nobody reconstructs "40 arrived on the 4th, 35 on the 5th" from a punch list.
+
+Two things narrow it, and neither is a backup: (1) the coarse per-line projection (`status`, `qty_received`, `received_at`/`received_by`) is mirrored one-way-up into the per-job **Material List** Smartsheet whenever `field_ops.fieldops_sync.materials_enabled` is on, so the CURRENT state survives outside D1 even though the per-event history does not; and (2) a receipt marked from the daily form still appends its `deliveries_received` row into the filed daily PDF on Box. The residual gap is the **event-level history** on any line marked from the Materials page.
+
+**Deliberately NOT re-deciding the no-backup call here** — that is the audit's (and Seth's) call; this entry exists to put the changed facts in front of it. The honest options: mirror the ledger as its own append-only `<Job> — Material Receipts` Smartsheet sheet (the `material_incidents.py` pattern — PR4 designs exactly this), or accept the narrowed gap explicitly.
+
+**Tag:** `field_ops`, `d1`, `resilience`, `runbook`, `accepted`. **Revisit when:** ~~a third D1-primary table lands~~ — **FIRED 2026-08-07 (see the update above; needs an explicit accept-or-mirror decision)** — or Cloudflare changes the Time Travel retention window.
 
 - **[OPEN 2026-07-03] `_write_heartbeat()` liveness-touch called bare across all 6 daemon consumers** — a
   local-disk `OSError` from `HeartbeatReporter.write_liveness()` (`state_io.atomic_write_text` raises
