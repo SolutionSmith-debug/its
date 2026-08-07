@@ -271,6 +271,9 @@ DARK_BEARER_SECRETS: tuple[str, ...] = (
     "ITS_PORTAL_CONFIG_TOKEN",
     "ITS_PORTAL_SUB_TOKEN",
     "ITS_PORTAL_ESTIMATE_TOKEN",
+    # PR3b: the manifest importer's OWN bearer — same privilege-separation reason
+    # as the estimate token (it decodes hostile PDF/xlsx bytes).
+    "ITS_PORTAL_MANIFEST_TOKEN",
     "ITS_PORTAL_RFQ_TOKEN",
 )
 # Operator-dashboard PIN (operator_dashboard/auth.py PIN_KEYCHAIN_KEY). The dashboard
@@ -441,6 +444,10 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     # ITS_Config, not a silent hardcoded fallback.
     ConfigRow("po_materials.estimate_poll.polling_enabled", "po_materials", "non_empty"),
     ConfigRow("po_materials.estimate_poll.poll_interval_seconds", "po_materials", "non_empty"),
+    # PR3b materials-manifest importer. `non_empty`, NEVER forced true — the lane
+    # ships dark and activation is a §44 capability action, not a cutover checkbox.
+    ConfigRow("field_ops.manifest_poll.polling_enabled", "field_ops", "non_empty"),
+    ConfigRow("field_ops.manifest_poll.poll_interval_seconds", "field_ops", "non_empty"),
     ConfigRow("po_materials.estimate_poll.max_pages_preview", "po_materials", "non_empty"),
     # Extraction-ladder tier gates (ADR-0004 E4-E6, PR-B). Asserted SEEDED PRESENT
     # (non_empty, NEVER forced 'true' — the dark-ship reflex: all three seed 'false'
