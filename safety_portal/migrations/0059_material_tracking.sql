@@ -3,10 +3,13 @@
 --
 -- WHY: `job_expected_materials` (0031) records WHAT a job expects, and the field marks a line
 -- received once. That one-shot model cannot express the real world the office works in: a single
--- part number arrives across several truckloads over weeks (the Deep Lake shipping log has 51
--- part numbers spread over 1,246 rows — one row per load), each load with its own ship date,
--- delivery date and BOL. A manager had no way to say "half the piles showed up" — the receive
--- route guards `status='expected'` IN-WHERE, so a second mark was a clean 409.
+-- part number arrives across several truckloads over weeks — the Deep Lake shipping log records
+-- 51 parts as 56 rows, the extra 5 being additional loads of a part already listed, each with its
+-- own ship date, delivery date and BOL. A manager had no way to say "half the piles showed up" —
+-- the receive route guards `status='expected'` IN-WHERE, so a second mark was a clean 409.
+-- (Corrected 2026-08-07: this comment first claimed "1,246 rows", taken from the sheet's declared
+-- extent. The sheet declares 1,247 rows × 92 columns and actually holds 57 non-empty rows × 12
+-- columns — the rest is padding. The multi-load shape is real; its volume in that file is not.)
 --
 -- STATUS VOCABULARY — DELIBERATELY NOT WIDENED. `job_expected_materials.status` keeps its 0031
 -- CHECK (expected|received|incident) and its exact meaning. SQLite cannot ALTER a CHECK, so
